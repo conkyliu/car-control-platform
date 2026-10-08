@@ -1,0 +1,270 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ---------------------- 1. 多租户与权限 ----------------------
+model Tenant {
+  id               String         @id @default(uuid())
+  name             String
+  code             String         @unique
+  status           String         @default("ACTIVE") // ACTIVE, SUSPENDED, DISABLED
+  quotaDeviceCount Int            @default(1000)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  organizations    Organization[]
+  projects         Project[]
+  users            User[]
+  vehicles         Vehicle[]
+  devices          Device[]
+  commands         CommandRecord[]
+  auditLogs        AuditLog[]
+
+  @@map("tenants")
+}
+
+model Organization {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  parentId  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  users     User[]
+
+  @@index([tenantId])
+  @@map("organizations")
+}
+
+model Project {
+  id        String   @id @default(uuid())
+  tenantId  String
+  name      String
+  code      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant    Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vehicles  Vehicle[]
+  devices   Device[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("projects")
+}
+
+model User {
+  id             String        @id @default(uuid())
+  tenantId       String
+  organizationId String?
+  username       String        @unique
+  passwordHash   String
+  email          String?
+  phone          String?
+  status         String        @default("ACTIVE")
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  userRoles      UserRole[]
+
+  @@index([tenantId])
+  @@map("users")
+}
+
+model Role {
+  id          String           @id @default(uuid())
+  tenantId    String
+  name        String
+  code        String
+  description String?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  userRoles   UserRole[]
+  rolePerms   RolePermission[]
+
+  @@unique([tenantId, code])
+  @@index([tenantId])
+  @@map("roles")
+}
+
+model UserRole {
+  id        String   @id @default(uuid())
+  userId    String
+  roleId    String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, roleId])
+  @@map("user_roles")
+}
+
+model RolePermission {
+  id         String   @id @default(uuid())
+  roleId     String
+  permission String
+  createdAt  DateTime @default(now())
+
+  role       Role     @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@unique([roleId, permission])
+  @@map("role_permissions")
+}
+
+// ---------------------- 2. 车型与车辆 ----------------------
+model VehicleBrand {
+  id        String         @id @default(uuid())
+  name      String         @unique
+  logoUrl   String?
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  models    VehicleModel[]
+
+  @@map("vehicle_brands")
+}
+
+model VehicleModel {
+  id        String       @id @default(uuid())
+  brandId   String
+  name      String
+  code      String
+  template  Json?        // 车型默认能力配置模板
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  brand     VehicleBrand @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  vehicles  Vehicle[]
+
+  @@unique([brandId, code])
+  @@map("vehicle_models")
+}
+
+model Vehicle {
+  id          String       @id @default(uuid())
+  tenantId    String
+  projectId   String
+  modelId     String
+  deviceId    String?      @unique
+  vin         String       @unique
+  plateNumber String
+  status      String       @default("NORMAL")
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+
+  tenant      Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  model       VehicleModel @relation(fields: [modelId], references: [id], onDelete: Restrict)
+  device      Device?      @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  commands    CommandRecord[]
+  locations   LocationHistory[]
+
+  @@index([tenantId, projectId])
+  @@map("vehicles")
+}
+
+// ---------------------- 3. 设备与通讯 ----------------------
+model Device {
+  id              String    @id @default(uuid())
+  tenantId        String
+  projectId       String?
+  deviceNo        String    @unique
+  imei            String    @unique
+  productKey      String
+  status          String    @default("ACTIVE")
+  onlineStatus    String    @default("OFFLINE")
+  lastHeartbeatAt DateTime?
+  firmwareVersion String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  tenant          Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  project         Project?  @relation(fields: [projectId], references: [id], onDelete: SetNull)
+  vehicle         Vehicle?
+
+  @@index([tenantId])
+  @@map("devices")
+}
+
+// ---------------------- 4. 指令执行记录 ----------------------
+model CommandRecord {
+  id             String    @id @default(uuid())
+  tenantId       String
+  projectId      String
+  vehicleId      String
+  deviceId       String
+  deviceNo       String
+  commandCode    String
+  status         String
+  securityLevel  String
+  idempotencyKey String    @unique
+  traceId        String
+  requestId      String
+  params         Json?
+  sentAt         DateTime?
+  ackedAt        DateTime?
+  finishedAt     DateTime?
+  errorCode      String?
+  errorMessage   String?
+  operatorId     String
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  tenant         Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  vehicle        Vehicle   @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, vehicleId])
+  @@index([traceId])
+  @@map("command_records")
+}
+
+// ---------------------- 5. 定位与时序 ----------------------
+model LocationHistory {
+  id        String   @id @default(uuid())
+  tenantId  String
+  vehicleId String
+  deviceNo  String
+  latitude  Float
+  longitude Float
+  speed     Float?
+  altitude  Float?
+  heading   Float?
+  recordedAt DateTime
+  createdAt DateTime @default(now())
+
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id], onDelete: Cascade)
+
+  @@index([vehicleId, recordedAt])
+  @@map("location_histories")
+}
+
+// ---------------------- 6. 审计日志 ----------------------
+model AuditLog {
+  id           String   @id @default(uuid())
+  tenantId     String
+  userId       String
+  action       String
+  resourceType String
+  resourceId   String
+  traceId      String
+  details      Json?
+  ipAddress    String?
+  createdAt    DateTime @default(now())
+
+  tenant       Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, traceId])
+  @@map("audit_logs")
+}

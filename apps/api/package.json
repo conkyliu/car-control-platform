@@ -1,0 +1,27 @@
+{
+  "name": "@car-control/api",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/main.js",
+    "test": "node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "@car-control/contracts": "workspace:*",
+    "@car-control/domain-types": "workspace:*",
+    "@car-control/config": "workspace:*",
+    "@nestjs/common": "^11.0.11",
+    "@nestjs/core": "^11.0.11",
+    "@nestjs/platform-express": "^11.0.11",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2"
+  },
+  "devDependencies": {
+    "@car-control/simulator": "workspace:*",
+    "@types/express": "^5.0.0",
+    "typescript": "^5.8.2"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "name": "@car-control/domain-types",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test --loader ts-node/esm || true"
+  },
+  "dependencies": {
+    "@car-control/contracts": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.8.2"
+  }
+}
