@@ -6,3 +6,6 @@ export * from './capability-repository.js';
 export * from './location-repository.js';
 export * from './alarm-repository.js';
 export * from './communication-log-repository.js';
+export * from './firmware-repository.js';
+export * from './ota-plan-repository.js';
+export * from './ota-task-repository.js';
