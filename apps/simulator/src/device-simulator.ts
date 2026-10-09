@@ -3,6 +3,10 @@ import {
   DeviceCommandDownlinkPayload,
   DeviceCommandAckUplinkPayload,
   CommandCode,
+  TelemetryLocationPayload,
+  AlarmType,
+  AlarmLevel,
+  UplinkAlarmPayload,
 } from '@car-control/contracts';
 import { DeviceSimulatorOptions, SimulatorTelemetry } from './types.js';
 import { SimulatorTransport, InMemoryTransport } from './transport.js';
@@ -97,6 +101,61 @@ export class DeviceSimulator {
       batteryVoltage: this.telemetry.batteryVoltage,
       rssi: -65,
     });
+  }
+
+  /**
+   * 上报遥测定位数据
+   * 构造完整 TelemetryLocationPayload 并发布到 MQTT 定位 Topic
+   */
+  async reportLocation(payload: Partial<TelemetryLocationPayload> = {}): Promise<TelemetryLocationPayload> {
+    const fullPayload: TelemetryLocationPayload = {
+      lat: 22.54286,
+      lng: 114.05956,
+      speed: 60,
+      heading: 90,
+      gpsValid: true,
+      timestamp: Date.now(),
+      ...payload,
+    };
+
+    const standardTopic = MqttTopicBuilder.location(this.options.productKey, this.options.deviceNo);
+    const legacyTopic = `car/up/${this.options.productKey}/${this.options.deviceNo}/telemetry/location`;
+
+    await this.transport.publish(standardTopic, fullPayload);
+    if (legacyTopic !== standardTopic) {
+      await this.transport.publish(legacyTopic, fullPayload);
+    }
+
+    return fullPayload;
+  }
+
+  /**
+   * 上报车辆异常报警
+   * 构造完整 UplinkAlarmPayload 并发布到 MQTT 告警 Topic
+   */
+  async reportAlarm(
+    alarmType: AlarmType,
+    alarmLevel: AlarmLevel,
+    message?: string,
+    coords?: { lat: number; lng: number }
+  ): Promise<UplinkAlarmPayload> {
+    const uplinkAlarm: UplinkAlarmPayload = {
+      alarmType,
+      alarmLevel,
+      timestamp: Date.now(),
+      ...(message !== undefined ? { message } : {}),
+      ...(coords ? { lat: coords.lat, lng: coords.lng } : {}),
+    };
+
+    const standardTopic = MqttTopicBuilder.alarm(this.options.productKey, this.options.deviceNo);
+    const legacyTopic = `car/up/${this.options.productKey}/${this.options.deviceNo}/alarm/report`;
+
+    await this.transport.publish(standardTopic, uplinkAlarm);
+    if (legacyTopic !== standardTopic) {
+      await this.transport.publish(legacyTopic, uplinkAlarm);
+    }
+
+    return uplinkAlarm;
   }
 
   /**
