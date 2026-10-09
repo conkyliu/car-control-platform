@@ -6,6 +6,8 @@ import {
   DeviceCommandAckUplinkPayload,
   TelemetryLocationPayload,
   UplinkAlarmPayload,
+  OtaUpgradeDownlinkPayload,
+  OtaProgressPayload,
 } from '@car-control/contracts';
 import {
   MessagingPort,
@@ -14,6 +16,7 @@ import {
   StatusCallback,
   LocationCallback,
   AlarmCallback,
+  OtaProgressCallback,
 } from './messaging.port.js';
 
 @Injectable()
@@ -24,6 +27,7 @@ export class InMemoryMessagingAdapter implements MessagingPort {
   private statusCallbacks: StatusCallback[] = [];
   private locationCallbacks: LocationCallback[] = [];
   private alarmCallbacks: AlarmCallback[] = [];
+  private otaProgressCallbacks: OtaProgressCallback[] = [];
   private recentMessages: Set<string> = new Set();
   private bus: EventEmitter;
 
@@ -38,6 +42,18 @@ export class InMemoryMessagingAdapter implements MessagingPort {
     payload: DeviceCommandDownlinkPayload
   ): Promise<void> {
     const topic = MqttTopicBuilder.commandDown(productKey, deviceNo);
+    const raw = JSON.stringify(payload);
+    queueMicrotask(() => {
+      this.bus.emit(topic, topic, raw);
+    });
+  }
+
+  async publishOtaUpgrade(
+    productKey: string,
+    deviceNo: string,
+    payload: OtaUpgradeDownlinkPayload
+  ): Promise<void> {
+    const topic = MqttTopicBuilder.otaUpgrade(productKey, deviceNo);
     const raw = JSON.stringify(payload);
     queueMicrotask(() => {
       this.bus.emit(topic, topic, raw);
@@ -62,6 +78,10 @@ export class InMemoryMessagingAdapter implements MessagingPort {
 
   onAlarm(callback: AlarmCallback): void {
     this.alarmCallbacks.push(callback);
+  }
+
+  onOtaProgress(callback: OtaProgressCallback): void {
+    this.otaProgressCallbacks.push(callback);
   }
 
   /**
@@ -166,6 +186,39 @@ export class InMemoryMessagingAdapter implements MessagingPort {
     this.bus.on(alarmTopic, handleAlarm);
     if (legacyAlarmTopic !== alarmTopic) {
       this.bus.on(legacyAlarmTopic, handleAlarm);
+    }
+
+    // OTA 升级进度上行监听: 标准规范 Topic + 兼容遗留 Topic
+    const otaProgTopic = MqttTopicBuilder.otaProgress(productKey, deviceNo);
+    const legacyOtaProgTopic = `car/up/${productKey}/${deviceNo}/ota/progress`;
+    const handleOtaProgress = (_t: string, raw: string | OtaProgressPayload) => {
+      try {
+        const payload: OtaProgressPayload = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!payload.deviceNo) {
+          payload.deviceNo = deviceNo;
+        }
+        const percent = payload.progressPercent ?? (payload as any).percent ?? 0;
+        const dedupeKey = `ota:${productKey}:${deviceNo}:${payload.planId}:${payload.step}:${percent}`;
+        if (this.recentMessages.has(dedupeKey)) {
+          return;
+        }
+        this.recentMessages.add(dedupeKey);
+        if (this.recentMessages.size > 2000) {
+          this.recentMessages.clear();
+        }
+
+        for (const cb of this.otaProgressCallbacks) {
+          Promise.resolve(cb({ productKey, deviceNo, payload })).catch((err) => {
+            console.error('[MessagingAdapter] Error in OTA progress callback:', err);
+          });
+        }
+      } catch (e) {
+        console.error('[MessagingAdapter] Failed to parse OTA progress:', e);
+      }
+    };
+    this.bus.on(otaProgTopic, handleOtaProgress);
+    if (legacyOtaProgTopic !== otaProgTopic) {
+      this.bus.on(legacyOtaProgTopic, handleOtaProgress);
     }
   }
 

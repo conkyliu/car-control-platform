@@ -26,9 +26,10 @@ import { PermissionsGuard } from './auth/guards/permissions.guard.js';
 import { TelemetryModule } from './telemetry/telemetry.module.js';
 import { AlarmModule } from './alarm/alarm.module.js';
 import { CommunicationLogModule } from './log/communication-log.module.js';
+import { OtaModule } from './ota/ota.module.js';
 
 @Module({
-  imports: [TelemetryModule, AlarmModule, CommunicationLogModule],
+  imports: [TelemetryModule, AlarmModule, CommunicationLogModule, OtaModule],
   controllers: [
     CommandController,
     AuthController,
@@ -76,6 +77,7 @@ import { CommunicationLogModule } from './log/communication-log.module.js';
     TelemetryModule,
     AlarmModule,
     CommunicationLogModule,
+    OtaModule,
   ],
 })
 export class AppModule {}
