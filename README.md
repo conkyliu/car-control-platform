@@ -29,22 +29,50 @@ car-control-platform/
 ## 快速开始
 
 ### 依赖环境
-- Node.js >= 24 (LTS)
+- Node.js >= 22 (推荐 LTS)
 - pnpm >= 10
-- PostgreSQL >= 16
-- Redis >= 7
 
-### 安装依赖
+### 1. 安装依赖与全量编译
 ```bash
+# 切换到项目根目录
+cd car-control-platform
+
+# 安装 monorepo 依赖
 pnpm install
+
+# 编译所有 packages 与 apps
+pnpm build
 ```
 
-### 运行设备模拟器
+### 2. 运行自动化测试与端到端闭环验证
 ```bash
-pnpm --filter @car-control/simulator start
+pnpm test
 ```
 
-### 运行业务 API
+### 3. 本地启动服务
+
+在不同终端窗口分别启动：
+
+#### 终端 1：启动车载 TBox 模拟器
 ```bash
-pnpm --filter @car-control/api start:dev
+pnpm start:simulator
+# 或使用完整指令：
+# pnpm --filter @car-control/simulator start
 ```
+
+#### 终端 2：启动后端业务 API 服务 (端口 3000)
+```bash
+pnpm start:api
+# 或使用完整指令：
+# pnpm --filter @car-control/api start
+```
+
+#### 终端 3：启动前端 Web 控制台 (端口 5173)
+```bash
+pnpm dev:web
+# 或使用完整指令：
+# pnpm --filter @car-control/web dev
+```
+
+启动后在浏览器打开：[http://localhost:5173](http://localhost:5173) 即可进入控车操作面板与实时指令状态流水视图。
+

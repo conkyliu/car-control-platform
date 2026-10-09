@@ -7,12 +7,14 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/main.js",
+    "start:dev": "node dist/main.js",
     "test": "node --test dist/test/*.test.js"
   },
   "dependencies": {
     "@car-control/contracts": "workspace:*",
     "@car-control/domain-types": "workspace:*",
     "@car-control/config": "workspace:*",
+    "@car-control/database": "workspace:*",
     "@nestjs/common": "^11.0.11",
     "@nestjs/core": "^11.0.11",
     "@nestjs/platform-express": "^11.0.11",

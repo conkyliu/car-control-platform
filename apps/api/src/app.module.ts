@@ -4,10 +4,17 @@ import { DeviceStatusService } from './device/device-status.service.js';
 import { WebSocketGatewayService } from './realtime/websocket.gateway.js';
 import { CommandService } from './command/command.service.js';
 import { CommandController } from './command/command.controller.js';
+import { UserService } from './user/user.service.js';
+import { TenantService } from './tenant/tenant.service.js';
+import { AuditService } from './audit/audit.service.js';
+import { AuthService } from './auth/auth.service.js';
+import { AuthController } from './auth/auth.controller.js';
+import { JwtAuthGuard } from './auth/guards/jwt-auth.guard.js';
+import { PermissionsGuard } from './auth/guards/permissions.guard.js';
 
 @Module({
   imports: [],
-  controllers: [CommandController],
+  controllers: [CommandController, AuthController],
   providers: [
     {
       provide: 'MessagingPort',
@@ -16,7 +23,22 @@ import { CommandController } from './command/command.controller.js';
     DeviceStatusService,
     WebSocketGatewayService,
     CommandService,
+    UserService,
+    TenantService,
+    AuditService,
+    AuthService,
+    JwtAuthGuard,
+    PermissionsGuard,
   ],
-  exports: [CommandService, DeviceStatusService, WebSocketGatewayService, 'MessagingPort'],
+  exports: [
+    CommandService,
+    DeviceStatusService,
+    WebSocketGatewayService,
+    'MessagingPort',
+    UserService,
+    TenantService,
+    AuditService,
+    AuthService,
+  ],
 })
 export class AppModule {}

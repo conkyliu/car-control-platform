@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { EventEmitter } from 'node:events';
 import {
   MqttTopicBuilder,
@@ -13,8 +13,10 @@ export class InMemoryMessagingAdapter implements MessagingPort {
   private ackCallbacks: AckCallback[] = [];
   private heartbeatCallbacks: HeartbeatCallback[] = [];
   private statusCallbacks: StatusCallback[] = [];
+  private bus: EventEmitter;
 
-  constructor(private bus: EventEmitter = InMemoryMessagingAdapter.sharedBus) {
+  constructor(@Optional() bus?: EventEmitter) {
+    this.bus = bus || InMemoryMessagingAdapter.sharedBus;
     this.bus.on('error', (err) => console.error('[MessagingAdapter] Bus error:', err));
   }
 

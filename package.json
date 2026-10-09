@@ -7,7 +7,10 @@
     "build": "pnpm -r --filter=!@car-control/mobile build",
     "test": "pnpm -r --filter=!@car-control/mobile test",
     "lint": "pnpm -r --filter=!@car-control/mobile lint",
-    "clean": "pnpm -r exec rm -rf dist node_modules"
+    "clean": "pnpm -r exec rm -rf dist node_modules",
+    "dev:web": "pnpm --filter @car-control/web dev",
+    "start:api": "pnpm --filter @car-control/api start",
+    "start:simulator": "pnpm --filter @car-control/simulator start"
   },
   "devDependencies": {
     "@types/node": "^26.6.4",

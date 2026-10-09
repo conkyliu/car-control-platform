@@ -23,6 +23,9 @@ importers:
       '@car-control/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@car-control/database':
+        specifier: workspace:*
+        version: link:../../packages/database
       '@car-control/domain-types':
         specifier: workspace:*
         version: link:../../packages/domain-types
