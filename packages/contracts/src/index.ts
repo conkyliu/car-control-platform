@@ -7,3 +7,7 @@ export * from './auth/auth-dtos.js';
 export * from './device/device-dtos.js';
 export * from './vehicle/vehicle-dtos.js';
 export * from './capability/capability-dtos.js';
+export * from './telemetry/telemetry-payloads.js';
+export * from './alarm/alarm-payloads.js';
+export * from './log/communication-log-payloads.js';
+export * from './events/websocket-events.js';

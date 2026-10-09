@@ -18,6 +18,8 @@ export enum WebSocketEvent {
 
   // 报警与定位
   ALARM_CREATED = 'alarm.created',
+  ALARM_TRIGGERED = 'alarm.triggered',
+  ALARM_PROCESSED = 'alarm.processed',
   LOCATION_UPDATED = 'location.updated',
 }
 

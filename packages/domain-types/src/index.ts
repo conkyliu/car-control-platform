@@ -4,3 +4,6 @@ export * from './vehicle.js';
 export * from './command.js';
 export * from './audit.js';
 export * from './user.js';
+export * from './telemetry.js';
+export * from './alarm.js';
+export * from './communication-log.js';

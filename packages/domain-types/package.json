@@ -6,7 +6,7 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
-    "test": "node --test --loader ts-node/esm || true"
+    "test": "pnpm build && node --test test/*.test.js"
   },
   "dependencies": {
     "@car-control/contracts": "workspace:*"
