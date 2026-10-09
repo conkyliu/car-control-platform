@@ -280,22 +280,6 @@ export class CommandService {
       this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_FAILED, record);
     }
 
-    if (this.commLogService) {
-      const devState = this.deviceStatusService.getDevice(record.deviceNo);
-      const productKey = devState?.productKey || 'default';
-      this.commLogService.logMessage({
-        tenantId: record.tenantId,
-        vehicleId: record.vehicleId,
-        deviceNo: record.deviceNo,
-        traceId: ack.traceId,
-        requestId: ack.requestId,
-        direction: CommunicationDirection.UPLINK,
-        channel: CommunicationChannel.MQTT,
-        topic: MqttTopicBuilder.commandAck(productKey, record.deviceNo),
-        payload: ack,
-      }).catch((e) => console.error('[CommandService] Failed to log ACK commLog:', e));
-    }
-
     if (this.auditService) {
       this.auditService.logAction({
         tenantId: record.tenantId,

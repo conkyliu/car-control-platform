@@ -3,8 +3,6 @@ import {
   DeviceRepository,
   VehicleRepository,
   CapabilityRepository,
-  AlarmRepository,
-  CommunicationLogRepository,
 } from '@car-control/database';
 import { InMemoryMessagingAdapter } from './messaging/in-memory-messaging.adapter.js';
 import { DeviceStatusService } from './device/device-status.service.js';
@@ -27,9 +25,7 @@ import { JwtAuthGuard } from './auth/guards/jwt-auth.guard.js';
 import { PermissionsGuard } from './auth/guards/permissions.guard.js';
 import { TelemetryModule } from './telemetry/telemetry.module.js';
 import { AlarmModule } from './alarm/alarm.module.js';
-import { AlarmService } from './alarm/alarm.service.js';
 import { CommunicationLogModule } from './log/communication-log.module.js';
-import { CommunicationLogService } from './log/communication-log.service.js';
 
 @Module({
   imports: [TelemetryModule, AlarmModule, CommunicationLogModule],
@@ -47,8 +43,6 @@ import { CommunicationLogService } from './log/communication-log.service.js';
     DeviceRepository,
     VehicleRepository,
     CapabilityRepository,
-    AlarmRepository,
-    CommunicationLogRepository,
     DeviceStatusService,
     WebSocketGatewayService,
     CapabilityEngine,
@@ -61,8 +55,6 @@ import { CommunicationLogService } from './log/communication-log.service.js';
     AuthService,
     DeviceService,
     VehicleService,
-    AlarmService,
-    CommunicationLogService,
     JwtAuthGuard,
     PermissionsGuard,
   ],
@@ -81,10 +73,6 @@ import { CommunicationLogService } from './log/communication-log.service.js';
     AuthService,
     DeviceService,
     VehicleService,
-    AlarmRepository,
-    CommunicationLogRepository,
-    AlarmService,
-    CommunicationLogService,
     TelemetryModule,
     AlarmModule,
     CommunicationLogModule,

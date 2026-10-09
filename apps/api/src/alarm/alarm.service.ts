@@ -68,7 +68,17 @@ export class AlarmService {
     if (!vehicle && this.deviceStatusService) {
       const devState = this.deviceStatusService.getDevice(deviceNo);
       if (devState?.vehicleId) {
-        vehicle = await this.vehicleRepo.findById(devState.vehicleId);
+        const session = TenantContext.getOptional();
+        if (session?.tenantId) {
+          vehicle = await this.vehicleRepo.findById(devState.vehicleId);
+        } else {
+          for (const item of (this.vehicleRepo as any).items?.values() || []) {
+            if (item.id === devState.vehicleId) {
+              vehicle = item;
+              break;
+            }
+          }
+        }
       }
     }
 

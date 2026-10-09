@@ -144,7 +144,7 @@ export class CommunicationLogService {
           requestId: ack.requestId,
           direction: CommunicationDirection.UPLINK,
           channel: CommunicationChannel.MQTT,
-          topic: MqttTopicBuilder.commandAck('default', deviceNo),
+          topic: MqttTopicBuilder.commandAck((ack as any).productKey || 'CAR_DEMO_PK', deviceNo),
           payload: ack,
         });
       }
@@ -156,7 +156,17 @@ export class CommunicationLogService {
     if (!vehicle && this.deviceStatusService) {
       const devState = this.deviceStatusService.getDevice(deviceNo);
       if (devState?.vehicleId) {
-        vehicle = await this.vehicleRepo.findById(devState.vehicleId);
+        const session = TenantContext.getOptional();
+        if (session?.tenantId) {
+          vehicle = await this.vehicleRepo.findById(devState.vehicleId);
+        } else {
+          for (const item of (this.vehicleRepo as any).items?.values() || []) {
+            if (item.id === devState.vehicleId) {
+              vehicle = item;
+              break;
+            }
+          }
+        }
       }
     }
     return vehicle;

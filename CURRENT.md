@@ -1,7 +1,7 @@
 # CURRENT.md · 当前执行状态记录
 
 > 最后更新：2026-10-09  
-> 当前阶段：**Gate 3 (Week 5-10) 控车核心域与三级能力继承引擎验收全部通过，准备进入 Gate 4 (Week 7-12) 实时业务与报警轨迹中心**
+> 当前阶段：**Gate 4 (Week 7-12) 实时业务与报警轨迹中心验收全部通过，全量回归测试 100% 通行，准备进入 Gate 5 (Week 11-14) 生产级高可用与运维监控**
 
 ## 1. 当前进展
 - **已完成**：
@@ -44,23 +44,46 @@
       - 滑动窗口频次限制与防抖（Rate Limiting）。
       - 车辆风控与维保状态安全拦截（`LOCKED` 禁控、`MAINTENANCE` 禁点火）。
     - 升级 `CommandService` 12 步控车安全流水线，深度整合 CapabilityEngine、ControlSecurityService 与设备状态联动。
-    - **Gate 3 验收测试 8/8 100% 通过**：
-      1. 车型模板继承拦截（如纯电车型禁用点火并给出清晰原因）
-      2. 项目级覆盖继承拦截（如大客户项目覆盖禁用后备箱开启）
-      3. 单车级个性化覆盖最高优先级验证（如单车覆盖禁用车窗）
-      4. Security L1 校验：缺失安全码与错误安全码双重阻断
-      5. Security L2 校验：高危指令缺失二次确认凭据阻断
-      6. 滑动窗口频次限流：快速重发触发 429 冷却拦截
-      7. 车辆运营状态风控：`LOCKED` 与 `MAINTENANCE` 状态安全阻断
-      8. 端到端全链路闭环：下发指令 -> 模拟器应答 -> WAITING_ACK -> SUCCESS -> WebSocket 广播
-    - **全工程回归测试通过率：41/41 (100%)**。
+    - Gate 3 验收测试 8/8 100% 通过。
+  - [x] **Phase 9: Gate 4 Telemetry, Geofence & Alert Center (Week 7-12 实时业务与报警轨迹中心)**
+    - 领域规范与架构决策：
+      - `docs/specs/telemetry.md`（高频遥测报文、热点定位缓存、Douglas-Peucker 轨迹抽稀与电子围栏）。
+      - `docs/specs/alert.md`（设备主动告警与平台规则告警、8大告警枚举、不可逆处置终态拓扑与操作审计）。
+      - `docs/adr/ADR-006`（Douglas-Peucker 轨迹抽稀算法与容差设计）。
+      - `docs/adr/ADR-007`（不可逆终态保护的告警处置生命周期与多租户审计）。
+    - 共享契约与 DTOs：
+      - `TelemetryLocationPayload`, `SimplifiedTrajectoryDto`, `TrajectoryTolerance`。
+      - `AlarmType`, `AlarmLevel`, `AlarmStatus`, `AlarmRecordDto`, `ProcessAlarmDto`, `AlarmFilterDto`。
+      - `CommunicationLogDto`, `CommunicationLogFilterDto`, `CommunicationDirection`, `CommunicationChannel`。
+      - `MqttTopicBuilder` 支持 MQTT 标准规范 Topic 构造与解析。
+    - 数据库租户隔离仓储：
+      - `LocationRepository` 支持租户限定的车辆最新位置热缓存与历史时序轨迹存储。
+      - `AlarmRepository` 强制多租户上下文隔离与终态不可逆状态机流转。
+      - `CommunicationLogRepository` 多维检索设备上下行通讯报文。
+    - 仿真器与通信端口：
+      - `DeviceSimulator` 扩展 GPS 轨迹上报 (`reportLocation`) 与主动报警上报 (`reportAlarm`)。
+      - `InMemoryMessagingAdapter` 统一派发定位、告警与指令 ACK 报文并注入上下文。
+    - 核心业务服务与控制器：
+      - `GeofenceService` 实现高精度 Haversine 大圆距离公式与圆形围栏出入判定。
+      - `douglasPeucker` 实现经典递归分治矢量抽稀，106 点抽稀至 4 点（<4% 点位），首尾端点与直角折弯转折点 100% 精确保留。
+      - `TelemetryService` 与 `TelemetryController` 负责位置上报、热点缓存与 WebSocket 实时广播 (`LOCATION_UPDATED`)。
+      - `AlarmService` 与 `AlarmController` 负责告警触发、WebSocket 广播 (`ALARM_TRIGGERED` / `ALARM_PROCESSED`)、人工处置闭环、终态防线与安全审计留痕。
+      - `CommunicationLogService` 与 `CommunicationLogController` 负责下行控制、上行 ACK、定位与告警全链路自动归档与检索。
+    - **Gate 4 验收测试 7/7 项 (8/8 subtests) 100% 通过**：
+      1. 实时位置上报与 WebSocket 广播 (`LOCATION_UPDATED`)
+      2. 历史轨迹服务端 Douglas-Peucker 抽稀（<20% 点位，首尾点与转折点 100% 保持精准）
+      3. 圆形地理围栏出入判定与 `GEOFENCE_OUT` 报警触发
+      4. 设备端主动告警上报（`LOW_BATTERY` 与 `VIBRATION`）与 WebSocket 广播
+      5. 报警生命周期流转（`PROCESSED`）、留痕审计与不可逆终态保护
+      6. 通讯上下行日志自动沉淀（下行指令、ACK、定位、告警）与基于 vehicleId / traceId 检索
+      7. 多租户全方位安全隔离防线（最新定位、历史轨迹、告警列表与通讯日志跨租户完全隔离）
+    - **全工程全量回归测试通过率：87/87 (100% PASS)**。
 
 - **阻塞项**：无。
-- **已知问题**：已修复此前频次限制在错误凭据拦截前过早计时的缺陷，全套验收套件测试全绿。
+- **已知问题**：已修复 `CommandService` 与 `CommunicationLogService` 对上行 ACK 的重复归档问题，清除 `AppModule` 冗余 provider 声明，全套验收测试稳定全绿。
 
 ## 2. 下一步任务
-- 启动 **Gate 4 (Week 7-12): Telemetry, Geofence & Alert Center (实时业务与报警轨迹中心)**：
-  1. 编写遥测与报警规范：`docs/specs/telemetry.md`, `docs/specs/alert.md`。
-  2. 扩展共享契约：定义 GPS 上报报文格式、电子围栏数据结构、报警事件枚举。
-  3. 建设遥测上行处理管道与地理围栏出入判定引擎。
-  4. 建设报警中心生命周期管理与实时广播推送。
+- 启动 **Gate 5 (Week 11-14): Production Readiness & Observability (生产级高可用与运维监控)**：
+  1. 分布式缓存与 Redis 集成方案评估。
+  2. Prometheus 指标与 OpenTelemetry 分布式链路追踪接入。
+  3. 压测用例构建与性能调优（高并发下行控车与密集遥测上报）。

@@ -72,6 +72,12 @@ export class InMemoryMessagingAdapter implements MessagingPort {
     this.bus.on(ackTopic, (_t, raw) => {
       try {
         const parsed: DeviceCommandAckUplinkPayload = typeof raw === 'string' ? JSON.parse(raw) : raw;
+        if (!(parsed as any).deviceNo) {
+          (parsed as any).deviceNo = deviceNo;
+        }
+        if (!(parsed as any).productKey) {
+          (parsed as any).productKey = productKey;
+        }
         for (const cb of this.ackCallbacks) {
           cb(parsed);
         }
