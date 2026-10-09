@@ -23,9 +23,10 @@ import { CapabilityEngine } from './capability/capability.engine.js';
 import { ControlSecurityService } from './security/control-security.service.js';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard.js';
 import { PermissionsGuard } from './auth/guards/permissions.guard.js';
+import { TelemetryModule } from './telemetry/telemetry.module.js';
 
 @Module({
-  imports: [],
+  imports: [TelemetryModule],
   controllers: [
     CommandController,
     AuthController,
@@ -70,6 +71,7 @@ import { PermissionsGuard } from './auth/guards/permissions.guard.js';
     AuthService,
     DeviceService,
     VehicleService,
+    TelemetryModule,
   ],
 })
 export class AppModule {}
