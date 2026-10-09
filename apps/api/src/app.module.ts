@@ -3,6 +3,8 @@ import {
   DeviceRepository,
   VehicleRepository,
   CapabilityRepository,
+  AlarmRepository,
+  CommunicationLogRepository,
 } from '@car-control/database';
 import { InMemoryMessagingAdapter } from './messaging/in-memory-messaging.adapter.js';
 import { DeviceStatusService } from './device/device-status.service.js';
@@ -24,9 +26,13 @@ import { ControlSecurityService } from './security/control-security.service.js';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard.js';
 import { PermissionsGuard } from './auth/guards/permissions.guard.js';
 import { TelemetryModule } from './telemetry/telemetry.module.js';
+import { AlarmModule } from './alarm/alarm.module.js';
+import { AlarmService } from './alarm/alarm.service.js';
+import { CommunicationLogModule } from './log/communication-log.module.js';
+import { CommunicationLogService } from './log/communication-log.service.js';
 
 @Module({
-  imports: [TelemetryModule],
+  imports: [TelemetryModule, AlarmModule, CommunicationLogModule],
   controllers: [
     CommandController,
     AuthController,
@@ -41,6 +47,8 @@ import { TelemetryModule } from './telemetry/telemetry.module.js';
     DeviceRepository,
     VehicleRepository,
     CapabilityRepository,
+    AlarmRepository,
+    CommunicationLogRepository,
     DeviceStatusService,
     WebSocketGatewayService,
     CapabilityEngine,
@@ -53,6 +61,8 @@ import { TelemetryModule } from './telemetry/telemetry.module.js';
     AuthService,
     DeviceService,
     VehicleService,
+    AlarmService,
+    CommunicationLogService,
     JwtAuthGuard,
     PermissionsGuard,
   ],
@@ -71,7 +81,13 @@ import { TelemetryModule } from './telemetry/telemetry.module.js';
     AuthService,
     DeviceService,
     VehicleService,
+    AlarmRepository,
+    CommunicationLogRepository,
+    AlarmService,
+    CommunicationLogService,
     TelemetryModule,
+    AlarmModule,
+    CommunicationLogModule,
   ],
 })
 export class AppModule {}

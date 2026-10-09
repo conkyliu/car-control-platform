@@ -3,6 +3,9 @@ import { AlarmRecord } from '@car-control/domain-types';
 import {
   AlarmRecordDto,
   AlarmStatus,
+  AlarmType,
+  AlarmLevel,
+  AlarmFilterDto,
   canTransitionAlarmStatus,
 } from '@car-control/contracts';
 import { TenantAwareRepository } from './repository.js';
@@ -39,13 +42,33 @@ export class AlarmRepository extends TenantAwareRepository<AlarmRecord> {
    * 条件列表检索
    * 支持按 vehicleId、status 组合过滤，严格限定当前租户，按触发时间倒序排列
    */
-  async list(filter?: { vehicleId?: string; status?: AlarmStatus }): Promise<AlarmRecord[]> {
+  async list(filter?: AlarmFilterDto | { vehicleId?: string; status?: AlarmStatus }): Promise<AlarmRecord[]> {
     const results = await this.findMany((alarm) => {
-      if (filter?.vehicleId && alarm.vehicleId !== filter.vehicleId) {
+      if (!filter) {
+        return true;
+      }
+      if (filter.vehicleId && alarm.vehicleId !== filter.vehicleId) {
         return false;
       }
-      if (filter?.status && alarm.status !== filter.status) {
+      if (filter.status && alarm.status !== filter.status) {
         return false;
+      }
+      if ('alarmType' in filter && filter.alarmType && alarm.alarmType !== filter.alarmType) {
+        return false;
+      }
+      if ('alarmLevel' in filter && filter.alarmLevel && alarm.alarmLevel !== filter.alarmLevel) {
+        return false;
+      }
+      if ('deviceNo' in filter && filter.deviceNo && alarm.deviceNo !== filter.deviceNo) {
+        return false;
+      }
+      if ('startTime' in filter && filter.startTime) {
+        const start = new Date(filter.startTime);
+        if (alarmTime(alarm) < start) return false;
+      }
+      if ('endTime' in filter && filter.endTime) {
+        const end = new Date(filter.endTime);
+        if (alarmTime(alarm) > end) return false;
       }
       return true;
     });

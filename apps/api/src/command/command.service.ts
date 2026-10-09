@@ -14,6 +14,9 @@ import {
   WebSocketEvent,
   DeviceCommandAckUplinkPayload,
   DeviceCommandDownlinkPayload,
+  CommunicationDirection,
+  CommunicationChannel,
+  MqttTopicBuilder,
 } from '@car-control/contracts';
 import { CommandRecord } from '@car-control/domain-types';
 import { VehicleRepository } from '@car-control/database';
@@ -23,6 +26,7 @@ import { WebSocketGatewayService } from '../realtime/websocket.gateway.js';
 import { CapabilityEngine } from '../capability/capability.engine.js';
 import { ControlSecurityService } from '../security/control-security.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { CommunicationLogService } from '../log/communication-log.service.js';
 
 export interface ExecuteCommandInput {
   tenantId: string;
@@ -52,7 +56,8 @@ export class CommandService {
     @Optional() private readonly capabilityEngine?: CapabilityEngine,
     @Optional() private readonly securityService?: ControlSecurityService,
     @Optional() private readonly vehicleRepo?: VehicleRepository,
-    @Optional() private readonly auditService?: AuditService
+    @Optional() private readonly auditService?: AuditService,
+    @Optional() private readonly commLogService?: CommunicationLogService
   ) {
     // 监听设备上行 ACK 报文
     this.messagingPort.onAck((ack) => {
@@ -194,6 +199,19 @@ export class CommandService {
 
     // 10. 消息层直通下发
     await this.messagingPort.publishCommand(productKey, deviceNo, downlink);
+    if (this.commLogService) {
+      this.commLogService.logMessage({
+        tenantId: input.tenantId,
+        vehicleId: input.vehicleId,
+        deviceNo,
+        traceId,
+        requestId,
+        direction: CommunicationDirection.DOWNLINK,
+        channel: CommunicationChannel.MQTT,
+        topic: MqttTopicBuilder.commandDown(productKey, deviceNo),
+        payload: downlink,
+      }).catch((e) => console.error('[CommandService] Failed to log command downlink:', e));
+    }
     record.sentAt = new Date();
     this.transitionStatus(record, CommandStatus.SENT);
     this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_SENT, record);
@@ -260,6 +278,22 @@ export class CommandService {
     } else {
       this.transitionStatus(record, CommandStatus.FAILED, 'DEVICE_FAILED', ack.message);
       this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_FAILED, record);
+    }
+
+    if (this.commLogService) {
+      const devState = this.deviceStatusService.getDevice(record.deviceNo);
+      const productKey = devState?.productKey || 'default';
+      this.commLogService.logMessage({
+        tenantId: record.tenantId,
+        vehicleId: record.vehicleId,
+        deviceNo: record.deviceNo,
+        traceId: ack.traceId,
+        requestId: ack.requestId,
+        direction: CommunicationDirection.UPLINK,
+        channel: CommunicationChannel.MQTT,
+        topic: MqttTopicBuilder.commandAck(productKey, record.deviceNo),
+        payload: ack,
+      }).catch((e) => console.error('[CommandService] Failed to log ACK commLog:', e));
     }
 
     if (this.auditService) {
