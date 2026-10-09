@@ -11,4 +11,20 @@ export class VehicleRepository extends TenantAwareRepository<Vehicle> {
     const list = await this.findMany((v) => v.deviceId === deviceId);
     return list[0] ?? null;
   }
+
+  async updateDeviceId(vehicleId: string, deviceId?: string): Promise<boolean> {
+    const vehicle = await this.findById(vehicleId);
+    if (!vehicle) return false;
+    vehicle.deviceId = deviceId;
+    vehicle.updatedAt = new Date();
+    return true;
+  }
+
+  async updateStatus(vehicleId: string, status: Vehicle['status']): Promise<boolean> {
+    const vehicle = await this.findById(vehicleId);
+    if (!vehicle) return false;
+    vehicle.status = status;
+    vehicle.updatedAt = new Date();
+    return true;
+  }
 }
