@@ -7,7 +7,8 @@ import { CommandStatus } from './command-status.js';
 export interface CreateCommandRequestDto {
   commandCode: CommandCode;
   idempotencyKey: string;
-  securityCode?: string; // L1/L2 安全验证码
+  securityCode?: string; // L1 安全验证码
+  confirmationToken?: string; // L2 强安全二次确认凭据
   params?: Record<string, unknown>;
 }
 

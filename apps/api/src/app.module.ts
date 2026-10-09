@@ -1,5 +1,9 @@
 import { Module } from '@nestjs/common';
-import { DeviceRepository, VehicleRepository } from '@car-control/database';
+import {
+  DeviceRepository,
+  VehicleRepository,
+  CapabilityRepository,
+} from '@car-control/database';
 import { InMemoryMessagingAdapter } from './messaging/in-memory-messaging.adapter.js';
 import { DeviceStatusService } from './device/device-status.service.js';
 import { WebSocketGatewayService } from './realtime/websocket.gateway.js';
@@ -15,6 +19,8 @@ import { DeviceService } from './device/device.service.js';
 import { DeviceController } from './device/device.controller.js';
 import { VehicleService } from './vehicle/vehicle.service.js';
 import { VehicleController } from './vehicle/vehicle.controller.js';
+import { CapabilityEngine } from './capability/capability.engine.js';
+import { ControlSecurityService } from './security/control-security.service.js';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard.js';
 import { PermissionsGuard } from './auth/guards/permissions.guard.js';
 
@@ -33,8 +39,11 @@ import { PermissionsGuard } from './auth/guards/permissions.guard.js';
     },
     DeviceRepository,
     VehicleRepository,
+    CapabilityRepository,
     DeviceStatusService,
     WebSocketGatewayService,
+    CapabilityEngine,
+    ControlSecurityService,
     CommandService,
     UserService,
     TenantService,
@@ -51,6 +60,9 @@ import { PermissionsGuard } from './auth/guards/permissions.guard.js';
     DeviceStatusService,
     WebSocketGatewayService,
     'MessagingPort',
+    CapabilityRepository,
+    CapabilityEngine,
+    ControlSecurityService,
     UserService,
     TenantService,
     ProjectService,

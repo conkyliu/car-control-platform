@@ -6,3 +6,4 @@ export * from './websocket/ws-events.js';
 export * from './auth/auth-dtos.js';
 export * from './device/device-dtos.js';
 export * from './vehicle/vehicle-dtos.js';
+export * from './capability/capability-dtos.js';

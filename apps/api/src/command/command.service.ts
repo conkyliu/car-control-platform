@@ -1,4 +1,10 @@
-import { Injectable, Inject, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  BadRequestException,
+  NotFoundException,
+  Optional,
+} from '@nestjs/common';
 import {
   CommandCode,
   CommandStatus,
@@ -10,19 +16,25 @@ import {
   DeviceCommandDownlinkPayload,
 } from '@car-control/contracts';
 import { CommandRecord } from '@car-control/domain-types';
+import { VehicleRepository } from '@car-control/database';
 import { MessagingPort } from '../messaging/messaging.port.js';
 import { DeviceStatusService } from '../device/device-status.service.js';
 import { WebSocketGatewayService } from '../realtime/websocket.gateway.js';
+import { CapabilityEngine } from '../capability/capability.engine.js';
+import { ControlSecurityService } from '../security/control-security.service.js';
+import { AuditService } from '../audit/audit.service.js';
 
 export interface ExecuteCommandInput {
   tenantId: string;
-  projectId: string;
+  projectId?: string;
   vehicleId: string;
-  deviceNo: string;
-  productKey: string;
+  deviceNo?: string;
+  productKey?: string;
   commandCode: CommandCode;
   idempotencyKey: string;
   operatorId: string;
+  securityCode?: string;
+  confirmationToken?: string;
   params?: Record<string, unknown>;
   customTimeoutMs?: number;
 }
@@ -36,7 +48,11 @@ export class CommandService {
   constructor(
     @Inject('MessagingPort') private readonly messagingPort: MessagingPort,
     private readonly deviceStatusService: DeviceStatusService,
-    private readonly wsGateway: WebSocketGatewayService
+    private readonly wsGateway: WebSocketGatewayService,
+    @Optional() private readonly capabilityEngine?: CapabilityEngine,
+    @Optional() private readonly securityService?: ControlSecurityService,
+    @Optional() private readonly vehicleRepo?: VehicleRepository,
+    @Optional() private readonly auditService?: AuditService
   ) {
     // 监听设备上行 ACK 报文
     this.messagingPort.onAck((ack) => {
@@ -54,10 +70,10 @@ export class CommandService {
   }
 
   /**
-   * 创建并下发控车指令
+   * 创建并下发控车指令 (12 步安全流水线)
    */
   async executeCommand(input: ExecuteCommandInput): Promise<CommandRecord> {
-    // 1. 幂等校验
+    // 1. 客户端幂等校验 (防重发)
     const existingCommandId = this.idempotencyIndex.get(input.idempotencyKey);
     if (existingCommandId) {
       const existing = this.commandStore.get(existingCommandId);
@@ -71,21 +87,77 @@ export class CommandService {
       throw new BadRequestException(`Unsupported command code: ${input.commandCode}`);
     }
 
+    // 2. 车辆信息与绑定关系检查
+    let deviceNo = input.deviceNo;
+    let productKey = input.productKey || 'CAR_DEMO_PK';
+    let projectId = input.projectId || 'proj_default';
+
+    if (this.vehicleRepo) {
+      const vehicle = await this.vehicleRepo.findById(input.vehicleId);
+      if (vehicle) {
+        projectId = vehicle.projectId;
+        if (!deviceNo && vehicle.deviceId) {
+          deviceNo = vehicle.deviceId;
+        }
+
+        // 3. 车辆运营风控状态检查 (MAINTENANCE, LOCKED)
+        if (this.securityService) {
+          this.securityService.checkVehicleOperatingState(vehicle, input.commandCode);
+        }
+      }
+    }
+
+    if (!deviceNo) {
+      deviceNo = `TBOX_${input.vehicleId}`;
+    }
+
+    // 4. 三级能力继承生效检查 (Capability Engine)
+    let effectiveSecurityLevel = meta.defaultSecurityLevel;
+    let effectiveTimeoutMs = meta.defaultTimeoutMs;
+    let effectiveLimitSeconds = 5;
+
+    if (this.capabilityEngine) {
+      const effective = await this.capabilityEngine.resolveEffective(input.vehicleId, input.commandCode);
+      if (!effective.supported) {
+        throw new BadRequestException(
+          `Command ${input.commandCode} is not supported for vehicle ${input.vehicleId} (Reason: ${effective.reason || 'UNSUPPORTED'})`
+        );
+      }
+      effectiveSecurityLevel = effective.securityLevel;
+      effectiveTimeoutMs = effective.timeoutMs;
+      effectiveLimitSeconds = effective.frequencyLimitSeconds;
+    }
+
+    // 5. 滑动窗口频次限流检查 (Rate Limiting)
+    if (this.securityService) {
+      this.securityService.checkRateLimit(input.vehicleId, input.commandCode, effectiveLimitSeconds);
+    }
+
+    // 6. 控车安全等级检查 (L0 / L1 安全码 / L2 强确认)
+    if (this.securityService) {
+      this.securityService.verifySecurityLevel(
+        effectiveSecurityLevel,
+        input.securityCode,
+        input.confirmationToken
+      );
+      this.securityService.recordRateLimit(input.vehicleId, input.commandCode);
+    }
+
     const commandId = `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
     const traceId = `trace_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-    // 2. 初始记录 (CREATED)
+    // 7. 初始记录 (CREATED)
     const record: CommandRecord = {
       id: commandId,
       tenantId: input.tenantId,
-      projectId: input.projectId,
+      projectId,
       vehicleId: input.vehicleId,
-      deviceId: input.deviceNo,
-      deviceNo: input.deviceNo,
+      deviceId: deviceNo,
+      deviceNo,
       commandCode: input.commandCode,
       status: CommandStatus.CREATED,
-      securityLevel: meta.defaultSecurityLevel,
+      securityLevel: effectiveSecurityLevel,
       idempotencyKey: input.idempotencyKey,
       traceId,
       requestId,
@@ -98,15 +170,15 @@ export class CommandService {
     this.commandStore.set(commandId, record);
     this.idempotencyIndex.set(input.idempotencyKey, commandId);
 
-    // 3. 校验设备是否在线
-    if (!this.deviceStatusService.isOnline(input.deviceNo)) {
+    // 8. 校验设备是否在线
+    if (!this.deviceStatusService.isOnline(deviceNo)) {
       this.transitionStatus(record, CommandStatus.VALIDATING);
       this.transitionStatus(record, CommandStatus.FAILED, 'DEVICE_OFFLINE', 'Device is currently offline');
       this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_FAILED, record);
       return record;
     }
 
-    // 4. 状态机流转: CREATED -> VALIDATING -> QUEUED -> SENDING -> SENT -> WAITING_ACK
+    // 9. 状态机流转: CREATED -> VALIDATING -> QUEUED -> SENDING -> SENT -> WAITING_ACK
     this.transitionStatus(record, CommandStatus.VALIDATING);
     this.transitionStatus(record, CommandStatus.QUEUED);
     this.transitionStatus(record, CommandStatus.SENDING);
@@ -120,20 +192,33 @@ export class CommandService {
       params: input.params,
     };
 
-    // 5. 消息层直通下发
-    await this.messagingPort.publishCommand(input.productKey, input.deviceNo, downlink);
+    // 10. 消息层直通下发
+    await this.messagingPort.publishCommand(productKey, deviceNo, downlink);
     record.sentAt = new Date();
     this.transitionStatus(record, CommandStatus.SENT);
     this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_SENT, record);
 
     this.transitionStatus(record, CommandStatus.WAITING_ACK);
 
-    // 6. 注册超时定时器 (支持自定义超时，默认使用指令定义超时)
-    const timeoutMs = input.customTimeoutMs ?? meta.defaultTimeoutMs;
+    // 11. 注册超时定时器
+    const timeoutMs = input.customTimeoutMs ?? effectiveTimeoutMs;
     const timer = setTimeout(() => {
       this.handleTimeout(commandId);
     }, timeoutMs);
     this.timeoutTimers.set(commandId, timer);
+
+    // 12. 审计日志
+    if (this.auditService) {
+      this.auditService.logAction({
+        tenantId: input.tenantId,
+        userId: input.operatorId,
+        action: 'COMMAND_DISPATCH',
+        resourceType: 'COMMAND',
+        resourceId: commandId,
+        traceId,
+        details: { commandCode: input.commandCode, vehicleId: input.vehicleId, deviceNo },
+      });
+    }
 
     return record;
   }
@@ -176,6 +261,18 @@ export class CommandService {
       this.transitionStatus(record, CommandStatus.FAILED, 'DEVICE_FAILED', ack.message);
       this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_FAILED, record);
     }
+
+    if (this.auditService) {
+      this.auditService.logAction({
+        tenantId: record.tenantId,
+        userId: record.operatorId,
+        action: 'COMMAND_ACK',
+        resourceType: 'COMMAND',
+        resourceId: record.id,
+        traceId: record.traceId,
+        details: { status: record.status, code: ack.code, message: ack.message },
+      });
+    }
   }
 
   /**
@@ -191,6 +288,17 @@ export class CommandService {
       this.transitionStatus(record, CommandStatus.TIMEOUT, 'TIMEOUT', 'Device response timed out');
       record.finishedAt = new Date();
       this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_TIMEOUT, record);
+
+      if (this.auditService) {
+        this.auditService.logAction({
+          tenantId: record.tenantId,
+          userId: record.operatorId,
+          action: 'COMMAND_TIMEOUT',
+          resourceType: 'COMMAND',
+          resourceId: record.id,
+          traceId: record.traceId,
+        });
+      }
     }
   }
 
