@@ -1,7 +1,7 @@
 # CURRENT.md · 当前执行状态记录
 
 > 最后更新：2026-10-09  
-> 当前阶段：**Gate 4 (Week 7-12) 实时业务与报警轨迹中心验收全部通过，全量回归测试 100% 通行，准备进入 Gate 5 (Week 11-14) 生产级高可用与运维监控**
+> 当前阶段：**Gate 5 (Week 11-16) OTA 固件升级系统验收全部通过，全量回归测试 100% 通行，准备进入 Gate 6 (Week 15-18) 生产级高可用与运维监控 (Production Readiness & Observability)**
 
 ## 1. 当前进展
 - **已完成**：
@@ -69,21 +69,46 @@
       - `TelemetryService` 与 `TelemetryController` 负责位置上报、热点缓存与 WebSocket 实时广播 (`LOCATION_UPDATED`)。
       - `AlarmService` 与 `AlarmController` 负责告警触发、WebSocket 广播 (`ALARM_TRIGGERED` / `ALARM_PROCESSED`)、人工处置闭环、终态防线与安全审计留痕。
       - `CommunicationLogService` 与 `CommunicationLogController` 负责下行控制、上行 ACK、定位与告警全链路自动归档与检索。
-    - **Gate 4 验收测试 7/7 项 (8/8 subtests) 100% 通过**：
-      1. 实时位置上报与 WebSocket 广播 (`LOCATION_UPDATED`)
-      2. 历史轨迹服务端 Douglas-Peucker 抽稀（<20% 点位，首尾点与转折点 100% 保持精准）
-      3. 圆形地理围栏出入判定与 `GEOFENCE_OUT` 报警触发
-      4. 设备端主动告警上报（`LOW_BATTERY` 与 `VIBRATION`）与 WebSocket 广播
-      5. 报警生命周期流转（`PROCESSED`）、留痕审计与不可逆终态保护
-      6. 通讯上下行日志自动沉淀（下行指令、ACK、定位、告警）与基于 vehicleId / traceId 检索
-      7. 多租户全方位安全隔离防线（最新定位、历史轨迹、告警列表与通讯日志跨租户完全隔离）
-    - **全工程全量回归测试通过率：87/87 (100% PASS)**。
+    - Gate 4 验收测试 7/7 项 100% 通过。
+  - [x] **Phase 10: Gate 5 OTA Firmware Upgrade System (Week 11-16 OTA 固件升级系统)**
+    - 领域规范与架构决策：
+      - `docs/specs/ota.md`（固件包元数据、分批并发调度、行车安全门禁、分片下载断点上报与生命周期拓扑）。
+      - `docs/adr/ADR-013-ota-firmware-pipeline-and-safety-precheck.md`（固件全生命周期流水线与行车安全前置检查决策）。
+      - `docs/adr/ADR-014-ota-batch-scheduling-and-resume.md`（分批并发限流调度与分片断点续传架构决策）。
+    - 共享契约与 DTOs：
+      - `OtaPlanStatus`, `OtaTaskStatus`, `OtaStep`, `OtaTargetType`, `OtaPreCheckConfig`。
+      - `FirmwarePackageDto`, `CreateFirmwareDto`, `OtaPlanDto`, `CreateOtaPlanDto`, `OtaDeviceTaskDto`。
+      - `OtaUpgradeDownlinkPayload`, `OtaProgressPayload`。
+      - `MqttTopicBuilder.otaUpgrade(...)` 与 `MqttTopicBuilder.otaProgress(...)`。
+      - `WebSocketEvent.OTA_PROGRESS`, `WebSocketEvent.OTA_COMPLETED`。
+    - 多租户数据仓储层：
+      - `FirmwareRepository` 支持车型版本唯一性索引与多租户安全查询。
+      - `OtaPlanRepository` 支持原子累加计数器 (`successDevices`, `failedDevices`) 与生命周期状态转移。
+      - `OtaTaskRepository` 严格防线保护，终态任务单向不可逆。
+    - 模拟器仿真引擎：
+      - `DeviceSimulator` 订阅 OTA 下行指令，支持行车状态/电压安全拦截、分片下载（25% -> 50% -> 100%）、SHA256 完整性校验、FLASHING 仿真与 SUCCESS 自动更新本地固件版本。
+      - 支持故障注入参数 (`failOtaAtStep`) 验证失败重试链路。
+    - 核心业务服务与控制器：
+      - `FirmwareService`（固件创建、SHA-256 自动计算、同车型版本冲突检测、租户隔离检索）。
+      - `OtaSafetyService`（行车状态与小蓄电池低压强安全前置门禁）。
+      - `OtaPlanService`（多维目标设备解析、分批次并发下发、安全拦截与原子计数）。
+      - `OtaProgressService`（MQTT 进度消费、任务状态映射、WebSocket 房间广播、计划完成自动闭环）。
+      - `OtaController`（RESTful API 暴露与多租户权限校验防护）。
+    - **Gate 5 验收测试 7/7 项 (8/8 subtests) 100% 通过** (`ota-firmware.e2e.test.ts`):
+      1. 固件版本管理与 SHA256 完整性校验 (AC-1)
+      2. 多维目标设备解析筛选 (MODEL / PROJECT / DEVICE_LIST / ALL) 与任务 QUEUED 初始化 (AC-2)
+      3. 行车安全前置门禁拦截 (Engine ON / Low Voltage -> SKIPPED_UNSAFE) 与原子计数累加 (AC-3)
+      4. 分批次并发调度下发与 MQTT 下行升级指令派发 (AC-4)
+      5. 设备模拟器升级进度全链路闭环 (DOWNLOADING -> VERIFYING -> FLASHING -> SUCCESS)、WebSocket 实时推送与本地固件版本更新 (AC-5)
+      6. 升级失败与重试机制 (错误原因记录、重试计数递增、失败设备统计累加) (AC-6)
+      7. 多租户安全隔离防线 (固件/计划/任务跨租户完全隔离、404/403 严格阻断、跨租户版本共存) (AC-7)
+    - **全工程全量回归测试通过率：77/77 tests (100% PASS)**。
 
 - **阻塞项**：无。
-- **已知问题**：已修复 `CommandService` 与 `CommunicationLogService` 对上行 ACK 的重复归档问题，清除 `AppModule` 冗余 provider 声明，全套验收测试稳定全绿。
+- **已知问题**：无。
 
 ## 2. 下一步任务
-- 启动 **Gate 5 (Week 11-14): Production Readiness & Observability (生产级高可用与运维监控)**：
+- 启动 **Gate 6 (Week 15-18): Production Readiness & Observability (生产级高可用与运维监控)**：
   1. 分布式缓存与 Redis 集成方案评估。
   2. Prometheus 指标与 OpenTelemetry 分布式链路追踪接入。
   3. 压测用例构建与性能调优（高并发下行控车与密集遥测上报）。

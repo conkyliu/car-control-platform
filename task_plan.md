@@ -45,7 +45,22 @@
     - [x] Criteria 6: Communication log auto-archiving & multi-dimensional queries
     - [x] Criteria 7: Multi-tenant security isolation boundary across all telemetry/alarm/log resources
 
-- [ ] **Gate 5 (Week 11-14): Production Readiness & Observability**
+- [x] **Gate 5 (Week 11-16): OTA Firmware Upgrade System**
+  - [x] **Task 1**: OTA domain specifications & ADRs (`docs/specs/ota.md`, `ADR-013`, `ADR-014`)
+  - [x] **Task 2**: OTA shared contracts & DTOs (`packages/contracts`, `packages/domain-types`)
+  - [x] **Task 3**: Multi-tenant database repositories (`FirmwareRepository`, `OtaPlanRepository`, `OtaTaskRepository`)
+  - [x] **Task 4**: Simulator extensions for OTA upgrade reception, safety pre-check & progress simulation
+  - [x] **Task 5**: Core business services & scheduling engine (`FirmwareService`, `OtaSafetyService`, `OtaPlanService`, `OtaProgressService`, `OtaController`)
+  - [x] **Task 6**: Gate 5 E2E acceptance suite (`ota-firmware.e2e.test.ts`) & full regression verification
+    - [x] Criteria 1: Firmware package management & SHA256 integrity check (auto-calculation & uniqueness constraint)
+    - [x] Criteria 2: Multi-dimensional target resolution (MODEL / PROJECT / DEVICE_LIST / ALL) & QUEUED initialization
+    - [x] Criteria 3: Safety pre-check enforcement (Engine ON / Low Voltage < 12.0V -> SKIPPED_UNSAFE) & atomic skipped counter
+    - [x] Criteria 4: Batch scheduling & downlink MQTT upgrade command dispatch
+    - [x] Criteria 5: Device simulator full upgrade lifecycle closed loop & WebSocket broadcast (DOWNLOADING -> VERIFYING -> FLASHING -> SUCCESS -> COMPLETED)
+    - [x] Criteria 6: Upgrade failure handling & retry counter increment (FLASHING failure simulation)
+    - [x] Criteria 7: Multi-tenant security isolation boundary across firmware, plans, and tasks
+
+- [ ] **Gate 6 (Week 15-18): Production Readiness & Observability**
   - [ ] Distributed Redis cache & rate limiter integration
   - [ ] OpenTelemetry distributed tracing & Prometheus metrics
   - [ ] High-concurrency load testing & performance benchmarking
