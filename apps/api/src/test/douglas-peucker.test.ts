@@ -237,25 +237,39 @@ test('Telemetry & Geofence Service Unit and Integration Test Suite', async (t) =
     assert.equal(wsEvents[1].event, WebSocketEvent.LOCATION_UPDATED);
     assert.deepEqual(wsEvents[1].payload, locPayload2);
 
-    // Verify Latest Location query
-    const latest = await telemetryService.getLatestLocation(vehicleId);
+    // Verify Fail-Secure: Operating without TenantContext must reject
+    await assert.rejects(
+      async () => {
+        await telemetryService.getLatestLocation(vehicleId);
+      },
+      {
+        message: /TenantContext required/,
+      }
+    );
+
+    // Verify Latest Location query under active TenantContext
+    const latest = await TenantContext.run({ tenantId, userId: 'admin' }, async () => {
+      return telemetryService.getLatestLocation(vehicleId);
+    });
     assert.ok(latest);
     assert.equal(latest!.timestamp, t0 + 10000);
     assert.equal(latest!.lat, 31.2314);
 
-    // Verify Trajectory query with simplification
-    const trajectory = await telemetryService.getTrajectory(
-      vehicleId,
-      new Date(t0 - 1000),
-      new Date(t0 + 20000),
-      TrajectoryTolerance.DEFAULT
-    );
+    // Verify Trajectory query with simplification under active TenantContext
+    const trajectory = await TenantContext.run({ tenantId, userId: 'admin' }, async () => {
+      return telemetryService.getTrajectory(
+        vehicleId,
+        new Date(t0 - 1000),
+        new Date(t0 + 20000),
+        TrajectoryTolerance.DEFAULT
+      );
+    });
     assert.equal(trajectory.length, 2);
     assert.deepEqual(trajectory[0], locPayload1);
     assert.deepEqual(trajectory[1], locPayload2);
   });
 
-  await t.test('8. TelemetryController: REST endpoints for latest location and trajectory', async () => {
+  await t.test('8. TelemetryController: REST endpoints with TenantContext propagation and isolation guard', async () => {
     const locationRepo = new LocationRepository();
     const vehicleRepo = new VehicleRepository();
     const wsGateway = new WebSocketGatewayService();
@@ -271,11 +285,15 @@ test('Telemetry & Geofence Service Unit and Integration Test Suite', async (t) =
     );
     const controller = new TelemetryController(telemetryService);
 
-    const tenantId = 'TENANT_CTRL_01';
+    const tenantIdA = 'TENANT_CTRL_01';
+    const tenantIdB = 'TENANT_CTRL_B';
     const vehicleId = 'veh_ctrl_001';
     const deviceNo = 'TBOX_CTRL_001';
 
-    await TenantContext.run({ tenantId, userId: 'admin' }, async () => {
+    const reqUserA = { user: { tenantId: tenantIdA, sub: 'user_admin', roles: ['OPERATOR'] } };
+    const reqUserB = { user: { tenantId: tenantIdB, sub: 'user_b', roles: ['OPERATOR'] } };
+
+    await TenantContext.run({ tenantId: tenantIdA, userId: 'admin' }, async () => {
       await vehicleRepo.create({
         id: vehicleId,
         projectId: 'proj_01',
@@ -290,17 +308,17 @@ test('Telemetry & Geofence Service Unit and Integration Test Suite', async (t) =
       });
     });
 
-    // 404 on vehicle with no locations
+    // 404 on vehicle with no locations in Tenant A
     await assert.rejects(
       async () => {
-        await controller.getLatestLocation('non_existent_vehicle');
+        await controller.getLatestLocation('non_existent_vehicle', reqUserA);
       },
       {
         name: 'NotFoundException',
       }
     );
 
-    // Save location
+    // Save location for Tenant A's vehicle
     const t0 = 1791510000000;
     await telemetryService.handleLocationUplink(deviceNo, {
       lat: 31.2300,
@@ -309,17 +327,40 @@ test('Telemetry & Geofence Service Unit and Integration Test Suite', async (t) =
       timestamp: t0,
     });
 
-    const latest = await controller.getLatestLocation(vehicleId);
-    assert.equal(latest.lat, 31.2300);
+    // Tenant A queries latest location successfully
+    const latestA = await controller.getLatestLocation(vehicleId, reqUserA);
+    assert.equal(latestA.lat, 31.2300);
 
-    const trajDto = await controller.getTrajectory(
+    // Tenant A queries trajectory successfully
+    const trajDtoA = await controller.getTrajectory(
       vehicleId,
       new Date(t0 - 1000).toISOString(),
       new Date(t0 + 1000).toISOString(),
-      '0.0001'
+      '0.0001',
+      reqUserA
     );
-    assert.equal(trajDto.vehicleId, vehicleId);
-    assert.equal(trajDto.simplifiedCount, 1);
-    assert.equal(trajDto.points.length, 1);
+    assert.equal(trajDtoA.vehicleId, vehicleId);
+    assert.equal(trajDtoA.simplifiedCount, 1);
+    assert.equal(trajDtoA.points.length, 1);
+
+    // Cross-tenant security check: Tenant B attempts to access Tenant A vehicle
+    await assert.rejects(
+      async () => {
+        await controller.getLatestLocation(vehicleId, reqUserB);
+      },
+      {
+        name: 'NotFoundException',
+        message: /not found/,
+      }
+    );
+
+    const trajDtoB = await controller.getTrajectory(
+      vehicleId,
+      new Date(t0 - 1000).toISOString(),
+      new Date(t0 + 1000).toISOString(),
+      '0.0001',
+      reqUserB
+    );
+    assert.equal(trajDtoB.points.length, 0, 'Tenant B must receive 0 trajectory points for Tenant A vehicle');
   });
 });

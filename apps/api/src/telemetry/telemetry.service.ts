@@ -61,29 +61,15 @@ export class TelemetryService {
 
   /**
    * 获取车辆最新位置（热数据）
+   * 严格受调用方激活的 TenantContext 约束，禁止未授权跨租户提取
    */
   async getLatestLocation(vehicleId: string): Promise<TelemetryLocationPayload | null> {
-    const session = TenantContext.getOptional();
-    if (session?.tenantId) {
-      return this.locationRepo.getLatestLocation(vehicleId);
-    }
-
-    // 若无外层租户上下文，则通过 vehicleId 解析所属租户
-    const vehicle = await this.vehicleRepo.findById(vehicleId);
-    if (!vehicle) {
-      return null;
-    }
-
-    return TenantContext.run(
-      { tenantId: vehicle.tenantId, userId: 'system' },
-      async () => {
-        return this.locationRepo.getLatestLocation(vehicleId);
-      }
-    );
+    return this.locationRepo.getLatestLocation(vehicleId);
   }
 
   /**
    * 查询车辆历史轨迹并使用 Douglas-Peucker 算法抽稀回放
+   * 严格受调用方激活的 TenantContext 约束
    */
   async getTrajectory(
     vehicleId: string,
@@ -91,25 +77,7 @@ export class TelemetryService {
     end: Date,
     tolerance?: number
   ): Promise<TelemetryLocationPayload[]> {
-    const session = TenantContext.getOptional();
-    let rawPoints: TelemetryLocationPayload[];
-
-    if (session?.tenantId) {
-      rawPoints = await this.locationRepo.getTrajectory(vehicleId, start, end);
-    } else {
-      const vehicle = await this.vehicleRepo.findById(vehicleId);
-      if (!vehicle) {
-        return [];
-      }
-      rawPoints = await TenantContext.run(
-        { tenantId: vehicle.tenantId, userId: 'system' },
-        async () => {
-          return this.locationRepo.getTrajectory(vehicleId, start, end);
-        }
-      );
-    }
-
-    // 执行 Douglas-Peucker 抽稀
+    const rawPoints = await this.locationRepo.getTrajectory(vehicleId, start, end);
     return douglasPeucker(rawPoints, tolerance);
   }
 }

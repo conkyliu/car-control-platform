@@ -30,7 +30,8 @@ export class GeofenceService {
       Math.sin(dLat / 2) * Math.sin(dLat / 2) +
       Math.cos(lat1Rad) * Math.cos(lat2Rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
 
-    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    const clampedA = Math.max(0, Math.min(1, a));
+    const c = 2 * Math.atan2(Math.sqrt(clampedA), Math.sqrt(1 - clampedA));
 
     return GeofenceService.EARTH_RADIUS_METERS * c;
   }
