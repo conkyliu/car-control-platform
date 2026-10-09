@@ -21,6 +21,10 @@ export enum WebSocketEvent {
   ALARM_TRIGGERED = 'alarm.triggered',
   ALARM_PROCESSED = 'alarm.processed',
   LOCATION_UPDATED = 'location.updated',
+
+  // OTA 固件升级事件
+  OTA_PROGRESS = 'ota.progress',
+  OTA_COMPLETED = 'ota.completed',
 }
 
 /**
@@ -37,5 +41,9 @@ export class WebSocketRoomBuilder {
 
   static tenantRoom(tenantId: string): string {
     return `tenant:${tenantId}`;
+  }
+
+  static otaPlanRoom(planId: string): string {
+    return `ota-plan:${planId}`;
   }
 }

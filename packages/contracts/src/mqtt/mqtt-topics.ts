@@ -51,6 +51,22 @@ export class MqttTopicBuilder {
   }
 
   /**
+   * 云端下发固件升级指令 Topic
+   * /sys/{productKey}/{deviceNo}/ota/upgrade
+   */
+  static otaUpgrade(productKey: string, deviceNo: string): string {
+    return `/sys/${productKey}/${deviceNo}/ota/upgrade`;
+  }
+
+  /**
+   * 设备上报固件升级进度 Topic
+   * /sys/{productKey}/{deviceNo}/ota/progress
+   */
+  static otaProgress(productKey: string, deviceNo: string): string {
+    return `/sys/${productKey}/${deviceNo}/ota/progress`;
+  }
+
+  /**
    * 解析 Topic 中的 productKey 和 deviceNo
    */
   static parse(topic: string): { productKey: string; deviceNo: string; action: string } | null {
