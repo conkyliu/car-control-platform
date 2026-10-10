@@ -422,32 +422,33 @@ git commit -m "feat(api): implement tiered load test benchmark runner"
 - [x] **AC-6**: 1000 级设备高并发压测与 SLA 硬门禁（1000 次端到端并发，断言 Success $\ge 99.9\%$, $P_{50} \le 1.0\text{s}$, $P_{95} \le 2.0\text{s}$, $P_{99} \le 5.0\text{s}$，并生成基准报告）
 - [x] **AC-7**: 高压场景下的多租户强隔离防线（Tenant B 无法获取/修改/干扰 Tenant A 的缓存、锁及控车指令）
 
-- [ ] **Step 1: Write `apps/api/src/test/production-readiness.e2e.test.ts` implementing all 7 ACs**
+- [x] **Step 1: Write `apps/api/src/test/production-readiness.e2e.test.ts` implementing all 7 ACs**
 
 Use real repositories, real `DeviceSimulator`, `InMemoryMessagingAdapter`, `DistributedLockPort`, `MetricsService`, and `TracerService`.
 
-- [ ] **Step 2: Build API package**
+- [x] **Step 2: Build API package**
 
 Run: `pnpm --filter @car-control/api build`
 Expected: Build succeeds with 0 TypeScript errors.
 
-- [ ] **Step 3: Run Gate 6 E2E acceptance suite**
+- [x] **Step 3: Run Gate 6 E2E acceptance suite**
 
 Run: `node --test apps/api/dist/test/production-readiness.e2e.test.js`
 Expected: 7/7 (or 8/8 subtests) PASS with 0 failures.
 
-- [ ] **Step 4: Run full workspace regression test suite**
+- [x] **Step 4: Run full workspace regression test suite**
 
 Run: `pnpm test`
 Expected: All packages pass, 0 failures, 0 regressions.
 
-- [ ] **Step 5: Update `CURRENT.md` and `task_plan.md`**
+- [x] **Step 5: Update `CURRENT.md` and `task_plan.md`**
 
 Mark Gate 6 as completed and record metrics in `CURRENT.md`.
 
-- [ ] **Step 6: Write task report and commit**
+- [x] **Step 6: Write task report and commit**
 
 ```bash
 git add apps/api/src/test/production-readiness.e2e.test.ts CURRENT.md task_plan.md
-git commit -m "feat(gate-6): complete production readiness and observability with 100% pass acceptance suite"
+git commit -m "feat(gate-6): complete production readiness and observability milestone with 100% pass acceptance suite"
 ```
+

@@ -60,7 +60,18 @@
     - [x] Criteria 6: Upgrade failure handling & retry counter increment (FLASHING failure simulation)
     - [x] Criteria 7: Multi-tenant security isolation boundary across firmware, plans, and tasks
 
-- [ ] **Gate 6 (Week 15-18): Production Readiness & Observability**
-  - [ ] Distributed Redis cache & rate limiter integration
-  - [ ] OpenTelemetry distributed tracing & Prometheus metrics
-  - [ ] High-concurrency load testing & performance benchmarking
+- [x] **Gate 6 (Week 15-18): Production Readiness & Observability**
+  - [x] **Task 1**: Observability specifications & ADRs (`docs/specs/observability.md`, `ADR-015`, `ADR-016`)
+  - [x] **Task 2**: Distributed cache & mutex lock (`CachePort`, `DistributedLockPort`, `InMemoryLockAdapter`, `RedisLockAdapter`, `CommandService` lock integration)
+  - [x] **Task 3**: Prometheus metrics service & `GET /metrics` exposition (`MetricsService`, `MetricsController`, `ObservabilityModule`)
+  - [x] **Task 4**: OpenTelemetry W3C 5-Span distributed tracing (`TracerService`, `CommandTrace`, `STANDARD_SPAN_NAMES`)
+  - [x] **Task 5**: Tiered load test runner & performance benchmark generator (`LoadTestRunner`, `calculatePercentile`, `verifySla`, `generateMarkdownReport`)
+  - [x] **Task 6**: Gate 6 E2E acceptance suite (`production-readiness.e2e.test.ts`) & full regression verification
+    - [x] Criteria 1: Distributed cache & mutex lock (Single-vehicle concurrent lock 409 `VEHICLE_COMMAND_IN_PROGRESS`, terminal release)
+    - [x] Criteria 2: Prometheus metrics exposition (`GET /metrics` exports all 7 metrics with SLA buckets and types)
+    - [x] Criteria 3: OpenTelemetry 5-stage distributed span tracing (5 spans captured, contiguous, sum equals totalDurationMs)
+    - [x] Criteria 4: 100 device concurrency benchmark (Tier 1: 100 devices concurrent heartbeats and commands, 100% success, 0 error)
+    - [x] Criteria 5: 500 device concurrency smooth scaling (Tier 2: 500 devices concurrent commands via LoadTestRunner, success >= 99.9%, zero race conditions)
+    - [x] Criteria 6: 1000 device high-concurrency load test & SLA hard gates (Tier 3: 1000 requests, assert SLA: Success >= 99.9%, P50 <= 1.0s, P95 <= 2.0s, P99 <= 5.0s, print Markdown benchmark table)
+    - [x] Criteria 7: Multi-tenant strict isolation boundary under high load (Tenant B cannot read or mutate Tenant A lock or commands, isolation holds under load)
+

@@ -1,7 +1,7 @@
 # CURRENT.md · 当前执行状态记录
 
-> 最后更新：2026-10-09  
-> 当前阶段：**Gate 5 (Week 11-16) OTA 固件升级系统验收全部通过，全量回归测试 100% 通行，准备进入 Gate 6 (Week 15-18) 生产级高可用与运维监控 (Production Readiness & Observability)**
+> 最后更新：2026-10-10  
+> 当前阶段：**Gate 6 (Week 15-18) 生产级高可用与运维监控 (Production Readiness & Observability) 验收全部通过，全量回归测试 100% 通行，112/112 tests PASS，千级高并发压测与 SLA 硬门禁全部达标**
 
 ## 1. 当前进展
 - **已完成**：
@@ -94,21 +94,39 @@
       - `OtaPlanService`（多维目标设备解析、分批次并发下发、安全拦截与原子计数）。
       - `OtaProgressService`（MQTT 进度消费、任务状态映射、WebSocket 房间广播、计划完成自动闭环）。
       - `OtaController`（RESTful API 暴露与多租户权限校验防护）。
-    - **Gate 5 验收测试 7/7 项 (8/8 subtests) 100% 通过** (`ota-firmware.e2e.test.ts`):
-      1. 固件版本管理与 SHA256 完整性校验 (AC-1)
-      2. 多维目标设备解析筛选 (MODEL / PROJECT / DEVICE_LIST / ALL) 与任务 QUEUED 初始化 (AC-2)
-      3. 行车安全前置门禁拦截 (Engine ON / Low Voltage -> SKIPPED_UNSAFE) 与原子计数累加 (AC-3)
-      4. 分批次并发调度下发与 MQTT 下行升级指令派发 (AC-4)
-      5. 设备模拟器升级进度全链路闭环 (DOWNLOADING -> VERIFYING -> FLASHING -> SUCCESS)、WebSocket 实时推送与本地固件版本更新 (AC-5)
-      6. 升级失败与重试机制 (错误原因记录、重试计数递增、失败设备统计累加) (AC-6)
-      7. 多租户安全隔离防线 (固件/计划/任务跨租户完全隔离、404/403 严格阻断、跨租户版本共存) (AC-7)
-    - **全工程全量回归测试通过率：77/77 tests (100% PASS)**。
+    - Gate 5 验收测试 7/7 项 (8/8 subtests) 100% 通过 (`ota-firmware.e2e.test.ts`)。
+  - [x] **Phase 11: Gate 6 Production Readiness & Observability (Week 15-18 生产级高可用与运维监控)**
+    - 领域规范与架构决策：
+      - `docs/specs/observability.md`（Prometheus 7 项核心指标体系、SLA 关键直方图 Buckets、OpenTelemetry W3C 5-Span 分布式链路追踪、千级并发性能 SLA 门禁）。
+      - `docs/adr/ADR-015-distributed-lock-and-caching-strategy.md`（Hexagonal 架构解耦 CachePort/DistributedLockPort、Redis/InMemory 双模适配器、SET NX PX 与原子 Lua 释放）。
+      - `docs/adr/ADR-016-observability-metrics-and-e2e-benchmarks.md`（Prometheus 文本协议暴露、OpenTelemetry W3C Trace Context 贯穿与阶梯压测自动化验证）。
+    - 核心分布式缓存与排他锁：
+      - `CachePort`, `DistributedLockPort`, `InMemoryLockAdapter`, `RedisLockAdapter`。
+      - 车辆级互斥锁 `lock:cmd:${tenantId}:${vehicleId}`，同一车辆并发指令安全排他阻断 409 `VEHICLE_COMMAND_IN_PROGRESS`，终态 ACK 与超时自动释放。
+    - Prometheus 标准指标服务与端点：
+      - `MetricsService`, `MetricsController` (`GET /metrics`), `ObservabilityModule`。
+      - 支持全部 7 项核心指标（`car_commands_total`, `car_command_duration_seconds`, `car_telemetry_uplinks_total`, `car_alarms_total`, `car_active_simulators`, `car_websocket_connections`, `car_lock_contention_total`）。
+      - 直方图 Buckets 精准覆盖车控 SLA：`[0.05, 0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 5.0, 10.0]`。
+    - OpenTelemetry W3C 5 阶段分布式链路追踪：
+      - `TracerService`, `CommandTrace`, `STANDARD_SPAN_NAMES`。
+      - 覆盖 5 阶段：`http.inbound_request` ($T_0 \to T_1$), `command.security_and_dispatch` ($T_1 \to T_2$), `device.execution_ack` ($T_2 \to T_4$), `ack.processing_and_persistence` ($T_4 \to T_5$), `websocket.client_notification` ($T_5 \to T_6$)。
+      - 耗时和严格等于 `totalDurationMs`，符合 W3C 32-hex 规范。
+    - 阶梯式并发压测执行器与性能基准：
+      - `LoadTestRunner`, `calculatePercentile`, `verifySla`, `generateMarkdownReport`。
+      - 阶梯并发阶梯压测（100 / 500 / 1000 规模），自动化分位数计算与 GitHub Flavored Markdown 报表输出。
+    - **Gate 6 验收测试 7/7 项 (8/8 subtests) 100% 通过** (`production-readiness.e2e.test.ts`):
+      1. 分布式缓存与并发防重排他锁 (AC-1)
+      2. Prometheus 标准指标端点导出 (AC-2)
+      3. OpenTelemetry 5 阶段分布式 Span 链路追踪 (AC-3)
+      4. 100 设备并发基准测试 (Tier 1: 100 Device Concurrency) (AC-4)
+      5. 500 设备并发平滑扩展测试 (Tier 2: 500 Device Concurrency) (AC-5)
+      6. 1000 级设备高并发压测与 SLA 硬门禁 (Tier 3: 1000 Device Concurrency & SLA Gates) (AC-6)
+      7. 高压场景下的多租户强隔离防线 (AC-7)
+    - **全工程全量回归测试通过率：112/112 tests (100% PASS)**，0 失败 0 回归。
 
 - **阻塞项**：无。
 - **已知问题**：无。
 
 ## 2. 下一步任务
-- 启动 **Gate 6 (Week 15-18): Production Readiness & Observability (生产级高可用与运维监控)**：
-  1. 分布式缓存与 Redis 集成方案评估。
-  2. Prometheus 指标与 OpenTelemetry 分布式链路追踪接入。
-  3. 压测用例构建与性能调优（高并发下行控车与密集遥测上报）。
+- 全面总结项目全量 Gates (Gate 0 ~ Gate 6) 研发交付产物，输出生产环境部署指导手册与验收决议。
+
