@@ -27,9 +27,16 @@ import { TelemetryModule } from './telemetry/telemetry.module.js';
 import { AlarmModule } from './alarm/alarm.module.js';
 import { CommunicationLogModule } from './log/communication-log.module.js';
 import { OtaModule } from './ota/ota.module.js';
+import { CacheModule } from './common/cache/cache.module.js';
 
 @Module({
-  imports: [TelemetryModule, AlarmModule, CommunicationLogModule, OtaModule],
+  imports: [
+    TelemetryModule,
+    AlarmModule,
+    CommunicationLogModule,
+    OtaModule,
+    CacheModule,
+  ],
   controllers: [
     CommandController,
     AuthController,
@@ -78,6 +85,7 @@ import { OtaModule } from './ota/ota.module.js';
     AlarmModule,
     CommunicationLogModule,
     OtaModule,
+    CacheModule,
   ],
 })
 export class AppModule {}

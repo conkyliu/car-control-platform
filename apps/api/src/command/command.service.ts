@@ -3,6 +3,7 @@ import {
   Inject,
   BadRequestException,
   NotFoundException,
+  ConflictException,
   Optional,
 } from '@nestjs/common';
 import {
@@ -27,6 +28,7 @@ import { CapabilityEngine } from '../capability/capability.engine.js';
 import { ControlSecurityService } from '../security/control-security.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CommunicationLogService } from '../log/communication-log.service.js';
+import { DistributedLockPort, LockHandle } from '../common/cache/cache.port.js';
 
 export interface ExecuteCommandInput {
   tenantId: string;
@@ -48,6 +50,7 @@ export class CommandService {
   private commandStore: Map<string, CommandRecord> = new Map();
   private idempotencyIndex: Map<string, string> = new Map(); // idempotencyKey -> commandId
   private timeoutTimers: Map<string, NodeJS.Timeout> = new Map();
+  private activeLocks: Map<string, LockHandle> = new Map();
 
   constructor(
     @Inject('MessagingPort') private readonly messagingPort: MessagingPort,
@@ -57,7 +60,8 @@ export class CommandService {
     @Optional() private readonly securityService?: ControlSecurityService,
     @Optional() private readonly vehicleRepo?: VehicleRepository,
     @Optional() private readonly auditService?: AuditService,
-    @Optional() private readonly commLogService?: CommunicationLogService
+    @Optional() private readonly commLogService?: CommunicationLogService,
+    @Inject('DistributedLockPort') @Optional() private readonly lockPort?: DistributedLockPort
   ) {
     // 监听设备上行 ACK 报文
     this.messagingPort.onAck((ack) => {
@@ -75,7 +79,7 @@ export class CommandService {
   }
 
   /**
-   * 创建并下发控车指令 (12 步安全流水线)
+   * 创建并下发控车指令 (12 步安全流水线 + 分布式防重锁)
    */
   async executeCommand(input: ExecuteCommandInput): Promise<CommandRecord> {
     // 1. 客户端幂等校验 (防重发)
@@ -87,164 +91,187 @@ export class CommandService {
       }
     }
 
-    const meta = COMMAND_DEFINITIONS[input.commandCode];
-    if (!meta) {
-      throw new BadRequestException(`Unsupported command code: ${input.commandCode}`);
-    }
-
-    // 2. 车辆信息与绑定关系检查
-    let deviceNo = input.deviceNo;
-    let productKey = input.productKey || 'CAR_DEMO_PK';
-    let projectId = input.projectId || 'proj_default';
-
-    if (this.vehicleRepo) {
-      const vehicle = await this.vehicleRepo.findById(input.vehicleId);
-      if (vehicle) {
-        projectId = vehicle.projectId;
-        if (!deviceNo && vehicle.deviceId) {
-          deviceNo = vehicle.deviceId;
-        }
-
-        // 3. 车辆运营风控状态检查 (MAINTENANCE, LOCKED)
-        if (this.securityService) {
-          this.securityService.checkVehicleOperatingState(vehicle, input.commandCode);
-        }
+    // 分布式防重锁 (互斥同一车辆的并发指令)
+    const lockKey = `lock:cmd:${input.tenantId}:${input.vehicleId}`;
+    let lock: LockHandle | null = null;
+    if (this.lockPort) {
+      lock = await this.lockPort.acquire(lockKey, 10000);
+      if (!lock) {
+        throw new ConflictException('VEHICLE_COMMAND_IN_PROGRESS');
       }
     }
 
-    if (!deviceNo) {
-      deviceNo = `TBOX_${input.vehicleId}`;
-    }
+    try {
+      const meta = COMMAND_DEFINITIONS[input.commandCode];
+      if (!meta) {
+        throw new BadRequestException(`Unsupported command code: ${input.commandCode}`);
+      }
 
-    // 4. 三级能力继承生效检查 (Capability Engine)
-    let effectiveSecurityLevel = meta.defaultSecurityLevel;
-    let effectiveTimeoutMs = meta.defaultTimeoutMs;
-    let effectiveLimitSeconds = 5;
+      // 2. 车辆信息与绑定关系检查
+      let deviceNo = input.deviceNo;
+      let productKey = input.productKey || 'CAR_DEMO_PK';
+      let projectId = input.projectId || 'proj_default';
 
-    if (this.capabilityEngine) {
-      const effective = await this.capabilityEngine.resolveEffective(input.vehicleId, input.commandCode);
-      if (!effective.supported) {
-        throw new BadRequestException(
-          `Command ${input.commandCode} is not supported for vehicle ${input.vehicleId} (Reason: ${effective.reason || 'UNSUPPORTED'})`
+      if (this.vehicleRepo) {
+        const vehicle = await this.vehicleRepo.findById(input.vehicleId);
+        if (vehicle) {
+          projectId = vehicle.projectId;
+          if (!deviceNo && vehicle.deviceId) {
+            deviceNo = vehicle.deviceId;
+          }
+
+          // 3. 车辆运营风控状态检查 (MAINTENANCE, LOCKED)
+          if (this.securityService) {
+            this.securityService.checkVehicleOperatingState(vehicle, input.commandCode);
+          }
+        }
+      }
+
+      if (!deviceNo) {
+        deviceNo = `TBOX_${input.vehicleId}`;
+      }
+
+      // 4. 三级能力继承生效检查 (Capability Engine)
+      let effectiveSecurityLevel = meta.defaultSecurityLevel;
+      let effectiveTimeoutMs = meta.defaultTimeoutMs;
+      let effectiveLimitSeconds = 5;
+
+      if (this.capabilityEngine) {
+        const effective = await this.capabilityEngine.resolveEffective(input.vehicleId, input.commandCode);
+        if (!effective.supported) {
+          throw new BadRequestException(
+            `Command ${input.commandCode} is not supported for vehicle ${input.vehicleId} (Reason: ${effective.reason || 'UNSUPPORTED'})`
+          );
+        }
+        effectiveSecurityLevel = effective.securityLevel;
+        effectiveTimeoutMs = effective.timeoutMs;
+        effectiveLimitSeconds = effective.frequencyLimitSeconds;
+      }
+
+      // 5. 滑动窗口频次限流检查 (Rate Limiting)
+      if (this.securityService) {
+        this.securityService.checkRateLimit(input.vehicleId, input.commandCode, effectiveLimitSeconds);
+      }
+
+      // 6. 控车安全等级检查 (L0 / L1 安全码 / L2 强确认)
+      if (this.securityService) {
+        this.securityService.verifySecurityLevel(
+          effectiveSecurityLevel,
+          input.securityCode,
+          input.confirmationToken
         );
+        this.securityService.recordRateLimit(input.vehicleId, input.commandCode);
       }
-      effectiveSecurityLevel = effective.securityLevel;
-      effectiveTimeoutMs = effective.timeoutMs;
-      effectiveLimitSeconds = effective.frequencyLimitSeconds;
-    }
 
-    // 5. 滑动窗口频次限流检查 (Rate Limiting)
-    if (this.securityService) {
-      this.securityService.checkRateLimit(input.vehicleId, input.commandCode, effectiveLimitSeconds);
-    }
+      const commandId = `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+      const traceId = `trace_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 
-    // 6. 控车安全等级检查 (L0 / L1 安全码 / L2 强确认)
-    if (this.securityService) {
-      this.securityService.verifySecurityLevel(
-        effectiveSecurityLevel,
-        input.securityCode,
-        input.confirmationToken
-      );
-      this.securityService.recordRateLimit(input.vehicleId, input.commandCode);
-    }
-
-    const commandId = `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-    const traceId = `trace_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-    const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
-
-    // 7. 初始记录 (CREATED)
-    const record: CommandRecord = {
-      id: commandId,
-      tenantId: input.tenantId,
-      projectId,
-      vehicleId: input.vehicleId,
-      deviceId: deviceNo,
-      deviceNo,
-      commandCode: input.commandCode,
-      status: CommandStatus.CREATED,
-      securityLevel: effectiveSecurityLevel,
-      idempotencyKey: input.idempotencyKey,
-      traceId,
-      requestId,
-      params: input.params,
-      operatorId: input.operatorId,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    this.commandStore.set(commandId, record);
-    this.idempotencyIndex.set(input.idempotencyKey, commandId);
-
-    // 8. 校验设备是否在线
-    if (!this.deviceStatusService.isOnline(deviceNo)) {
-      this.transitionStatus(record, CommandStatus.VALIDATING);
-      this.transitionStatus(record, CommandStatus.FAILED, 'DEVICE_OFFLINE', 'Device is currently offline');
-      this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_FAILED, record);
-      return record;
-    }
-
-    // 9. 状态机流转: CREATED -> VALIDATING -> QUEUED -> SENDING -> SENT -> WAITING_ACK
-    this.transitionStatus(record, CommandStatus.VALIDATING);
-    this.transitionStatus(record, CommandStatus.QUEUED);
-    this.transitionStatus(record, CommandStatus.SENDING);
-
-    const downlink: DeviceCommandDownlinkPayload = {
-      traceId,
-      requestId,
-      commandId,
-      commandCode: input.commandCode,
-      timestamp: Date.now(),
-      params: input.params,
-    };
-
-    // 10. 消息层直通下发
-    await this.messagingPort.publishCommand(productKey, deviceNo, downlink);
-    if (this.commLogService) {
-      this.commLogService.logMessage({
+      // 7. 初始记录 (CREATED)
+      const record: CommandRecord = {
+        id: commandId,
         tenantId: input.tenantId,
+        projectId,
         vehicleId: input.vehicleId,
+        deviceId: deviceNo,
         deviceNo,
+        commandCode: input.commandCode,
+        status: CommandStatus.CREATED,
+        securityLevel: effectiveSecurityLevel,
+        idempotencyKey: input.idempotencyKey,
         traceId,
         requestId,
-        direction: CommunicationDirection.DOWNLINK,
-        channel: CommunicationChannel.MQTT,
-        topic: MqttTopicBuilder.commandDown(productKey, deviceNo),
-        payload: downlink,
-      }).catch((e) => console.error('[CommandService] Failed to log command downlink:', e));
-    }
-    record.sentAt = new Date();
-    this.transitionStatus(record, CommandStatus.SENT);
-    this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_SENT, record);
+        params: input.params,
+        operatorId: input.operatorId,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
 
-    this.transitionStatus(record, CommandStatus.WAITING_ACK);
+      this.commandStore.set(commandId, record);
+      this.idempotencyIndex.set(input.idempotencyKey, commandId);
 
-    // 11. 注册超时定时器
-    const timeoutMs = input.customTimeoutMs ?? effectiveTimeoutMs;
-    const timer = setTimeout(() => {
-      this.handleTimeout(commandId);
-    }, timeoutMs);
-    this.timeoutTimers.set(commandId, timer);
+      // 8. 校验设备是否在线
+      if (!this.deviceStatusService.isOnline(deviceNo)) {
+        if (lock && this.lockPort) {
+          await this.lockPort.release(lock);
+        }
+        this.transitionStatus(record, CommandStatus.VALIDATING);
+        this.transitionStatus(record, CommandStatus.FAILED, 'DEVICE_OFFLINE', 'Device is currently offline');
+        this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_FAILED, record);
+        return record;
+      }
 
-    // 12. 审计日志
-    if (this.auditService) {
-      this.auditService.logAction({
-        tenantId: input.tenantId,
-        userId: input.operatorId,
-        action: 'COMMAND_DISPATCH',
-        resourceType: 'COMMAND',
-        resourceId: commandId,
+      // 9. 状态机流转: CREATED -> VALIDATING -> QUEUED -> SENDING -> SENT -> WAITING_ACK
+      this.transitionStatus(record, CommandStatus.VALIDATING);
+      this.transitionStatus(record, CommandStatus.QUEUED);
+      this.transitionStatus(record, CommandStatus.SENDING);
+
+      const downlink: DeviceCommandDownlinkPayload = {
         traceId,
-        details: { commandCode: input.commandCode, vehicleId: input.vehicleId, deviceNo },
-      });
-    }
+        requestId,
+        commandId,
+        commandCode: input.commandCode,
+        timestamp: Date.now(),
+        params: input.params,
+      };
 
-    return record;
+      // 10. 消息层直通下发
+      await this.messagingPort.publishCommand(productKey, deviceNo, downlink);
+      if (this.commLogService) {
+        this.commLogService.logMessage({
+          tenantId: input.tenantId,
+          vehicleId: input.vehicleId,
+          deviceNo,
+          traceId,
+          requestId,
+          direction: CommunicationDirection.DOWNLINK,
+          channel: CommunicationChannel.MQTT,
+          topic: MqttTopicBuilder.commandDown(productKey, deviceNo),
+          payload: downlink,
+        }).catch((e) => console.error('[CommandService] Failed to log command downlink:', e));
+      }
+      record.sentAt = new Date();
+      this.transitionStatus(record, CommandStatus.SENT);
+      this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_SENT, record);
+
+      this.transitionStatus(record, CommandStatus.WAITING_ACK);
+      if (lock) {
+        this.activeLocks.set(commandId, lock);
+      }
+
+      // 11. 注册超时定时器
+      const timeoutMs = input.customTimeoutMs ?? effectiveTimeoutMs;
+      const timer = setTimeout(() => {
+        this.handleTimeout(commandId);
+      }, timeoutMs);
+      this.timeoutTimers.set(commandId, timer);
+
+      // 12. 审计日志
+      if (this.auditService) {
+        this.auditService.logAction({
+          tenantId: input.tenantId,
+          userId: input.operatorId,
+          action: 'COMMAND_DISPATCH',
+          resourceType: 'COMMAND',
+          resourceId: commandId,
+          traceId,
+          details: { commandCode: input.commandCode, vehicleId: input.vehicleId, deviceNo },
+        });
+      }
+
+      return record;
+    } catch (err) {
+      if (lock && this.lockPort) {
+        await this.lockPort.release(lock);
+      }
+      throw err;
+    }
   }
 
   /**
    * 处理设备端异步 ACK 应答
    */
-  handleAck(ack: DeviceCommandAckUplinkPayload): void {
+  async handleAck(ack: DeviceCommandAckUplinkPayload): Promise<void> {
     const record = this.commandStore.get(ack.commandId);
     if (!record) {
       console.warn(`[CommandService] Received ACK for unknown commandId: ${ack.commandId}`);
@@ -257,6 +284,15 @@ export class CommandService {
         `[CommandService] Ignored ACK for terminal command: ${record.id}, current status: ${record.status}, ack code: ${ack.code}`
       );
       return;
+    }
+
+    // 释放分布式锁
+    const lock = this.activeLocks.get(record.id);
+    if (lock) {
+      this.activeLocks.delete(record.id);
+      if (this.lockPort) {
+        await this.lockPort.release(lock);
+      }
     }
 
     // 清除超时定时器
@@ -296,11 +332,20 @@ export class CommandService {
   /**
    * 处理超时未应答
    */
-  handleTimeout(commandId: string): void {
+  async handleTimeout(commandId: string): Promise<void> {
     const record = this.commandStore.get(commandId);
     if (!record) return;
 
     this.timeoutTimers.delete(commandId);
+
+    // 释放分布式锁
+    const lock = this.activeLocks.get(commandId);
+    if (lock) {
+      this.activeLocks.delete(commandId);
+      if (this.lockPort) {
+        await this.lockPort.release(lock);
+      }
+    }
 
     if (record.status === CommandStatus.WAITING_ACK) {
       this.transitionStatus(record, CommandStatus.TIMEOUT, 'TIMEOUT', 'Device response timed out');
