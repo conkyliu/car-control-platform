@@ -28,6 +28,7 @@ import { AlarmModule } from './alarm/alarm.module.js';
 import { CommunicationLogModule } from './log/communication-log.module.js';
 import { OtaModule } from './ota/ota.module.js';
 import { CacheModule } from './common/cache/cache.module.js';
+import { ObservabilityModule } from './observability/observability.module.js';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { CacheModule } from './common/cache/cache.module.js';
     CommunicationLogModule,
     OtaModule,
     CacheModule,
+    ObservabilityModule,
   ],
   controllers: [
     CommandController,
@@ -86,6 +88,7 @@ import { CacheModule } from './common/cache/cache.module.js';
     CommunicationLogModule,
     OtaModule,
     CacheModule,
+    ObservabilityModule,
   ],
 })
 export class AppModule {}
