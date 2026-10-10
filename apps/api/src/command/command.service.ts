@@ -29,6 +29,9 @@ import { ControlSecurityService } from '../security/control-security.service.js'
 import { AuditService } from '../audit/audit.service.js';
 import { CommunicationLogService } from '../log/communication-log.service.js';
 import { DistributedLockPort, LockHandle } from '../common/cache/cache.port.js';
+import { TracerService } from '../observability/tracing/tracer.service.js';
+import { STANDARD_SPAN_NAMES } from '../observability/tracing/tracer.types.js';
+import { MetricsService } from '../observability/metrics/metrics.service.js';
 
 export interface ExecuteCommandInput {
   tenantId: string;
@@ -43,6 +46,7 @@ export interface ExecuteCommandInput {
   confirmationToken?: string;
   params?: Record<string, unknown>;
   customTimeoutMs?: number;
+  traceId?: string;
 }
 
 @Injectable()
@@ -61,7 +65,9 @@ export class CommandService {
     @Optional() private readonly vehicleRepo?: VehicleRepository,
     @Optional() private readonly auditService?: AuditService,
     @Optional() private readonly commLogService?: CommunicationLogService,
-    @Inject('DistributedLockPort') @Optional() private readonly lockPort?: DistributedLockPort
+    @Inject('DistributedLockPort') @Optional() private readonly lockPort?: DistributedLockPort,
+    @Optional() private readonly tracerService?: TracerService,
+    @Optional() private readonly metricsService?: MetricsService
   ) {
     // 监听设备上行 ACK 报文
     this.messagingPort.onAck((ack) => {
@@ -82,6 +88,8 @@ export class CommandService {
    * 创建并下发控车指令 (12 步安全流水线 + 分布式防重锁)
    */
   async executeCommand(input: ExecuteCommandInput): Promise<CommandRecord> {
+    const t0 = Date.now();
+
     // 1. 客户端幂等校验 (防重发)
     const existingCommandId = this.idempotencyIndex.get(input.idempotencyKey);
     if (existingCommandId) {
@@ -97,9 +105,11 @@ export class CommandService {
     if (this.lockPort) {
       lock = await this.lockPort.acquire(lockKey, 10000);
       if (!lock) {
+        this.metricsService?.incrementLockContention(input.tenantId);
         throw new ConflictException('VEHICLE_COMMAND_IN_PROGRESS');
       }
     }
+    const t1 = Date.now();
 
     try {
       const meta = COMMAND_DEFINITIONS[input.commandCode];
@@ -164,8 +174,26 @@ export class CommandService {
       }
 
       const commandId = `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
-      const traceId = `trace_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+      const trace = this.tracerService?.startTrace(
+        commandId,
+        input.vehicleId,
+        input.tenantId,
+        input.traceId
+      );
+      const traceId = trace ? trace.traceId : (input.traceId || `trace_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`);
       const requestId = `req_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
+
+      // 记录 Span 1: http.inbound_request (T0 -> T1)
+      const span1Duration = Math.max(1, t1 - t0);
+      this.tracerService?.recordSpan(
+        traceId,
+        STANDARD_SPAN_NAMES.HTTP_INBOUND_REQUEST,
+        span1Duration,
+        {
+          vehicleId: input.vehicleId,
+          tenantId: input.tenantId,
+        }
+      );
 
       // 7. 初始记录 (CREATED)
       const record: CommandRecord = {
@@ -198,6 +226,10 @@ export class CommandService {
         this.transitionStatus(record, CommandStatus.VALIDATING);
         this.transitionStatus(record, CommandStatus.FAILED, 'DEVICE_OFFLINE', 'Device is currently offline');
         this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_FAILED, record);
+        if (this.tracerService) {
+          this.tracerService.finishTrace(traceId, 'FAILED');
+        }
+        this.metricsService?.incrementCommands(input.tenantId, input.commandCode, 'FAILED');
         return record;
       }
 
@@ -238,6 +270,19 @@ export class CommandService {
       if (lock) {
         this.activeLocks.set(commandId, lock);
       }
+
+      // 记录 Span 2: command.security_and_dispatch (T1 -> T2)
+      const t2 = Date.now();
+      const span2Duration = Math.max(1, t2 - t1);
+      this.tracerService?.recordSpan(
+        traceId,
+        STANDARD_SPAN_NAMES.COMMAND_SECURITY_AND_DISPATCH,
+        span2Duration,
+        {
+          commandCode: input.commandCode,
+          commandId,
+        }
+      );
 
       // 11. 注册超时定时器
       const timeoutMs = input.customTimeoutMs ?? effectiveTimeoutMs;
@@ -286,6 +331,8 @@ export class CommandService {
       return;
     }
 
+    const t4 = Date.now();
+
     // 释放分布式锁
     const lock = this.activeLocks.get(record.id);
     if (lock) {
@@ -305,15 +352,21 @@ export class CommandService {
     record.ackedAt = new Date();
     record.finishedAt = new Date();
 
+    let wsEvent: WebSocketEvent;
+    let traceStatus: string;
+
     if (ack.code === 0) {
       this.transitionStatus(record, CommandStatus.SUCCESS);
-      this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_SUCCESS, record);
+      wsEvent = WebSocketEvent.COMMAND_SUCCESS;
+      traceStatus = 'SUCCESS';
     } else if (ack.code === 1001) {
       this.transitionStatus(record, CommandStatus.DEVICE_REJECTED, 'DEVICE_REJECTED', ack.message);
-      this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_REJECTED, record);
+      wsEvent = WebSocketEvent.COMMAND_REJECTED;
+      traceStatus = 'DEVICE_REJECTED';
     } else {
       this.transitionStatus(record, CommandStatus.FAILED, 'DEVICE_FAILED', ack.message);
-      this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_FAILED, record);
+      wsEvent = WebSocketEvent.COMMAND_FAILED;
+      traceStatus = 'FAILED';
     }
 
     if (this.auditService) {
@@ -327,6 +380,63 @@ export class CommandService {
         details: { status: record.status, code: ack.code, message: ack.message },
       });
     }
+
+    const t5 = Date.now();
+
+    // 记录 Span 3: device.execution_ack (T2 -> T4)
+    const sentTime = record.sentAt ? record.sentAt.getTime() : t4;
+    const span3Duration = Math.max(1, t4 - sentTime);
+    this.tracerService?.recordSpan(
+      record.traceId,
+      STANDARD_SPAN_NAMES.DEVICE_EXECUTION_ACK,
+      span3Duration,
+      {
+        commandId: record.id,
+        ackCode: ack.code,
+      }
+    );
+
+    // 记录 Span 4: ack.processing_and_persistence (T4 -> T5)
+    const span4Duration = Math.max(1, t5 - t4);
+    this.tracerService?.recordSpan(
+      record.traceId,
+      STANDARD_SPAN_NAMES.ACK_PROCESSING_AND_PERSISTENCE,
+      span4Duration,
+      {
+        commandId: record.id,
+        status: record.status,
+      }
+    );
+
+    // 记录 Span 5: websocket.client_notification (T5 -> T6)
+    this.wsGateway.emitToVehicle(record.vehicleId, wsEvent, record);
+    const t6 = Date.now();
+    const span5Duration = Math.max(1, t6 - t5);
+    this.tracerService?.recordSpan(
+      record.traceId,
+      STANDARD_SPAN_NAMES.WEBSOCKET_CLIENT_NOTIFICATION,
+      span5Duration,
+      {
+        vehicleId: record.vehicleId,
+        event: wsEvent,
+      }
+    );
+
+    // 结束 Trace 并回传 Prometheus 指标
+    const finishedTrace = this.tracerService?.finishTrace(record.traceId, traceStatus);
+    const totalDurationMs =
+      finishedTrace?.totalDurationMs ?? Math.max(1, Date.now() - record.createdAt.getTime());
+
+    this.metricsService?.observeCommandDuration(
+      record.tenantId,
+      record.commandCode,
+      totalDurationMs / 1000
+    );
+    this.metricsService?.incrementCommands(
+      record.tenantId,
+      record.commandCode,
+      traceStatus
+    );
   }
 
   /**
@@ -351,6 +461,11 @@ export class CommandService {
       this.transitionStatus(record, CommandStatus.TIMEOUT, 'TIMEOUT', 'Device response timed out');
       record.finishedAt = new Date();
       this.wsGateway.emitToVehicle(record.vehicleId, WebSocketEvent.COMMAND_TIMEOUT, record);
+
+      if (record.traceId && this.tracerService) {
+        this.tracerService.finishTrace(record.traceId, 'TIMEOUT');
+      }
+      this.metricsService?.incrementCommands(record.tenantId, record.commandCode, 'TIMEOUT');
 
       if (this.auditService) {
         this.auditService.logAction({
