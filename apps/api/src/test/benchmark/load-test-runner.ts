@@ -36,9 +36,12 @@ export interface LoadTestRunnerDependencies {
  */
 export function calculatePercentile(sortedLatencies: number[], percentile: number): number {
   if (sortedLatencies.length === 0) return 0;
-  const index = Math.min(
-    Math.floor((percentile / 100) * sortedLatencies.length),
-    sortedLatencies.length - 1
+  const index = Math.max(
+    0,
+    Math.min(
+      Math.floor((percentile / 100) * sortedLatencies.length),
+      sortedLatencies.length - 1
+    )
   );
   return sortedLatencies[index];
 }
@@ -186,6 +189,7 @@ export class LoadTestRunner implements LoadTestRunnerInterface {
       const bus = new EventEmitter();
       bus.setMaxListeners(10000);
 
+      const isInternalTransport = !this.deps?.simTransport;
       const simTransport = this.deps?.simTransport ?? new InMemoryTransport(bus);
       const messagingAdapter = this.deps?.messagingAdapter ?? new InMemoryMessagingAdapter(bus);
       const deviceStatusService = this.deps?.deviceStatusService ?? new DeviceStatusService();
@@ -250,28 +254,38 @@ export class LoadTestRunner implements LoadTestRunnerInterface {
           try {
             const completionPromise = new Promise<void>((resolve, reject) => {
               let resolved = false;
+              let timer: NodeJS.Timeout | undefined;
+
+              const cleanup = () => {
+                if (timer) {
+                  clearTimeout(timer);
+                  timer = undefined;
+                }
+                unsubscribe();
+              };
+
               const unsubscribe = wsGateway.joinVehicleRoom(vehicleId, (event, payload: any) => {
                 if (resolved) return;
                 if (!cmdId || (payload && payload.id === cmdId)) {
                   if (event === WebSocketEvent.COMMAND_SUCCESS) {
                     resolved = true;
-                    unsubscribe();
+                    cleanup();
                     resolve();
                   } else if (
                     event === WebSocketEvent.COMMAND_FAILED ||
                     event === WebSocketEvent.COMMAND_REJECTED
                   ) {
                     resolved = true;
-                    unsubscribe();
+                    cleanup();
                     reject(new Error(`Command ended with ${event}`));
                   }
                 }
               });
 
-              setTimeout(() => {
+              timer = setTimeout(() => {
                 if (!resolved) {
                   resolved = true;
-                  unsubscribe();
+                  cleanup();
                   if (cmdId) {
                     const rec = commandService.getCommand(cmdId);
                     if (rec?.status === CommandStatus.SUCCESS) {
@@ -315,7 +329,9 @@ export class LoadTestRunner implements LoadTestRunnerInterface {
         tierEnd = performance.now();
       } finally {
         await Promise.all(simulators.map((s) => s.stop()));
-        await simTransport.disconnect();
+        if (isInternalTransport) {
+          await simTransport.disconnect();
+        }
       }
     }
 
