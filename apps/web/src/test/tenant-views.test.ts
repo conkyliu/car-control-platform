@@ -19,6 +19,7 @@ if (typeof window === 'undefined') {
 
 import { useTenantStore } from '../store/useTenantStore.ts';
 import type { TenantDto, OrgNodeDto } from '../store/useTenantStore.ts';
+import { ApiError } from '../api/client.ts';
 import {
   calculateTenantStats,
   filterTenants,
@@ -29,6 +30,7 @@ import {
   filterOrgTree,
   canDisableOrg,
   findOrgNodeById,
+  isApiError,
   type OrgTreeNode,
 } from '../views/tenant/tenant-core.ts';
 
@@ -396,5 +398,49 @@ test('Tenant & Org Management Center Logic Test Suite (TDD)', async (t) => {
     assert.equal(useTenantStore.getState().currentOrgId, null);
     assert.equal(useTenantStore.getState().tenantList.length, 0);
     assert.equal(useTenantStore.getState().orgTree.length, 0);
+  });
+
+  // 10. ApiError 区分与异常判定测试
+  await t.test('isApiError correctly distinguishes server business errors from network dropouts', () => {
+    // 真实的 ApiError 实例
+    const apiErr = new ApiError('租户代码已被占用', 409, 'TENANT_CODE_CONFLICT');
+    assert.equal(isApiError(apiErr), true);
+
+    // 含有 statusCode 的对象
+    const duckTypedErr = { message: '无权限访问', statusCode: 403 };
+    assert.equal(isApiError(duckTypedErr), true);
+
+    // 普通网络异常 / TypeError
+    const networkErr = new TypeError('Failed to fetch');
+    assert.equal(isApiError(networkErr), false);
+
+    const genericErr = new Error('Connection timeout');
+    assert.equal(isApiError(genericErr), false);
+
+    const nullValue = null;
+    assert.equal(isApiError(nullValue), false);
+  });
+
+  // 11. 机构元数据完整性与持久化字段透传测试
+  await t.test('buildOrgTree preserves optional metadata like leader, phone, description', () => {
+    const orgsWithMeta: OrgNodeDto[] = [
+      {
+        id: 'org-1',
+        tenantId: 'tenant-001',
+        name: '指挥中心',
+        code: 'CMD_CENTER',
+        parentId: null,
+        leader: '张队长',
+        phone: '13812345678',
+        description: '核心运营',
+      },
+    ];
+
+    const tree = buildOrgTree(orgsWithMeta);
+    assert.equal(tree.length, 1);
+    const node = tree[0]!;
+    assert.equal(node.leader, '张队长');
+    assert.equal(node.phone, '13812345678');
+    assert.equal(node.description, '核心运营');
   });
 });

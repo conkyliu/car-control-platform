@@ -49,6 +49,7 @@ import {
   calculateQuotaUsage,
   validateQuotaAdjustment,
   validateTenantForm,
+  isApiError,
 } from './tenant-core.ts';
 
 const { Title, Text } = Typography;
@@ -150,7 +151,10 @@ export const TenantListView: React.FC = () => {
       } else if (tenantList.length === 0) {
         setTenantList(SEED_TENANTS);
       }
-    } catch {
+    } catch (err: unknown) {
+      if (isApiError(err)) {
+        message.error(`拉取租户列表失败: ${err.message}`);
+      }
       // 容错降级：若后端接口尚未启动，回退并保底展示种子列表
       if (tenantList.length === 0) {
         setTenantList(SEED_TENANTS);
@@ -191,8 +195,13 @@ export const TenantListView: React.FC = () => {
       let newTenant: TenantDto;
       try {
         newTenant = await createTenantApi(values);
-      } catch {
-        // 本地 Mock 新建
+      } catch (err: unknown) {
+        // 区分真实服务端业务错误与离线环境
+        if (isApiError(err)) {
+          message.error(err.message || '创建企业租户失败');
+          return;
+        }
+        // 本地开发离线无服务端时的 Mock 降级新建
         newTenant = {
           id: `tenant-${Date.now()}`,
           name: values.name,
@@ -245,8 +254,12 @@ export const TenantListView: React.FC = () => {
       const values = await editForm.validateFields();
       try {
         await updateTenantApi(editingTenant.id, values);
-      } catch {
-        // 允许降级
+      } catch (err: unknown) {
+        if (isApiError(err)) {
+          message.error(err.message || '更新企业租户信息失败');
+          return;
+        }
+        // 仅在无网络/无服务端时降级
       }
 
       const updated = effectiveTenants.map((t) =>
@@ -292,7 +305,11 @@ export const TenantListView: React.FC = () => {
           quotaDeviceCount: values.newDeviceQuota,
           quotaVehicleCount: values.newVehicleQuota,
         });
-      } catch {
+      } catch (err: unknown) {
+        if (isApiError(err)) {
+          message.error(err.message || '配额调整失败');
+          return;
+        }
         // 降级本地更新
       }
 
@@ -323,7 +340,11 @@ export const TenantListView: React.FC = () => {
     const nextStatus: 'ACTIVE' | 'SUSPENDED' = tenant.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
     try {
       await updateTenantStatusApi(tenant.id, nextStatus);
-    } catch {
+    } catch (err: unknown) {
+      if (isApiError(err)) {
+        message.error(err.message || '更新租户运行状态失败');
+        return;
+      }
       // 本地状态同步降级
     }
 

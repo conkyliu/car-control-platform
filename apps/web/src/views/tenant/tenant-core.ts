@@ -1,4 +1,20 @@
 import type { TenantDto, OrgNodeDto } from '../../store/useTenantStore.ts';
+import { ApiError } from '../../api/client.ts';
+
+/**
+ * 判断捕获的异常是否为带有 HTTP 状态码的后端业务 ApiError
+ */
+export function isApiError(err: unknown): err is ApiError {
+  if (err instanceof ApiError) return true;
+  if (typeof err === 'object' && err !== null) {
+    const candidate = err as Record<string, unknown>;
+    return (
+      typeof candidate.statusCode === 'number' &&
+      typeof candidate.message === 'string'
+    );
+  }
+  return false;
+}
 
 export interface TenantStats {
   totalTenants: number;

@@ -48,6 +48,7 @@ import {
   filterOrgTree,
   canDisableOrg,
   findOrgNodeById,
+  isApiError,
   type OrgTreeNode,
 } from './tenant-core.ts';
 
@@ -162,7 +163,10 @@ export const OrgTreeView: React.FC = () => {
         setFlatOrgs(SEED_ORGS);
         setOrgTreeRaw(SEED_ORGS);
       }
-    } catch {
+    } catch (err: unknown) {
+      if (isApiError(err)) {
+        message.error(`拉取机构树失败: ${err.message}`);
+      }
       // 容错降级
       setFlatOrgs(SEED_ORGS);
       setOrgTreeRaw(SEED_ORGS);
@@ -172,9 +176,7 @@ export const OrgTreeView: React.FC = () => {
   };
 
   useEffect(() => {
-    if (orgTreeRaw.length === 0) {
-      loadOrgs();
-    }
+    loadOrgs();
   }, [currentTenantId]);
 
   // 构建层级树
@@ -323,8 +325,15 @@ export const OrgTreeView: React.FC = () => {
             name: newOrg.name,
             code: newOrg.code,
             parentId: null,
+            leader: values.leader,
+            phone: values.phone,
+            description: values.description,
           });
-        } catch {
+        } catch (err: unknown) {
+          if (isApiError(err)) {
+            message.error(err.message || '创建顶级机构失败');
+            return;
+          }
           // Mock 降级
         }
         const updated = [...flatOrgs, newOrg];
@@ -354,8 +363,15 @@ export const OrgTreeView: React.FC = () => {
             name: newSubOrg.name,
             code: newSubOrg.code,
             parentId: selectedNode.id,
+            leader: values.leader,
+            phone: values.phone,
+            description: values.description,
           });
-        } catch {
+        } catch (err: unknown) {
+          if (isApiError(err)) {
+            message.error(err.message || '添加下级机构失败');
+            return;
+          }
           // Mock 降级
         }
         const updated = [...flatOrgs, newSubOrg];
@@ -368,7 +384,11 @@ export const OrgTreeView: React.FC = () => {
         if (!selectedNode) return;
         try {
           await updateOrgApi(selectedNode.id, values);
-        } catch {
+        } catch (err: unknown) {
+          if (isApiError(err)) {
+            message.error(err.message || '更新机构信息失败');
+            return;
+          }
           // Mock 降级
         }
         const updated = flatOrgs.map((o) =>
@@ -404,7 +424,11 @@ export const OrgTreeView: React.FC = () => {
       selectedNode.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE';
     try {
       await updateOrgApi(selectedNode.id, { status: nextStatus });
-    } catch {
+    } catch (err: unknown) {
+      if (isApiError(err)) {
+        message.error(err.message || '更新机构运营状态失败');
+        return;
+      }
       // Mock 降级
     }
 
