@@ -10,27 +10,20 @@ import {
   Radio,
   Select,
   Input,
-  Form,
   Alert,
   Tabs,
   Descriptions,
   Popconfirm,
   Spin,
   message,
-  Divider,
 } from 'antd';
 import {
   LinkOutlined,
   DisconnectOutlined,
   SwapOutlined,
-  CarOutlined,
-  CheckCircleOutlined,
-  ExclamationCircleOutlined,
   ScanOutlined,
   BarcodeOutlined,
   WifiOutlined,
-  SafetyCertificateOutlined,
-  InfoCircleOutlined,
 } from '@ant-design/icons';
 import type { VehicleDto } from './vehicle-core.ts';
 import {
@@ -52,7 +45,7 @@ import {
 import { fetchDeviceDetailApi } from '../../api/device.ts';
 import { isApiError } from './vehicle-core.ts';
 
-const { Text, Paragraph } = Typography;
+const { Text } = Typography;
 
 export interface VehicleBindModalProps {
   open: boolean;
@@ -339,6 +332,7 @@ export const VehicleBindModal: React.FC<VehicleBindModalProps> = ({
                 <div>
                   <Select
                     showSearch
+                    allowClear
                     style={{ width: '100%' }}
                     placeholder="请选择或搜索空闲可用车载终端 (按设备号 / 15位 IMEI 检索)"
                     value={selectedDeviceId}
@@ -420,7 +414,7 @@ export const VehicleBindModal: React.FC<VehicleBindModalProps> = ({
                             <WifiOutlined style={{ color: sig.color }} />
                             <span>{sig.label}</span>
                             <Text type="secondary" style={{ fontSize: 12 }}>
-                              ({selectedDevice.signalRsrp ? `${selectedDevice.signalRsrp} dBm` : '-'})
+                              ({selectedDevice.signalRsrp != null ? `${selectedDevice.signalRsrp} dBm` : '-'})
                             </Text>
                           </Space>
                         );
