@@ -208,9 +208,7 @@ export class HttpClient {
         }
       }
 
-      if (!_retry) {
-        useAuthStore.getState().clearAuth();
-      }
+      useAuthStore.getState().clearAuth();
 
       const errBody = await this.parseResponseBody(response);
       throw new ApiError(

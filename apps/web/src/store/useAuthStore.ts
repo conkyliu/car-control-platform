@@ -39,8 +39,12 @@ export interface AuthState {
 }
 
 const getSafeStorage = () => {
-  if (typeof window !== 'undefined' && window.localStorage) {
-    return window.localStorage;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      return window.localStorage;
+    }
+  } catch {
+    // fallback if restricted by sandbox
   }
   if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
     return (globalThis as any).localStorage;
@@ -81,10 +85,10 @@ export const useAuthStore = create<AuthState>()(
       },
 
       setUser: (user) => {
-        set({
+        set((state) => ({
           user,
-          permissions: user.permissions ?? [],
-        });
+          permissions: user.permissions ?? state.permissions,
+        }));
       },
 
       setPermissions: (permissions) => {
