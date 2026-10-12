@@ -648,7 +648,7 @@ export const ModelManageView: React.FC = () => {
           borderRadius: 8,
           boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
         }}
-        bodyStyle={{ padding: '8px 24px 0 24px' }}
+        styles={{ body: { padding: '8px 24px 0 24px' } }}
       >
         <Tabs
           activeKey={activeTabKey}
