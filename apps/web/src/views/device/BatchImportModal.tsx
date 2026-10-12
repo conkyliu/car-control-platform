@@ -231,7 +231,7 @@ export const BatchImportModal: React.FC<BatchImportModalProps> = ({
       dataIndex: 'rowNumber',
       key: 'rowNumber',
       width: 70,
-      render: (val: number) => <Text strong>{val}</Text>,
+      render: (val: number) => <Text strong>{val && val > 0 ? val : '-'}</Text>,
     },
     {
       title: '设备编号',
