@@ -231,3 +231,67 @@ export function getRoutesByCategory(): Record<string, RouteMeta[]> {
 export function findRouteByPath(path: string): RouteMeta | undefined {
   return routes.find((route) => route.path === path);
 }
+
+/**
+ * 根据用户权限函数过滤可访问的菜单路由列表
+ */
+export function filterAccessibleRoutes(hasPermission: (code: string) => boolean): RouteMeta[] {
+  return routes
+    .filter((route) => {
+      if (route.hideInMenu) return false;
+      if (!route.permission) return true;
+      return hasPermission(route.permission);
+    })
+    .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
+}
+
+/**
+ * 根据所属分组对有权限的菜单项进行分类归集，自动剔除无任何权限项的空分组
+ */
+export function getAccessibleRoutesByCategory(
+  hasPermission: (code: string) => boolean
+): Record<string, RouteMeta[]> {
+  const accessible = filterAccessibleRoutes(hasPermission);
+  const grouped: Record<string, RouteMeta[]> = {};
+
+  for (const item of accessible) {
+    const cat = item.category || '其他';
+    if (!grouped[cat]) {
+      grouped[cat] = [];
+    }
+    grouped[cat].push(item);
+  }
+
+  return grouped;
+}
+
+/**
+ * 根据当前激活路径计算层级面包屑列表
+ */
+export function computeBreadcrumbs(path: string): Array<{ title: string; path?: string }> {
+  if (path === RoutePath.DASHBOARD) {
+    return [
+      { title: '首页', path: RoutePath.DASHBOARD },
+      { title: '运营看板', path: RoutePath.DASHBOARD },
+    ];
+  }
+
+  const currentRoute = findRouteByPath(path);
+  if (!currentRoute) {
+    return [
+      { title: '首页', path: RoutePath.DASHBOARD },
+      { title: '未知页面' },
+    ];
+  }
+
+  const items: Array<{ title: string; path?: string }> = [
+    { title: '首页', path: RoutePath.DASHBOARD },
+  ];
+
+  if (currentRoute.category) {
+    items.push({ title: currentRoute.category });
+  }
+
+  items.push({ title: currentRoute.title, path: currentRoute.path });
+  return items;
+}
