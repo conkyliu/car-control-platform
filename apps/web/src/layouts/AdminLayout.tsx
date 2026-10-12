@@ -43,6 +43,7 @@ import { HeaderUserMenu } from './HeaderUserMenu.tsx';
 import { NavTabs } from './NavTabs.tsx';
 import { CarControlPanel } from '../components/CarControlPanel.tsx';
 import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
+import { UserListView, RolePermissionView } from '../views/rbac/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -123,6 +124,14 @@ export const AdminLayout: React.FC = () => {
 
     if (activeKey === RoutePath.ORGS) {
       return <OrgTreeView />;
+    }
+
+    if (activeKey === RoutePath.USERS) {
+      return <UserListView />;
+    }
+
+    if (activeKey === RoutePath.ROLES) {
+      return <RolePermissionView />;
     }
 
     if (activeKey === RoutePath.COMMANDS || activeKey === RoutePath.DEVICES) {
