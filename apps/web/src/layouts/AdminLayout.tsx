@@ -69,6 +69,7 @@ export const AdminLayout: React.FC = () => {
   const hasPermission = useAuthStore((s) => s.hasPermission);
   const activeKey = useNavTabsStore((s) => s.activeKey);
   const openTab = useNavTabsStore((s) => s.openTab);
+  const refreshCounter = useNavTabsStore((s) => s.refreshCount[s.activeKey] ?? 0);
 
   // 根据当前登录权限过滤可访问路由并按分类归集
   const accessibleGroups = getAccessibleRoutesByCategory(hasPermission);
@@ -216,6 +217,7 @@ export const AdminLayout: React.FC = () => {
           theme="dark"
           mode="inline"
           selectedKeys={[activeKey]}
+          defaultOpenKeys={Object.keys(accessibleGroups).map((k) => `group-${k}`)}
           items={menuItems}
           onClick={handleMenuClick}
           style={{ borderRight: 0, backgroundColor: 'transparent' }}
@@ -292,6 +294,7 @@ export const AdminLayout: React.FC = () => {
 
         {/* 业务内容区域 */}
         <Content
+          key={`${activeKey}-${refreshCounter}`}
           style={{
             padding: '12px 20px 20px',
             flex: 1,

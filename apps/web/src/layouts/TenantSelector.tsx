@@ -21,9 +21,13 @@ export const TenantSelector: React.FC = () => {
 
   const isSuperAdmin = isSuperAdminUser(user?.roles as string[] | undefined);
 
-  // 初始化保障：若租户列表为空，注入基线示例租户列表并同步激活租户
+  // 初始化保障：若为普通租户，强制绑定 user.tenantId；若为超级管理员且未设定租户，初始化租户列表
   useEffect(() => {
-    if (tenantList.length === 0) {
+    if (!isSuperAdmin && user?.tenantId) {
+      if (currentTenantId !== user.tenantId) {
+        useTenantStore.getState().setCurrentTenantId(user.tenantId);
+      }
+    } else if (tenantList.length === 0) {
       setTenantList(DEFAULT_DEMO_TENANTS);
       if (!currentTenantId) {
         useTenantStore.getState().setCurrentTenantId(DEFAULT_DEMO_TENANTS[0].id);
@@ -31,10 +35,14 @@ export const TenantSelector: React.FC = () => {
     } else if (!currentTenantId) {
       useTenantStore.getState().setCurrentTenantId(tenantList[0]?.id ?? 't_default');
     }
-  }, [tenantList.length, currentTenantId, setTenantList]);
+  }, [tenantList.length, currentTenantId, setTenantList, isSuperAdmin, user?.tenantId]);
 
   const activeTenants = tenantList.length > 0 ? tenantList : DEFAULT_DEMO_TENANTS;
-  const currentTenant = activeTenants.find((t) => t.id === currentTenantId) ?? activeTenants[0];
+  const currentTenant =
+    activeTenants.find((t) => t.id === currentTenantId) ??
+    (currentTenantId
+      ? { id: currentTenantId, name: `企业租户 (${currentTenantId})`, code: currentTenantId, status: 'ACTIVE' as const, quotaDeviceCount: 1000 }
+      : activeTenants[0]);
 
   const handleTenantChange = (value: string) => {
     switchTenant(value);

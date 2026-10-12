@@ -22,6 +22,7 @@ import {
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/useAuthStore.ts';
 import { executeLogout } from './admin-layout-core.ts';
+import { logoutApi } from '../api/auth.ts';
 
 const { Text } = Typography;
 
@@ -46,7 +47,7 @@ export const HeaderUserMenu: React.FC = () => {
 
   const handleLogout = async () => {
     try {
-      await executeLogout();
+      await executeLogout(logoutApi);
       message.success('已安全退出登录');
     } catch {
       message.error('退出登录异常');

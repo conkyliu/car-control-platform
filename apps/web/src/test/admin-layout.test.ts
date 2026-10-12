@@ -133,9 +133,12 @@ test('AdminLayout and Navigation Hub Core Test Suite', async (t) => {
 
     assert.equal(useTenantStore.getState().currentTenantId, 't_alpha');
 
-    // Switch tenant
+    // Switch tenant triggers tenant update and active tab refresh
+    const beforeSwitchRefresh = useNavTabsStore.getState().refreshCount[useNavTabsStore.getState().activeKey] ?? 0;
     switchTenant('t_beta');
     assert.equal(useTenantStore.getState().currentTenantId, 't_beta');
+    const afterSwitchRefresh = useNavTabsStore.getState().refreshCount[useNavTabsStore.getState().activeKey] ?? 0;
+    assert.equal(afterSwitchRefresh, beforeSwitchRefresh + 1);
 
     // Quota display formatting
     const quotaText1 = formatTenantQuota(mockTenants[0]!, {
