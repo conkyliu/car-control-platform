@@ -59,6 +59,7 @@ export const SliderCaptcha = forwardRef<SliderCaptchaHandle, SliderCaptchaProps>
 
     const isDraggingRef = useRef<boolean>(false);
     const startXRef = useRef<number>(0);
+    const offsetRef = useRef<number>(0);
 
     const getMaxOffset = useCallback(() => {
       if (!trackRef.current) {
@@ -70,6 +71,7 @@ export const SliderCaptcha = forwardRef<SliderCaptchaHandle, SliderCaptchaProps>
     const handleReset = useCallback(() => {
       setStatus('idle');
       setOffset(0);
+      offsetRef.current = 0;
       setToken(null);
       isDraggingRef.current = false;
       onReset?.();
@@ -100,6 +102,7 @@ export const SliderCaptcha = forwardRef<SliderCaptchaHandle, SliderCaptchaProps>
         }
         const maxOffset = getMaxOffset();
         const nextOffset = calculateSliderOffset(clientX, startXRef.current, maxOffset);
+        offsetRef.current = nextOffset;
         setOffset(nextOffset);
       },
       [getMaxOffset, status]
@@ -115,22 +118,24 @@ export const SliderCaptcha = forwardRef<SliderCaptchaHandle, SliderCaptchaProps>
         const currentOffset =
           typeof currentClientX === 'number'
             ? calculateSliderOffset(currentClientX, startXRef.current, maxOffset)
-            : offset;
+            : offsetRef.current;
 
         const verified = evaluateSliderVerification(currentOffset, maxOffset, threshold);
 
         if (verified) {
           const generatedToken = generateCaptchaToken();
           setStatus('success');
+          offsetRef.current = maxOffset;
           setOffset(maxOffset);
           setToken(generatedToken);
           onSuccess?.(generatedToken);
         } else {
           setStatus('idle');
+          offsetRef.current = 0;
           setOffset(0);
         }
       },
-      [getMaxOffset, offset, threshold, onSuccess, status]
+      [getMaxOffset, threshold, onSuccess, status]
     );
 
     useEffect(() => {
@@ -197,6 +202,7 @@ export const SliderCaptcha = forwardRef<SliderCaptchaHandle, SliderCaptchaProps>
           borderRadius: 'var(--car-border-radius, 6px)',
           overflow: 'hidden',
           userSelect: 'none',
+          touchAction: 'none',
           transition: isDragging ? 'none' : 'background-color 0.3s ease, border-color 0.3s ease',
           ...style,
         }}
@@ -241,6 +247,7 @@ export const SliderCaptcha = forwardRef<SliderCaptchaHandle, SliderCaptchaProps>
 
         {/* 拖拽把手 (Thumb) */}
         <div
+          tabIndex={disabled ? -1 : 0}
           onMouseDown={(e) => {
             e.preventDefault();
             handleStartDrag(e.clientX);
@@ -265,6 +272,7 @@ export const SliderCaptcha = forwardRef<SliderCaptchaHandle, SliderCaptchaProps>
             justifyContent: 'center',
             cursor: disabled ? 'not-allowed' : isSuccess ? 'default' : isDragging ? 'grabbing' : 'grab',
             zIndex: 2,
+            touchAction: 'none',
             transition: isDragging ? 'none' : 'left 0.3s cubic-bezier(0.2, 0, 0, 1)',
           }}
         >

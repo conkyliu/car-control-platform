@@ -219,6 +219,10 @@ export const LoginView: React.FC<LoginViewProps> = ({
                 allowClear
                 autoFocus
                 disabled={loading}
+                onPressEnter={(e) => {
+                  e.preventDefault();
+                  passwordInputRef.current?.focus?.();
+                }}
               />
             </Form.Item>
 
