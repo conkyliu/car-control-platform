@@ -73,6 +73,7 @@ export const AuditLogView: React.FC = () => {
     undefined,
     undefined,
   ]);
+  const [rangePickerKey, setRangePickerKey] = useState(0);
 
   // 抽屉详情状态
   const [detailVisible, setDetailVisible] = useState(false);
@@ -127,6 +128,7 @@ export const AuditLogView: React.FC = () => {
       const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
       setDateRange([formatDate(thirtyDaysAgo), formatDate(now)]);
     }
+    setRangePickerKey((k) => k + 1);
   };
 
   // 重置筛选
@@ -138,6 +140,7 @@ export const AuditLogView: React.FC = () => {
     setSelectedRisk('ALL');
     setDatePreset('ALL');
     setDateRange([undefined, undefined]);
+    setRangePickerKey((k) => k + 1);
   };
 
   // 当前激活的组合查询条件
@@ -655,6 +658,7 @@ export const AuditLogView: React.FC = () => {
             </Space>
 
             <DatePicker.RangePicker
+              key={rangePickerKey}
               showTime
               placeholder={['起始时间', '截止时间']}
               value={undefined}

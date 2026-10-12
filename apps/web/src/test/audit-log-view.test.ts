@@ -268,6 +268,28 @@ describe('Audit Log Center Core Logic Test Suite (TDD)', () => {
     // Escaped quotes must be doubled ""
     assert.ok(trickyCsv.includes('""与引号""'));
     assert.ok(trickyCsv.includes('"测试,包含逗号""与引号"""'));
+
+    // Formula injection hardening test: values starting with = + - @ \t must be prefixed with single quote
+    const maliciousLogs: AuditLogDto[] = [
+      {
+        id: 'log-malicious',
+        traceId: '=cmd|calc.exe',
+        operatorId: 'usr-malicious',
+        operatorName: '+SUM(1,2)',
+        operatorUsername: '-123',
+        clientIp: '@domain.com',
+        module: 'VEHICLE_CONTROL',
+        action: 'CUSTOM_CMD',
+        resourceType: 'Vehicle',
+        resourceId: 'VIN-TEST',
+        status: 'SUCCESS',
+        executionTimeMs: 10,
+        createdAt: '2026-10-12 12:00:00',
+      },
+    ];
+    const maliciousCsv = generateAuditLogCsv(maliciousLogs);
+    assert.ok(maliciousCsv.includes("''=cmd|calc.exe") || maliciousCsv.includes("'=cmd|calc.exe"));
+    assert.ok(maliciousCsv.includes("'+SUM(1,2)") || maliciousCsv.includes("''+SUM(1,2)"));
   });
 
   it('SEED_AUDIT_LOGS contains production-grade sample entries with valid SHA-256 signatures', () => {

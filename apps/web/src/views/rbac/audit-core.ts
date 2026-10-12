@@ -281,13 +281,17 @@ export function filterAuditLogs(
 }
 
 /**
- * 转义 CSV 单一字段内容
+ * 转义 CSV 单一字段内容 (符合 RFC 4180 并防范 Excel 公式注入)
  */
 function escapeCsvField(val: unknown): string {
   if (val === null || val === undefined) {
     return '';
   }
-  const str = String(val);
+  let str = String(val);
+  // CSV 公式注入防护：以 =, +, -, @, \t, \r 开头时添加单引号转义防范恶意宏执行
+  if (/^[=+\-@\t\r]/.test(str)) {
+    str = `'${str}`;
+  }
   if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
     return `"${str.replace(/"/g, '""')}"`;
   }
