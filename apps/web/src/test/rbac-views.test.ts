@@ -26,6 +26,7 @@ import {
   PERMISSION_TREE_DATA,
   SEED_ROLES,
   SEED_USERS,
+  findOrgNameInTree,
   isApiError,
 } from '../views/rbac/rbac-core.ts';
 import { ApiError } from '../api/client.ts';
@@ -321,5 +322,37 @@ describe('RBAC Center & User/Role Views Core Test Suite (TDD)', () => {
     assert.equal(typeof deleteRoleApi, 'function');
     assert.equal(typeof updateRolePermissionsApi, 'function');
     assert.equal(typeof fetchPermissionTreeApi, 'function');
+  });
+
+  it('findOrgNameInTree recursively traverses tree nodes to locate title by value', () => {
+    const mockTree = [
+      {
+        value: 'org-root',
+        title: '总公司',
+        children: [
+          {
+            value: 'org-sub-1',
+            title: '华东大区',
+            children: [
+              {
+                value: 'org-fleet-hz',
+                title: '杭州冷链分队',
+              },
+            ],
+          },
+          {
+            value: 'org-sub-2',
+            title: '华北大区',
+          },
+        ],
+      },
+    ];
+
+    assert.equal(findOrgNameInTree(mockTree, 'org-root'), '总公司');
+    assert.equal(findOrgNameInTree(mockTree, 'org-sub-1'), '华东大区');
+    assert.equal(findOrgNameInTree(mockTree, 'org-fleet-hz'), '杭州冷链分队');
+    assert.equal(findOrgNameInTree(mockTree, 'org-sub-2'), '华北大区');
+    assert.equal(findOrgNameInTree(mockTree, 'non-existent'), undefined);
+    assert.equal(findOrgNameInTree(mockTree, undefined), undefined);
   });
 });

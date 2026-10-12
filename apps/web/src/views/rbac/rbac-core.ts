@@ -17,9 +17,28 @@ export function isApiError(err: unknown): err is ApiError {
   return false;
 }
 
+/**
+ * 递归在机构树中查找对应 ID 的机构名称
+ */
+export function findOrgNameInTree(
+  nodes: Array<{ value: string; title: string; children?: any[] }>,
+  targetId?: string
+): string | undefined {
+  if (!targetId || !nodes || nodes.length === 0) return undefined;
+  for (const node of nodes) {
+    if (node.value === targetId) return node.title;
+    if (node.children && node.children.length > 0) {
+      const found = findOrgNameInTree(node.children, targetId);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
 // -------------------------------------------------------------
 // 正则表达式规范与表单校验
 // -------------------------------------------------------------
+
 
 /**
  * 中国大陆 11 位手机号码强校验正则 (以 13-19 开头)

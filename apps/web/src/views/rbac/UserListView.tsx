@@ -59,6 +59,7 @@ import {
   validateUsername,
   validatePassword,
   generateRandomPassword,
+  findOrgNameInTree,
   isApiError,
   SEED_USERS,
   SEED_ROLES,
@@ -103,14 +104,24 @@ export const UserListView: React.FC = () => {
 
       if (fetchedUsers.status === 'fulfilled' && Array.isArray(fetchedUsers.value) && fetchedUsers.value.length > 0) {
         setUsers(fetchedUsers.value);
-      } else if (users.length === 0) {
-        setUsers(SEED_USERS);
+      } else {
+        if (fetchedUsers.status === 'rejected' && isApiError(fetchedUsers.reason)) {
+          message.error(`拉取用户列表失败: ${fetchedUsers.reason.message}`);
+        }
+        if (users.length === 0) {
+          setUsers(SEED_USERS);
+        }
       }
 
       if (fetchedRoles.status === 'fulfilled' && Array.isArray(fetchedRoles.value) && fetchedRoles.value.length > 0) {
         setRoles(fetchedRoles.value);
-      } else if (roles.length === 0) {
-        setRoles(SEED_ROLES);
+      } else {
+        if (fetchedRoles.status === 'rejected' && isApiError(fetchedRoles.reason)) {
+          message.error(`拉取角色列表失败: ${fetchedRoles.reason.message}`);
+        }
+        if (roles.length === 0) {
+          setRoles(SEED_ROLES);
+        }
       }
     } catch (err: unknown) {
       if (isApiError(err)) {
@@ -226,7 +237,7 @@ export const UserListView: React.FC = () => {
       setSubmittingUser(true);
 
       const resolvedOrgName =
-        orgTreeSelectData.find((o: any) => o.value === values.orgId)?.title ||
+        findOrgNameInTree(orgTreeSelectData, values.orgId) ||
         effectiveUsers.find((u) => u.orgId === values.orgId)?.orgName ||
         '';
 

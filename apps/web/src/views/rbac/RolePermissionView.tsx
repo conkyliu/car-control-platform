@@ -101,9 +101,14 @@ export const RolePermissionView: React.FC = () => {
 
       if (fetchedRoles.status === 'fulfilled' && Array.isArray(fetchedRoles.value) && fetchedRoles.value.length > 0) {
         roleList = fetchedRoles.value;
+      } else if (fetchedRoles.status === 'rejected' && isApiError(fetchedRoles.reason)) {
+        message.error(`拉取角色数据失败: ${fetchedRoles.reason.message}`);
       }
+
       if (fetchedUsers.status === 'fulfilled' && Array.isArray(fetchedUsers.value) && fetchedUsers.value.length > 0) {
         userList = fetchedUsers.value;
+      } else if (fetchedUsers.status === 'rejected' && isApiError(fetchedUsers.reason)) {
+        message.error(`拉取用户数据失败: ${fetchedUsers.reason.message}`);
       }
 
       const aggregated = aggregateRoleUserCounts(roleList, userList);
@@ -250,8 +255,11 @@ export const RolePermissionView: React.FC = () => {
     if (!selectedRole) return;
     setSaving(true);
     try {
+      // 过滤掉 UI 纯分类节点 Key (以 cluster- 开头)
+      const effectivePermissions = currentPermissions.filter((code) => !code.startsWith('cluster-'));
+
       try {
-        await updateRolePermissionsApi(selectedRole.id, currentPermissions, currentDataScope);
+        await updateRolePermissionsApi(selectedRole.id, effectivePermissions, currentDataScope);
       } catch (apiErr: unknown) {
         if (isApiError(apiErr)) {
           message.error(`保存权限失败: ${apiErr.message}`);
@@ -264,7 +272,7 @@ export const RolePermissionView: React.FC = () => {
           r.id === selectedRole.id
             ? {
                 ...r,
-                permissions: currentPermissions,
+                permissions: effectivePermissions,
                 dataScope: currentDataScope,
                 updatedAt: new Date().toISOString(),
               }
