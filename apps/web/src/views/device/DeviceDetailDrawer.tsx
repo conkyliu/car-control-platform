@@ -160,6 +160,7 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
       setDevice(null);
       setRebootModalVisible(false);
       setSecurityCode('');
+      setActiveTab('hardware');
       configForm.resetFields();
     }
   }, [open, deviceId, loadDeviceDetail, configForm]);
@@ -656,7 +657,10 @@ export const DeviceDetailDrawer: React.FC<DeviceDetailDrawerProps> = ({
                 <Form.Item
                   label="APN 接入点名称"
                   name="apn"
-                  rules={[{ required: true, message: '请输入APN接入点' }]}
+                  rules={[
+                    { required: true, message: '请输入APN接入点' },
+                    { whitespace: true, message: 'APN接入点不能为空白字符' },
+                  ]}
                   extra={
                     <Space size={4} style={{ marginTop: 4 }}>
                       <Text type="secondary" style={{ fontSize: 11 }}>预设:</Text>
