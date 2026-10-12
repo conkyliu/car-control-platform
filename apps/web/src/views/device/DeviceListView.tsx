@@ -58,6 +58,7 @@ import {
   fetchProjectsApi,
 } from '../../api/device.ts';
 import { useTenantStore } from '../../store/useTenantStore.ts';
+import { BatchImportModal } from './BatchImportModal.tsx';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -121,6 +122,9 @@ export const DeviceListView: React.FC = () => {
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<DeviceDto | null>(null);
 
+  // 批量导入向导模态框状态
+  const [batchImportModalVisible, setBatchImportModalVisible] = useState(false);
+
   // 分页状态
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -165,6 +169,11 @@ export const DeviceListView: React.FC = () => {
     return activeTenant?.quotaDeviceCount || 1000;
   }, [tenantList, currentTenantId]);
 
+  // 计算当前租户剩余可用配额
+  const remainingQuota = useMemo(() => {
+    return Math.max(0, tenantQuota - devices.length);
+  }, [tenantQuota, devices.length]);
+
   // 计算顶部汇总指标与动态配额比
   const stats = useMemo(() => {
     return calculateDeviceStats(devices, tenantQuota);
@@ -203,9 +212,9 @@ export const DeviceListView: React.FC = () => {
     setCurrentPage(1);
   };
 
-  // 批量导入占位提示
-  const handleBatchImportPlaceholder = () => {
-    message.info('Excel 批量导入向导正在进行集成，将在 Sprint 2 Task 2 中完整交付！');
+  // 打开批量导入向导
+  const handleOpenBatchImport = () => {
+    setBatchImportModalVisible(true);
   };
 
   // 打开详情
@@ -681,11 +690,9 @@ export const DeviceListView: React.FC = () => {
                 新建设备
               </Button>
 
-              <Tooltip title="Excel 批量导入向导（将在 Task 2 完整接入）">
-                <Button icon={<UploadOutlined />} onClick={handleBatchImportPlaceholder}>
-                  批量导入
-                </Button>
-              </Tooltip>
+              <Button icon={<UploadOutlined />} onClick={handleOpenBatchImport}>
+                批量导入
+              </Button>
 
               <Button icon={<ReloadOutlined />} onClick={loadData}>
                 刷新
@@ -915,6 +922,14 @@ export const DeviceListView: React.FC = () => {
           </div>
         )}
       </Modal>
+
+      {/* 批量设备导入向导模态框 */}
+      <BatchImportModal
+        open={batchImportModalVisible}
+        onClose={() => setBatchImportModalVisible(false)}
+        onSuccess={loadData}
+        remainingQuota={remainingQuota}
+      />
     </div>
   );
 };

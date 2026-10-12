@@ -148,3 +148,124 @@ export async function fetchProjectsApi(): Promise<ProjectDto[]> {
 
   return [...inMemoryProjects];
 }
+
+export interface BatchImportErrorItem {
+  rowNumber?: number;
+  deviceNo?: string;
+  imei?: string;
+  reason: string;
+}
+
+export interface BatchImportResultDto {
+  total: number;
+  successCount: number;
+  errors: BatchImportErrorItem[];
+}
+
+/**
+ * 批量设备导入 API
+ * 遵循 isApiError 模式：真实服务端异常抛出，离线/开发环境在内存池中安全批量写入并返回结果
+ */
+export async function batchImportDevicesApi(
+  devices: CreateDeviceInput[]
+): Promise<BatchImportResultDto> {
+  try {
+    const result = await http.post<any>('/devices/batch-import', { devices });
+    if (result && typeof result.total === 'number') {
+      const normalizedErrors: BatchImportErrorItem[] = Array.isArray(result.errors)
+        ? result.errors.map((e: any) => {
+            if (typeof e === 'string') {
+              const colonIndex = e.indexOf(': ');
+              if (colonIndex !== -1) {
+                return {
+                  deviceNo: e.slice(0, colonIndex).trim(),
+                  reason: e.slice(colonIndex + 2).trim(),
+                };
+              }
+              return { reason: e };
+            }
+            return {
+              rowNumber: e.rowNumber,
+              deviceNo: e.deviceNo,
+              imei: e.imei,
+              reason: e.reason || String(e),
+            };
+          })
+        : [];
+
+      return {
+        total: result.total,
+        successCount: result.successCount ?? 0,
+        errors: normalizedErrors,
+      };
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  // 离线/开发环境平滑降级写入
+  const errors: BatchImportErrorItem[] = [];
+  let successCount = 0;
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  for (let i = 0; i < devices.length; i++) {
+    const item = devices[i]!;
+    // 内存池查重拦截
+    const existing = inMemoryDevices.find(
+      (d) => d.deviceNo === item.deviceNo || d.imei === item.imei
+    );
+    if (existing) {
+      errors.push({
+        rowNumber: i + 1,
+        deviceNo: item.deviceNo,
+        imei: item.imei,
+        reason:
+          existing.deviceNo === item.deviceNo
+            ? `设备编号 ${item.deviceNo} 在系统中已存在`
+            : `IMEI ${item.imei} 在系统中已存在`,
+      });
+      continue;
+    }
+
+    const matchedProject = inMemoryProjects.find((p) => p.id === item.projectId);
+    const newDevice: DeviceDto = {
+      id: `dev-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`,
+      deviceNo: item.deviceNo,
+      imei: item.imei,
+      iccid: item.iccid,
+      productKey: item.productKey,
+      productName:
+        item.productKey === 'TBOX-G5-PRO'
+          ? '5G 高性能车载终端 (旗舰版)'
+          : item.productKey === 'OBD-II-PLUS'
+          ? 'OBD-II 即插即用诊断仪'
+          : item.productKey === 'TCU-EV-100'
+          ? '新能源双路CAN控制器'
+          : '4G 智慧车载终端 (标准版)',
+      projectId: item.projectId,
+      projectName: matchedProject?.name ?? '默认车队项目',
+      tenantId: 'tenant-001',
+      boundVehiclePlate: null,
+      boundVin: null,
+      onlineStatus: 'OFFLINE',
+      signalRsrp: undefined,
+      firmwareVersion: 'v2.1.0',
+      status: item.status || 'ACTIVE',
+      activatedAt: now,
+      lastHeartbeatAt: undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    inMemoryDevices = [newDevice, ...inMemoryDevices];
+    successCount++;
+  }
+
+  return {
+    total: devices.length,
+    successCount,
+    errors,
+  };
+}
