@@ -750,6 +750,7 @@ export const VehicleListView: React.FC = () => {
             <Input
               placeholder="例如: LFPH2E023N1000001"
               maxLength={17}
+              style={{ textTransform: 'uppercase' }}
               addonAfter={
                 <Button
                   type="link"
@@ -780,7 +781,7 @@ export const VehicleListView: React.FC = () => {
               },
             ]}
           >
-            <Input placeholder="例如: 粤B·88888 或 粤B·D12345" />
+            <Input placeholder="例如: 粤B·88888 或 粤B·D12345" style={{ textTransform: 'uppercase' }} />
           </Form.Item>
 
           <Row gutter={16}>
