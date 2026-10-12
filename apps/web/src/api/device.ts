@@ -7,6 +7,7 @@ import {
   type CreateDeviceInput,
   type DeviceLifecycleStatus,
   type OnlineStatus,
+  isValidStatusTransition,
   isApiError,
   filterDevices,
   SEED_DEVICES,
@@ -115,6 +116,9 @@ export async function updateDeviceStatusApi(
   const index = inMemoryDevices.findIndex((d) => d.id === id);
   if (index !== -1) {
     const existing = inMemoryDevices[index]!;
+    if (!isValidStatusTransition(existing.status, status)) {
+      throw new Error(`非法状态流转：当前状态 ${existing.status} 不可变更为 ${status}`);
+    }
     const updated: DeviceDto = {
       ...existing,
       status,

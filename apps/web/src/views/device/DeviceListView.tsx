@@ -57,6 +57,7 @@ import {
   updateDeviceStatusApi,
   fetchProjectsApi,
 } from '../../api/device.ts';
+import { useTenantStore } from '../../store/useTenantStore.ts';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -155,10 +156,19 @@ export const DeviceListView: React.FC = () => {
     loadData();
   }, [loadData]);
 
-  // 计算顶部汇总指标（默认租户设备配额 1000 台）
+  // 获取当前租户的动态设备配额约束（未设置时回退至 1000 默认容量）
+  const currentTenantId = useTenantStore((s) => s.currentTenantId);
+  const tenantList = useTenantStore((s) => s.tenantList);
+
+  const tenantQuota = useMemo(() => {
+    const activeTenant = tenantList.find((t) => t.id === currentTenantId);
+    return activeTenant?.quotaDeviceCount || 1000;
+  }, [tenantList, currentTenantId]);
+
+  // 计算顶部汇总指标与动态配额比
   const stats = useMemo(() => {
-    return calculateDeviceStats(devices, 1000);
-  }, [devices]);
+    return calculateDeviceStats(devices, tenantQuota);
+  }, [devices, tenantQuota]);
 
   // 计算可筛选固件版本列表
   const availableFirmwareVersions = useMemo(() => {
@@ -242,6 +252,8 @@ export const DeviceListView: React.FC = () => {
     } catch (err) {
       if (isApiError(err)) {
         message.error(`建档失败: ${err.message}`);
+      } else if (!(err && typeof err === 'object' && 'errorFields' in err)) {
+        message.error('建档操作异常，请稍后重试');
       }
     } finally {
       setSubmittingCreate(false);

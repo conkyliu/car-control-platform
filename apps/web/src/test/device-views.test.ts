@@ -426,5 +426,19 @@ describe('Device Asset Management Center Core Logic Test Suite (TDD)', () => {
     // Update status falls back and updates status
     const updated = await updateDeviceStatusApi(created.id, 'INACTIVE');
     assert.equal(updated.status, 'INACTIVE');
+
+    // Decommission device to terminal state
+    const decommissioned = await updateDeviceStatusApi(created.id, 'DECOMMISSIONED');
+    assert.equal(decommissioned.status, 'DECOMMISSIONED');
+
+    // Attempting to reactivate a decommissioned device must be rejected by defense-in-depth guard
+    await assert.rejects(
+      async () => {
+        await updateDeviceStatusApi(created.id, 'ACTIVE');
+      },
+      (err: any) => {
+        return err.message.includes('非法状态流转');
+      }
+    );
   });
 });
