@@ -44,6 +44,7 @@ import { NavTabs } from './NavTabs.tsx';
 import { CarControlPanel } from '../components/CarControlPanel.tsx';
 import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
 import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
+import { DeviceListView } from '../views/device/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -138,7 +139,11 @@ export const AdminLayout: React.FC = () => {
       return <AuditLogView />;
     }
 
-    if (activeKey === RoutePath.COMMANDS || activeKey === RoutePath.DEVICES) {
+    if (activeKey === RoutePath.DEVICES) {
+      return <DeviceListView />;
+    }
+
+    if (activeKey === RoutePath.COMMANDS) {
       return <CarControlPanel />;
     }
 
