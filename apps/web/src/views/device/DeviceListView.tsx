@@ -59,6 +59,7 @@ import {
 } from '../../api/device.ts';
 import { useTenantStore } from '../../store/useTenantStore.ts';
 import { BatchImportModal } from './BatchImportModal.tsx';
+import { DeviceDetailDrawer } from './DeviceDetailDrawer.tsx';
 
 const { Title, Text, Paragraph } = Typography;
 
@@ -118,8 +119,8 @@ export const DeviceListView: React.FC = () => {
   const [submittingCreate, setSubmittingCreate] = useState(false);
   const [createForm] = Form.useForm();
 
-  // 查看详情弹窗状态
-  const [detailModalVisible, setDetailModalVisible] = useState(false);
+  // 查看设备详情抽屉状态 (640px 监控与远程配置)
+  const [detailDrawerVisible, setDetailDrawerVisible] = useState(false);
   const [selectedDevice, setSelectedDevice] = useState<DeviceDto | null>(null);
 
   // 批量导入向导模态框状态
@@ -217,10 +218,10 @@ export const DeviceListView: React.FC = () => {
     setBatchImportModalVisible(true);
   };
 
-  // 打开详情
+  // 打开设备详情抽屉 (640px 实时监控与远程配置)
   const handleViewDetail = (record: DeviceDto) => {
     setSelectedDevice(record);
-    setDetailModalVisible(true);
+    setDetailDrawerVisible(true);
   };
 
   // 变更设备生命周期状态 (ACTIVE / INACTIVE / DECOMMISSIONED)
@@ -822,106 +823,13 @@ export const DeviceListView: React.FC = () => {
         </Form>
       </Modal>
 
-      {/* 设备详情简要预览模态框 (Task 3 接入 640px 专属详情抽屉) */}
-      <Modal
-        title={
-          <Space>
-            <InfoCircleOutlined style={{ color: '#1677ff' }} />
-            <span>设备资产详情预览</span>
-            {selectedDevice && (
-              <Tag color="blue">{selectedDevice.deviceNo}</Tag>
-            )}
-          </Space>
-        }
-        open={detailModalVisible}
-        onCancel={() => setDetailModalVisible(false)}
-        footer={[
-          <Button key="close" type="primary" onClick={() => setDetailModalVisible(false)}>
-            关闭
-          </Button>,
-        ]}
-        width={680}
-      >
-        {selectedDevice && (
-          <div style={{ marginTop: 16 }}>
-            <Descriptions bordered size="small" column={2}>
-              <Descriptions.Item label="设备编号">
-                <Text copyable style={{ fontFamily: 'monospace', fontWeight: 600 }}>
-                  {selectedDevice.deviceNo}
-                </Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="在线状态">
-                {(() => {
-                  const meta = getOnlineStatusMeta(selectedDevice.onlineStatus);
-                  return <Badge color={meta.badgeColor} text={meta.label} />;
-                })()}
-              </Descriptions.Item>
-              <Descriptions.Item label="IMEI">
-                <Text copyable style={{ fontFamily: 'monospace' }}>
-                  {selectedDevice.imei}
-                </Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="ICCID">
-                <Text copyable style={{ fontFamily: 'monospace' }}>
-                  {selectedDevice.iccid || '-'}
-                </Text>
-              </Descriptions.Item>
-              <Descriptions.Item label="硬件型号">
-                {selectedDevice.productName || selectedDevice.productKey}
-              </Descriptions.Item>
-              <Descriptions.Item label="所属项目">
-                {selectedDevice.projectName || selectedDevice.projectId}
-              </Descriptions.Item>
-              <Descriptions.Item label="绑定车牌">
-                {selectedDevice.boundVehiclePlate ? (
-                  <Tag color="blue">{selectedDevice.boundVehiclePlate}</Tag>
-                ) : (
-                  <Tag color="default">未绑定</Tag>
-                )}
-              </Descriptions.Item>
-              <Descriptions.Item label="绑定 VIN">
-                {selectedDevice.boundVin || '-'}
-              </Descriptions.Item>
-              <Descriptions.Item label="固件版本">
-                <Tag color="cyan">{selectedDevice.firmwareVersion}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="4G 信号 RSRP">
-                <SignalIndicator rsrp={selectedDevice.signalRsrp} />
-              </Descriptions.Item>
-              <Descriptions.Item label="主电瓶电压">
-                {selectedDevice.mainVoltage ? `${selectedDevice.mainVoltage} V` : '-'}
-              </Descriptions.Item>
-              <Descriptions.Item label="备用电池百分比">
-                {selectedDevice.backupBatteryPercent !== undefined
-                  ? `${selectedDevice.backupBatteryPercent} %`
-                  : '-'}
-              </Descriptions.Item>
-              <Descriptions.Item label="芯片温度">
-                {selectedDevice.temperature !== undefined ? `${selectedDevice.temperature} °C` : '-'}
-              </Descriptions.Item>
-              <Descriptions.Item label="生命周期状态">
-                <Tag color={getLifecycleStatusMeta(selectedDevice.status).color}>
-                  {getLifecycleStatusMeta(selectedDevice.status).label}
-                </Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="激活时间">
-                {selectedDevice.activatedAt || '-'}
-              </Descriptions.Item>
-              <Descriptions.Item label="最后心跳时间">
-                {selectedDevice.lastHeartbeatAt || '-'}
-              </Descriptions.Item>
-            </Descriptions>
-
-            <Alert
-              style={{ marginTop: 16 }}
-              type="info"
-              showIcon
-              message="设备详情 640px 滑出抽屉与远程参数配置面板"
-              description="该设备的三标签页实时工况监控与远程参数配置（心跳周期/APN/重启指令）将在 Sprint 2 Task 3 中完整交付。"
-            />
-          </div>
-        )}
-      </Modal>
+      {/* 设备详情 640px 专属监控抽屉与远程参数配置中心 */}
+      <DeviceDetailDrawer
+        open={detailDrawerVisible}
+        deviceId={selectedDevice?.id ?? null}
+        onClose={() => setDetailDrawerVisible(false)}
+        onSuccess={loadData}
+      />
 
       {/* 批量设备导入向导模态框 */}
       <BatchImportModal

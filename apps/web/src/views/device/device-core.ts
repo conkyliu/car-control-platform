@@ -39,6 +39,23 @@ export type OnlineStatus = 'ONLINE' | 'OFFLINE' | 'ALARMING' | 'UPGRADING' | 'UN
 
 export type DeviceLifecycleStatus = 'ACTIVE' | 'INACTIVE' | 'DECOMMISSIONED';
 
+export interface BoundVehicleDetail {
+  plate: string;
+  vin: string;
+  model: string;
+  ownerName: string;
+  ownerPhone: string;
+}
+
+export interface DeviceConfigInput {
+  heartbeatInterval: number; // 心跳上报周期 (秒, 10~3600)
+  apn: string; // APN 接入点名称
+  locationReportEnabled?: boolean; // 定位上报开关
+  locationReportInterval?: number; // 定位上报间隔 (秒, 5~600)
+  blePkeEnabled?: boolean; // 蓝牙 PKE 感应开关
+  blePkeSensitivity?: number; // 蓝牙 PKE 灵敏度档位 (1~5)
+}
+
 export interface DeviceDto {
   id: string;
   deviceNo: string;
@@ -62,6 +79,25 @@ export interface DeviceDto {
   mainVoltage?: number;
   backupBatteryPercent?: number;
   temperature?: number;
+  orgName?: string;
+  csq?: number;
+  gpsCoordinates?: string;
+  gpsStatus?: string;
+  satelliteCount?: number;
+  lastHeartbeatLatency?: number;
+  boundVehicle?: BoundVehicleDetail | null;
+  config?: DeviceConfigInput;
+}
+
+export interface DeviceDetailDto extends DeviceDto {
+  orgName?: string;
+  csq?: number;
+  gpsCoordinates?: string;
+  gpsStatus?: string;
+  satelliteCount?: number;
+  lastHeartbeatLatency?: number;
+  boundVehicle?: BoundVehicleDetail | null;
+  config?: DeviceConfigInput;
 }
 
 export interface DeviceQueryParams {
@@ -301,6 +337,107 @@ export function isApiError(err: unknown): err is ApiError {
     return typeof candidate.statusCode === 'number' && typeof candidate.message === 'string';
   }
   return false;
+}
+
+export type VoltageHealth = 'NORMAL' | 'LOW' | 'OVERVOLTAGE' | 'UNKNOWN';
+
+/**
+ * 主电瓶电压健康度评定纯函数
+ * 标准 12V 蓄电池健康区间 (11.5V ~ 15.0V 正常；< 11.5V 低电压告警；> 15.0V 过压告警)
+ */
+export function validateVoltage(v?: number | null): VoltageHealth {
+  if (v === undefined || v === null || Number.isNaN(v)) {
+    return 'UNKNOWN';
+  }
+  if (v < 11.5) {
+    return 'LOW';
+  }
+  if (v > 15.0) {
+    return 'OVERVOLTAGE';
+  }
+  return 'NORMAL';
+}
+
+/**
+ * 主电瓶电压状态元数据
+ */
+export function getVoltageStatusMeta(v?: number | null): {
+  status: VoltageHealth;
+  label: string;
+  color: string;
+  alertType?: 'success' | 'warning' | 'error' | 'info';
+  isAlert: boolean;
+} {
+  const health = validateVoltage(v);
+  switch (health) {
+    case 'LOW':
+      return { status: 'LOW', label: '低电压告警', color: '#faad14', alertType: 'warning', isAlert: true };
+    case 'OVERVOLTAGE':
+      return { status: 'OVERVOLTAGE', label: '发电机过压告警', color: '#ff4d4f', alertType: 'error', isAlert: true };
+    case 'NORMAL':
+      return { status: 'NORMAL', label: '电压正常', color: '#52c41a', alertType: 'success', isAlert: false };
+    case 'UNKNOWN':
+    default:
+      return { status: 'UNKNOWN', label: '未知', color: '#8c8c8c', alertType: 'info', isAlert: false };
+  }
+}
+
+export type TemperatureHealth = 'NORMAL' | 'WARNING' | 'OVERHEAT' | 'UNKNOWN';
+
+/**
+ * 芯片工作温度评定纯函数
+ * < 60°C 正常绿色；60~75°C 警告橙色；> 75°C 过热告警标红
+ */
+export function validateTemperature(t?: number | null): TemperatureHealth {
+  if (t === undefined || t === null || Number.isNaN(t)) {
+    return 'UNKNOWN';
+  }
+  if (t > 75) {
+    return 'OVERHEAT';
+  }
+  if (t >= 60) {
+    return 'WARNING';
+  }
+  return 'NORMAL';
+}
+
+/**
+ * 芯片工作温度状态元数据
+ */
+export function getTemperatureStatusMeta(t?: number | null): {
+  status: TemperatureHealth;
+  label: string;
+  color: string;
+  alertType?: 'success' | 'warning' | 'error' | 'info';
+  isAlert: boolean;
+} {
+  const health = validateTemperature(t);
+  switch (health) {
+    case 'OVERHEAT':
+      return { status: 'OVERHEAT', label: '芯片过热告警', color: '#ff4d4f', alertType: 'error', isAlert: true };
+    case 'WARNING':
+      return { status: 'WARNING', label: '芯片温度偏高', color: '#fa8c16', alertType: 'warning', isAlert: true };
+    case 'NORMAL':
+      return { status: 'NORMAL', label: '温度正常', color: '#52c41a', alertType: 'success', isAlert: false };
+    case 'UNKNOWN':
+    default:
+      return { status: 'UNKNOWN', label: '未知', color: '#8c8c8c', alertType: 'info', isAlert: false };
+  }
+}
+
+/**
+ * 心跳参数范围校验 (10~3600 秒)
+ */
+export function validateHeartbeatInterval(sec?: number | null): boolean {
+  if (typeof sec !== 'number' || Number.isNaN(sec)) return false;
+  return sec >= 10 && sec <= 3600;
+}
+
+/**
+ * 安全确认码严格校验 (严格等于 'REBOOT')
+ */
+export function validateSecurityCode(code?: string | null): boolean {
+  return code === 'REBOOT';
 }
 
 /**
