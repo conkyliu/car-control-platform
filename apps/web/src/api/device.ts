@@ -6,7 +6,6 @@ import {
   type BoundVehicleDetail,
   type DeviceQueryParams,
   type DeviceStatsDto,
-  type ProjectDto,
   type CreateDeviceInput,
   type DeviceLifecycleStatus,
   type OnlineStatus,
@@ -16,8 +15,17 @@ import {
   validateHeartbeatInterval,
   validateSecurityCode,
   SEED_DEVICES,
-  SEED_PROJECTS,
 } from '../views/device/device-core.ts';
+import {
+  type ProjectDto,
+  type ProjectStatus,
+  type CreateProjectInput,
+  type UpdateProjectInput,
+  validateProjectCode,
+  canArchiveProject,
+  allocateDevices,
+  SEED_PROJECT_DETAILS,
+} from '../views/device/project-core.ts';
 
 export type {
   DeviceDto,
@@ -27,14 +35,17 @@ export type {
   DeviceQueryParams,
   DeviceStatsDto,
   ProjectDto,
+  ProjectStatus,
   CreateDeviceInput,
+  CreateProjectInput,
+  UpdateProjectInput,
   DeviceLifecycleStatus,
   OnlineStatus,
 };
 
 // 本地内存备份状态池（支持离线环境和开发环境平滑降级）
 let inMemoryDevices: DeviceDto[] = [...SEED_DEVICES];
-let inMemoryProjects: ProjectDto[] = [...SEED_PROJECTS];
+let inMemoryProjects: ProjectDto[] = [...SEED_PROJECT_DETAILS];
 
 export function getInMemoryDevices(): DeviceDto[] {
   return inMemoryDevices;
@@ -163,6 +174,187 @@ export async function fetchProjectsApi(): Promise<ProjectDto[]> {
   }
 
   return [...inMemoryProjects];
+}
+
+/**
+ * 创建新项目 API
+ */
+export async function createProjectApi(data: CreateProjectInput): Promise<ProjectDto> {
+  if (!validateProjectCode(data.code)) {
+    throw new Error('项目代号不符合规范，请输入 3~20 位大写英文字母、数字或下划线');
+  }
+
+  try {
+    const result = await http.post<ProjectDto>('/projects', data);
+    if (result && result.id) {
+      return result;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const newProject: ProjectDto = {
+    id: `proj-${Date.now()}`,
+    name: data.name.trim(),
+    code: data.code.trim().toUpperCase(),
+    orgName: data.orgName?.trim() || '默认运营机构',
+    contactName: data.contactName?.trim(),
+    contactPhone: data.contactPhone?.trim(),
+    description: data.description?.trim(),
+    status: data.status || 'ACTIVE',
+    deviceCount: 0,
+    vehicleCount: 0,
+    onlineDeviceCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  inMemoryProjects = [newProject, ...inMemoryProjects];
+  return newProject;
+}
+
+/**
+ * 更新项目基础信息 API
+ */
+export async function updateProjectApi(
+  id: string,
+  data: UpdateProjectInput
+): Promise<ProjectDto> {
+  if (data.code && !validateProjectCode(data.code)) {
+    throw new Error('项目代号不符合规范，请输入 3~20 位大写英文字母、数字或下划线');
+  }
+
+  try {
+    const result = await http.patch<ProjectDto>(`/projects/${encodeURIComponent(id)}`, data);
+    if (result && result.id) {
+      return result;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const index = inMemoryProjects.findIndex((p) => p.id === id);
+  if (index === -1) {
+    throw new Error(`项目 ID "${id}" 未找到`);
+  }
+
+  const target = inMemoryProjects[index]!;
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  const updated: ProjectDto = {
+    ...target,
+    ...(data.name ? { name: data.name.trim() } : {}),
+    ...(data.code ? { code: data.code.trim().toUpperCase() } : {}),
+    ...(data.orgName !== undefined ? { orgName: data.orgName.trim() } : {}),
+    ...(data.contactName !== undefined ? { contactName: data.contactName.trim() } : {}),
+    ...(data.contactPhone !== undefined ? { contactPhone: data.contactPhone.trim() } : {}),
+    ...(data.description !== undefined ? { description: data.description.trim() } : {}),
+    ...(data.status ? { status: data.status } : {}),
+    updatedAt: now,
+  };
+
+  inMemoryProjects[index] = updated;
+  return updated;
+}
+
+/**
+ * 切换项目生命周期状态 API (ACTIVE / PAUSED / ARCHIVED)
+ * ARCHIVED 受到 canArchiveProject 安全守卫保护
+ */
+export async function updateProjectStatusApi(
+  id: string,
+  status: ProjectStatus
+): Promise<ProjectDto> {
+  try {
+    const result = await http.patch<ProjectDto>(
+      `/projects/${encodeURIComponent(id)}/status`,
+      { status }
+    );
+    if (result && result.id) {
+      return result;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const index = inMemoryProjects.findIndex((p) => p.id === id);
+  if (index === -1) {
+    throw new Error(`项目 ID "${id}" 未找到`);
+  }
+
+  const target = inMemoryProjects[index]!;
+
+  if (status === 'ARCHIVED') {
+    const onlineCount = inMemoryDevices.filter(
+      (d) => d.projectId === id && d.onlineStatus === 'ONLINE'
+    ).length;
+    const boundVehicles = inMemoryDevices.filter(
+      (d) => d.projectId === id && Boolean(d.boundVin || d.boundVehiclePlate)
+    ).length;
+    const guard = canArchiveProject(
+      target,
+      onlineCount || target.onlineDeviceCount || 0,
+      boundVehicles || target.vehicleCount || 0
+    );
+    if (!guard.allowed) {
+      throw new Error(guard.reason || '项目存在在线设备或绑定车辆，禁止直接归档');
+    }
+  }
+
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const updated: ProjectDto = {
+    ...target,
+    status,
+    updatedAt: now,
+  };
+
+  inMemoryProjects[index] = updated;
+  return updated;
+}
+
+/**
+ * 批量调配设备至指定项目 API
+ */
+export async function allocateDevicesToProjectApi(
+  projectId: string,
+  deviceIds: string[]
+): Promise<boolean> {
+  try {
+    const result = await http.post<{ success: boolean }>(
+      `/projects/${encodeURIComponent(projectId)}/allocate-devices`,
+      { deviceIds }
+    );
+    if (result && typeof result.success === 'boolean') {
+      return result.success;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const project = inMemoryProjects.find((p) => p.id === projectId);
+  if (!project) {
+    throw new Error(`项目 ID "${projectId}" 未找到`);
+  }
+
+  inMemoryDevices = allocateDevices(inMemoryDevices, projectId, project.name, deviceIds);
+
+  // 同步刷新各项目的 deviceCount 与 onlineDeviceCount 统计
+  for (const p of inMemoryProjects) {
+    const pDevices = inMemoryDevices.filter((d) => d.projectId === p.id);
+    p.deviceCount = pDevices.length;
+    p.onlineDeviceCount = pDevices.filter((d) => d.onlineStatus === 'ONLINE').length;
+  }
+
+  return true;
 }
 
 export interface BatchImportErrorItem {

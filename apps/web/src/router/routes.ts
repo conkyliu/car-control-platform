@@ -14,6 +14,8 @@ export const RoutePath = {
   OTA: '/ota',
   LOGS: '/logs',
   MONITOR: '/monitor',
+  MODELS: '/models',
+  PROJECTS: '/projects',
 } as const;
 
 export type RoutePathType = (typeof RoutePath)[keyof typeof RoutePath];
@@ -195,6 +197,24 @@ export const routes: RouteMeta[] = [
     permission: 'monitor:read',
     order: 63,
     description: 'Prometheus微服务指标可视化、分布式锁与QPS吞吐监控',
+  },
+  {
+    path: RoutePath.MODELS,
+    title: '车型品牌管理',
+    icon: 'CarOutlined',
+    category: RouteCategory.ASSET_MANAGEMENT,
+    permission: 'vehicle:read',
+    hideInMenu: true,
+    description: '车型档案、通讯协议0x02车型代码维护与品牌资产管理',
+  },
+  {
+    path: RoutePath.PROJECTS,
+    title: '项目归属配置',
+    icon: 'ClusterOutlined',
+    category: RouteCategory.ASSET_MANAGEMENT,
+    permission: 'device:read',
+    hideInMenu: true,
+    description: '项目全生命周期运营、机构归属与设备调配中枢',
   },
 ];
 

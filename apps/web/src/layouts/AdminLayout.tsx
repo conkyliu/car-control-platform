@@ -44,8 +44,8 @@ import { NavTabs } from './NavTabs.tsx';
 import { CarControlPanel } from '../components/CarControlPanel.tsx';
 import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
 import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
-import { DeviceListView } from '../views/device/index.ts';
-import { VehicleListView } from '../views/vehicle/index.ts';
+import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
+import { VehicleListView, ModelManageView } from '../views/vehicle/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -146,6 +146,14 @@ export const AdminLayout: React.FC = () => {
 
     if (activeKey === RoutePath.VEHICLES) {
       return <VehicleListView />;
+    }
+
+    if (activeKey === RoutePath.MODELS) {
+      return <ModelManageView />;
+    }
+
+    if (activeKey === RoutePath.PROJECTS) {
+      return <ProjectManageView />;
     }
 
     if (activeKey === RoutePath.COMMANDS) {

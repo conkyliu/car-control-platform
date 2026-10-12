@@ -3,16 +3,27 @@ import {
   type VehicleDto,
   type VehicleQueryParams,
   type VehicleStatsDto,
-  type BrandDto,
-  type ModelDto,
   type VehicleStatus,
   filterVehicles,
   isValidVehicleStatusTransition,
   isApiError,
-  SEED_BRANDS,
-  SEED_MODELS,
   SEED_VEHICLES,
 } from '../views/vehicle/vehicle-core.ts';
+import {
+  type BrandDto,
+  type ModelDto,
+  type CreateModelInput,
+  type UpdateModelInput,
+  type CreateBrandInput,
+  type UpdateBrandInput,
+  validateProtocolCode,
+  formatProtocolCode,
+  validateBrandCode,
+  canDeleteModel,
+  canDeleteBrand,
+  SEED_BRANDS as RICH_SEED_BRANDS,
+  SEED_MODELS as RICH_SEED_MODELS,
+} from '../views/vehicle/model-core.ts';
 import { SEED_PROJECTS, type DeviceDto } from '../views/device/device-core.ts';
 import { getInMemoryDevices, setInMemoryDevices } from './device.ts';
 import {
@@ -27,6 +38,10 @@ export type {
   BrandDto,
   ModelDto,
   VehicleStatus,
+  CreateModelInput,
+  UpdateModelInput,
+  CreateBrandInput,
+  UpdateBrandInput,
 };
 
 export interface CreateVehicleInput {
@@ -43,8 +58,8 @@ export interface CreateVehicleInput {
 
 // 本地内存备份状态池 (支持离线演示与无后端环境平滑降级)
 let inMemoryVehicles: VehicleDto[] = [...SEED_VEHICLES];
-let inMemoryBrands: BrandDto[] = [...SEED_BRANDS];
-let inMemoryModels: ModelDto[] = [...SEED_MODELS];
+let inMemoryBrands: BrandDto[] = [...RICH_SEED_BRANDS];
+let inMemoryModels: ModelDto[] = [...RICH_SEED_MODELS];
 
 export function getInMemoryVehicles(): VehicleDto[] {
   return inMemoryVehicles;
@@ -232,6 +247,233 @@ export async function fetchModelsApi(brandId?: string): Promise<ModelDto[]> {
     return inMemoryModels.filter((m) => m.brandId === brandId);
   }
   return inMemoryModels;
+}
+
+/**
+ * 新增车型档案 API (严格校验 0x02 协议车型代号)
+ */
+export async function createModelApi(data: CreateModelInput): Promise<ModelDto> {
+  if (!validateProtocolCode(data.code)) {
+    throw new Error('协议车型代号 0x02 格式不符合规范，请输入形如 0x0101 的 16 进制代号');
+  }
+
+  try {
+    const result = await http.post<ModelDto>('/vehicles/models', data);
+    if (result && result.id) {
+      return result;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const brand = inMemoryBrands.find((b) => b.id === data.brandId);
+  const formattedCode = formatProtocolCode(data.code);
+
+  const newModel: ModelDto = {
+    id: `model-${Date.now()}`,
+    brandId: data.brandId,
+    brandName: brand?.name ?? '未知品牌',
+    name: data.name.trim(),
+    code: formattedCode,
+    powertrain: data.powertrain,
+    capabilityTemplateId: data.capabilityTemplateId,
+    capabilityTemplateName: data.capabilityTemplateName,
+    vehicleCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  inMemoryModels = [newModel, ...inMemoryModels];
+  if (brand) {
+    brand.modelCount = (brand.modelCount ?? 0) + 1;
+  }
+  return newModel;
+}
+
+/**
+ * 更新车型信息 API
+ */
+export async function updateModelApi(id: string, data: UpdateModelInput): Promise<ModelDto> {
+  if (data.code && !validateProtocolCode(data.code)) {
+    throw new Error('协议车型代号 0x02 格式不符合规范，请输入形如 0x0101 的 16 进制代号');
+  }
+
+  try {
+    const result = await http.patch<ModelDto>(`/vehicles/models/${encodeURIComponent(id)}`, data);
+    if (result && result.id) {
+      return result;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const index = inMemoryModels.findIndex((m) => m.id === id);
+  if (index === -1) {
+    throw new Error(`车型 ID "${id}" 未找到`);
+  }
+
+  const target = inMemoryModels[index]!;
+  const brand = data.brandId ? inMemoryBrands.find((b) => b.id === data.brandId) : undefined;
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  const updatedModel: ModelDto = {
+    ...target,
+    ...(data.brandId ? { brandId: data.brandId, brandName: brand?.name ?? target.brandName } : {}),
+    ...(data.name ? { name: data.name.trim() } : {}),
+    ...(data.code ? { code: formatProtocolCode(data.code) } : {}),
+    ...(data.powertrain ? { powertrain: data.powertrain } : {}),
+    ...(data.capabilityTemplateId !== undefined ? { capabilityTemplateId: data.capabilityTemplateId } : {}),
+    ...(data.capabilityTemplateName !== undefined ? { capabilityTemplateName: data.capabilityTemplateName } : {}),
+    updatedAt: now,
+  };
+
+  inMemoryModels[index] = updatedModel;
+  return updatedModel;
+}
+
+/**
+ * 删除车型 API (防删除守卫：检查已有车辆数)
+ */
+export async function deleteModelApi(id: string): Promise<boolean> {
+  try {
+    const result = await http.delete<{ success: boolean } | boolean>(`/vehicles/models/${encodeURIComponent(id)}`);
+    if (typeof result === 'boolean') return result;
+    if (result && typeof result.success === 'boolean') return result.success;
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const index = inMemoryModels.findIndex((m) => m.id === id);
+  if (index === -1) {
+    throw new Error(`车型 ID "${id}" 未找到`);
+  }
+
+  const model = inMemoryModels[index]!;
+  const boundVehicles = inMemoryVehicles.filter((v) => v.modelId === id).length;
+  const guard = canDeleteModel({ ...model, vehicleCount: boundVehicles || model.vehicleCount });
+  if (!guard.allowed) {
+    throw new Error(guard.reason || '已有车辆关联该车型，禁止删除');
+  }
+
+  inMemoryModels = inMemoryModels.filter((m) => m.id !== id);
+  const brand = inMemoryBrands.find((b) => b.id === model.brandId);
+  if (brand && brand.modelCount && brand.modelCount > 0) {
+    brand.modelCount--;
+  }
+
+  return true;
+}
+
+/**
+ * 新增车辆品牌 API
+ */
+export async function createBrandApi(data: CreateBrandInput): Promise<BrandDto> {
+  if (!validateBrandCode(data.code)) {
+    throw new Error('品牌代号格式不符合规范，请输入 2~12 位大写英文字母、数字或下划线');
+  }
+
+  try {
+    const result = await http.post<BrandDto>('/vehicles/brands', data);
+    if (result && result.id) {
+      return result;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const newBrand: BrandDto = {
+    id: `brand-${data.code.toLowerCase()}`,
+    name: data.name.trim(),
+    code: data.code.trim().toUpperCase(),
+    country: data.country.trim(),
+    logoUrl: data.logoUrl,
+    modelCount: 0,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  inMemoryBrands = [newBrand, ...inMemoryBrands];
+  return newBrand;
+}
+
+/**
+ * 更新车辆品牌 API
+ */
+export async function updateBrandApi(id: string, data: UpdateBrandInput): Promise<BrandDto> {
+  if (data.code && !validateBrandCode(data.code)) {
+    throw new Error('品牌代号格式不符合规范，请输入 2~12 位大写英文字母、数字或下划线');
+  }
+
+  try {
+    const result = await http.patch<BrandDto>(`/vehicles/brands/${encodeURIComponent(id)}`, data);
+    if (result && result.id) {
+      return result;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const index = inMemoryBrands.findIndex((b) => b.id === id);
+  if (index === -1) {
+    throw new Error(`品牌 ID "${id}" 未找到`);
+  }
+
+  const target = inMemoryBrands[index]!;
+  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
+
+  const updatedBrand: BrandDto = {
+    ...target,
+    ...(data.name ? { name: data.name.trim() } : {}),
+    ...(data.code ? { code: data.code.trim().toUpperCase() } : {}),
+    ...(data.country ? { country: data.country.trim() } : {}),
+    ...(data.logoUrl !== undefined ? { logoUrl: data.logoUrl } : {}),
+    updatedAt: now,
+  };
+
+  inMemoryBrands[index] = updatedBrand;
+  return updatedBrand;
+}
+
+/**
+ * 删除车辆品牌 API (防删除守卫：检查该品牌下车型数)
+ */
+export async function deleteBrandApi(id: string): Promise<boolean> {
+  try {
+    const result = await http.delete<{ success: boolean } | boolean>(`/vehicles/brands/${encodeURIComponent(id)}`);
+    if (typeof result === 'boolean') return result;
+    if (result && typeof result.success === 'boolean') return result.success;
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  const index = inMemoryBrands.findIndex((b) => b.id === id);
+  if (index === -1) {
+    throw new Error(`品牌 ID "${id}" 未找到`);
+  }
+
+  const brand = inMemoryBrands[index]!;
+  const boundModels = inMemoryModels.filter((m) => m.brandId === id).length;
+  const guard = canDeleteBrand({ ...brand, modelCount: boundModels || brand.modelCount });
+  if (!guard.allowed) {
+    throw new Error(guard.reason || '该品牌下存在车型，禁止删除');
+  }
+
+  inMemoryBrands = inMemoryBrands.filter((b) => b.id !== id);
+  return true;
 }
 
 /**

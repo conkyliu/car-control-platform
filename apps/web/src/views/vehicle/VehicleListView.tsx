@@ -34,7 +34,10 @@ import {
   ToolOutlined,
   SafetyCertificateOutlined,
   InfoCircleOutlined,
+  AppstoreOutlined,
 } from '@ant-design/icons';
+import { useNavTabsStore } from '../../store/useNavTabsStore.ts';
+import { RoutePath } from '../../router/routes.ts';
 import {
   type VehicleDto,
   type VehicleQueryParams,
@@ -101,6 +104,7 @@ export const VehicleListView: React.FC = () => {
   // 租户与配额数据
   const currentTenantId = useTenantStore((s) => s.currentTenantId);
   const tenantList = useTenantStore((s) => s.tenantList);
+  const openTab = useNavTabsStore((s) => s.openTab);
 
   const tenantQuota = useMemo(() => {
     const activeTenant = tenantList.find((t) => t.id === currentTenantId);
@@ -686,13 +690,26 @@ export const VehicleListView: React.FC = () => {
           </Col>
 
           <Col xs={24} xl={6} style={{ textAlign: 'right' }}>
-            <Button
-              type="primary"
-              icon={<PlusOutlined />}
-              onClick={handleOpenCreateModal}
-            >
-              + 录入车辆
-            </Button>
+            <Space wrap>
+              <Button
+                icon={<AppstoreOutlined />}
+                onClick={() =>
+                  openTab({
+                    key: RoutePath.MODELS,
+                    title: '车型品牌管理',
+                  })
+                }
+              >
+                车型与品牌管理
+              </Button>
+              <Button
+                type="primary"
+                icon={<PlusOutlined />}
+                onClick={handleOpenCreateModal}
+              >
+                + 录入车辆
+              </Button>
+            </Space>
           </Col>
         </Row>
       </Card>

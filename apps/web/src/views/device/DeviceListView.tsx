@@ -32,6 +32,7 @@ import {
   UploadOutlined,
   InfoCircleOutlined,
   ThunderboltOutlined,
+  ApartmentOutlined,
 } from '@ant-design/icons';
 import {
   type DeviceDto,
@@ -58,6 +59,8 @@ import {
   fetchProjectsApi,
 } from '../../api/device.ts';
 import { useTenantStore } from '../../store/useTenantStore.ts';
+import { useNavTabsStore } from '../../store/useNavTabsStore.ts';
+import { RoutePath } from '../../router/routes.ts';
 import { BatchImportModal } from './BatchImportModal.tsx';
 import { DeviceDetailDrawer } from './DeviceDetailDrawer.tsx';
 
@@ -103,6 +106,7 @@ const SignalIndicator: React.FC<{ rsrp?: number | null }> = ({ rsrp }) => {
 };
 
 export const DeviceListView: React.FC = () => {
+  const openTab = useNavTabsStore((s) => s.openTab);
   const [loading, setLoading] = useState(false);
   const [devices, setDevices] = useState<DeviceDto[]>([]);
   const [projects, setProjects] = useState<ProjectDto[]>(SEED_PROJECTS);
@@ -673,8 +677,19 @@ export const DeviceListView: React.FC = () => {
             </Space>
           </Col>
 
-          <Col xs={24} lg={6} style={{ textAlign: 'right' }}>
+          <Col xs={24} lg={8} style={{ textAlign: 'right' }}>
             <Space wrap>
+              <Button
+                icon={<ApartmentOutlined />}
+                onClick={() =>
+                  openTab({
+                    key: RoutePath.PROJECTS,
+                    title: '项目归属配置',
+                  })
+                }
+              >
+                项目归属管理
+              </Button>
               <Button
                 type="primary"
                 icon={<PlusOutlined />}
