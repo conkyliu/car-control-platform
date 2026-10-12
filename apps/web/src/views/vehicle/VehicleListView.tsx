@@ -65,6 +65,7 @@ import {
 import { fetchProjectsApi, fetchDevicesApi, type ProjectDto, type DeviceDto } from '../../api/device.ts';
 import { SEED_PROJECTS } from '../device/device-core.ts';
 import { useTenantStore } from '../../store/useTenantStore.ts';
+import { VehicleBindModal } from './VehicleBindModal.tsx';
 
 const { Text } = Typography;
 
@@ -90,6 +91,7 @@ export const VehicleListView: React.FC = () => {
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
+  const [bindModalOpen, setBindModalOpen] = useState(false);
   const [selectedVehicle, setSelectedVehicle] = useState<VehicleDto | null>(null);
   const [targetStatus, setTargetStatus] = useState<VehicleStatus>('NORMAL');
 
@@ -483,12 +485,11 @@ export const VehicleListView: React.FC = () => {
               type="link"
               size="small"
               onClick={() => {
-                message.info(
-                  `车辆【${record.plateNumber}】软硬件绑定管理将在后续硬件绑定中心 (Task 5) 提供联动！`
-                );
+                setSelectedVehicle(record);
+                setBindModalOpen(true);
               }}
             >
-              {record.deviceId ? '换绑' : '绑定'}
+              {record.deviceId ? '换绑/解绑' : '绑定'}
             </Button>
           </Space>
         );
@@ -1052,6 +1053,17 @@ export const VehicleListView: React.FC = () => {
           )}
         </div>
       </Modal>
+
+      {/* 车辆软硬件绑定 / 换绑 / 解绑管理模态框 */}
+      <VehicleBindModal
+        open={bindModalOpen}
+        vehicle={selectedVehicle}
+        onClose={() => setBindModalOpen(false)}
+        onSuccess={() => {
+          setBindModalOpen(false);
+          loadData();
+        }}
+      />
     </div>
   );
 };

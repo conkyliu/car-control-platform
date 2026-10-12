@@ -13,7 +13,12 @@ import {
   SEED_MODELS,
   SEED_VEHICLES,
 } from '../views/vehicle/vehicle-core.ts';
-import { SEED_PROJECTS } from '../views/device/device-core.ts';
+import { SEED_PROJECTS, type DeviceDto } from '../views/device/device-core.ts';
+import { getInMemoryDevices, setInMemoryDevices } from './device.ts';
+import {
+  validateBindingPair,
+  applyBindingChange,
+} from '../views/vehicle/vehicle-bind-core.ts';
 
 export type {
   VehicleDto,
@@ -40,6 +45,14 @@ export interface CreateVehicleInput {
 let inMemoryVehicles: VehicleDto[] = [...SEED_VEHICLES];
 let inMemoryBrands: BrandDto[] = [...SEED_BRANDS];
 let inMemoryModels: ModelDto[] = [...SEED_MODELS];
+
+export function getInMemoryVehicles(): VehicleDto[] {
+  return inMemoryVehicles;
+}
+
+export function setInMemoryVehicles(vehicles: VehicleDto[]): void {
+  inMemoryVehicles = vehicles;
+}
 
 /**
  * 拉取车辆台账档案列表 API
@@ -219,4 +232,136 @@ export async function fetchModelsApi(brandId?: string): Promise<ModelDto[]> {
     return inMemoryModels.filter((m) => m.brandId === brandId);
   }
   return inMemoryModels;
+}
+
+/**
+ * 绑定或更换车载硬件设备 API
+ * 遵循 isApiError 模式：真实服务端异常抛出中断，离线环境在本地内存池中执行原子双向绑定
+ */
+export async function bindDeviceApi(
+  vehicleId: string,
+  deviceId: string,
+  remark?: string
+): Promise<{ success: boolean; message: string }> {
+  try {
+    const result = await http.post<{ success: boolean; message: string }>(
+      `/vehicles/${encodeURIComponent(vehicleId)}/bind-device`,
+      { deviceId, remark }
+    );
+    if (result && typeof result.success === 'boolean') {
+      return result;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  // 离线/开发环境降级：更新本地内存状态池
+  const currentDevices = getInMemoryDevices();
+  const vehicle = inMemoryVehicles.find((v) => v.id === vehicleId);
+  const device = currentDevices.find((d) => d.id === deviceId);
+
+  if (!vehicle) {
+    throw new Error(`车辆 ID "${vehicleId}" 未找到`);
+  }
+  if (!device) {
+    throw new Error(`设备 ID "${deviceId}" 未找到`);
+  }
+
+  const validation = validateBindingPair(vehicle, device);
+  if (!validation.valid) {
+    throw new Error(validation.error || '软硬件绑定配对规则校验未通过');
+  }
+
+  const {
+    vehicles: nextVehicles,
+    devices: nextDevices,
+    targetVehicle,
+    targetDevice,
+  } = applyBindingChange(inMemoryVehicles, currentDevices, vehicleId, deviceId, remark);
+
+  inMemoryVehicles = nextVehicles;
+  setInMemoryDevices(nextDevices);
+
+  return {
+    success: true,
+    message: `车辆【${targetVehicle?.plateNumber}】与硬件终端【${targetDevice?.deviceNo}】绑定成功`,
+  };
+}
+
+/**
+ * 解除车辆与车载硬件设备绑定 API
+ * 遵循 isApiError 模式：真实服务端异常抛出中断，离线环境解绑并释放设备回库
+ */
+export async function unbindDeviceApi(
+  vehicleId: string,
+  reason?: string
+): Promise<{ success: boolean; message: string }> {
+  try {
+    const result = await http.post<{ success: boolean; message: string }>(
+      `/vehicles/${encodeURIComponent(vehicleId)}/unbind-device`,
+      { reason }
+    );
+    if (result && typeof result.success === 'boolean') {
+      return result;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  // 离线/开发环境降级：解绑并释放设备
+  const currentDevices = getInMemoryDevices();
+  const vehicle = inMemoryVehicles.find((v) => v.id === vehicleId);
+  if (!vehicle) {
+    throw new Error(`车辆 ID "${vehicleId}" 未找到`);
+  }
+
+  const prevDeviceId = vehicle.deviceId;
+  const { vehicles: nextVehicles, devices: nextDevices, targetVehicle } = applyBindingChange(
+    inMemoryVehicles,
+    currentDevices,
+    vehicleId,
+    null,
+    reason
+  );
+
+  inMemoryVehicles = nextVehicles;
+  setInMemoryDevices(nextDevices);
+
+  return {
+    success: true,
+    message: `车辆【${targetVehicle?.plateNumber}】软硬件解绑成功，已解除与车载终端 (ID: ${prevDeviceId || '-'}) 的绑定关系`,
+  };
+}
+
+/**
+ * 获取当前租户下空闲可用车载终端 API
+ * 遵循 isApiError 模式：过滤未被占用的 ACTIVE 设备，支持可选 projectId 过滤
+ */
+export async function fetchAvailableDevicesApi(projectId?: string): Promise<DeviceDto[]> {
+  try {
+    const data = await http.get<DeviceDto[]>(
+      '/devices/available',
+      projectId && projectId !== 'ALL' ? { projectId } : undefined
+    );
+    if (Array.isArray(data)) {
+      return data;
+    }
+  } catch (err) {
+    if (isApiError(err)) {
+      throw err;
+    }
+  }
+
+  // 离线/开发环境降级
+  let available = getInMemoryDevices().filter(
+    (d) => d.status === 'ACTIVE' && !d.boundVin && !d.boundVehiclePlate && !d.boundVehicle
+  );
+  if (projectId && projectId !== 'ALL') {
+    available = available.filter((d) => d.projectId === projectId);
+  }
+  return available;
 }

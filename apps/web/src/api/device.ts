@@ -36,6 +36,14 @@ export type {
 let inMemoryDevices: DeviceDto[] = [...SEED_DEVICES];
 let inMemoryProjects: ProjectDto[] = [...SEED_PROJECTS];
 
+export function getInMemoryDevices(): DeviceDto[] {
+  return inMemoryDevices;
+}
+
+export function setInMemoryDevices(devices: DeviceDto[]): void {
+  inMemoryDevices = devices;
+}
+
 /**
  * 拉取设备资产列表 API
  * 遵循 isApiError 模式：真实服务端异常抛出中断并提示，离线/开发环境平滑降级至种子数据
