@@ -7,6 +7,12 @@ export interface TenantDto {
   code: string;
   status: 'ACTIVE' | 'SUSPENDED' | 'DISABLED';
   quotaDeviceCount: number;
+  usedDeviceCount?: number;
+  quotaVehicleCount?: number;
+  usedVehicleCount?: number;
+  creditCode?: string;
+  contactPerson?: string;
+  contactPhone?: string;
   description?: string;
   createdAt?: string | Date;
   updatedAt?: string | Date;
@@ -27,6 +33,13 @@ export interface OrgNodeDto {
   code: string;
   parentId?: string | null;
   sortOrder?: number;
+  leader?: string;
+  phone?: string;
+  status?: 'ACTIVE' | 'DISABLED';
+  description?: string;
+  deviceCount?: number;
+  vehicleCount?: number;
+  userCount?: number;
   children?: OrgNodeDto[];
 }
 

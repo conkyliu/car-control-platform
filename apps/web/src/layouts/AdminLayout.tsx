@@ -42,6 +42,7 @@ import { AlarmNotificationBell } from './AlarmNotificationBell.tsx';
 import { HeaderUserMenu } from './HeaderUserMenu.tsx';
 import { NavTabs } from './NavTabs.tsx';
 import { CarControlPanel } from '../components/CarControlPanel.tsx';
+import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -116,6 +117,14 @@ export const AdminLayout: React.FC = () => {
 
   // 渲染主内容区域视图
   const renderActiveView = () => {
+    if (activeKey === RoutePath.TENANTS) {
+      return <TenantListView />;
+    }
+
+    if (activeKey === RoutePath.ORGS) {
+      return <OrgTreeView />;
+    }
+
     if (activeKey === RoutePath.COMMANDS || activeKey === RoutePath.DEVICES) {
       return <CarControlPanel />;
     }
