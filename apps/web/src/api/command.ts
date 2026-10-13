@@ -13,6 +13,11 @@ import {
   generateDefaultCapabilities,
   SEED_WORKBENCH_VEHICLES,
 } from '../views/command/command-core.ts';
+import {
+  type CommandTraceDto,
+  type CommandLifecycleStep,
+  SEED_COMMAND_TRACES,
+} from '../views/command/command-stream-core.ts';
 
 export interface CommandRecord {
   id: string;
@@ -213,5 +218,154 @@ export async function fetchCommandHistoryApi(vehicleId: string): Promise<Command
   } catch {
     // 离线降级
     return inMemoryHistory.filter((item) => item.vehicleId === vehicleId);
+  }
+}
+
+/**
+ * 获取指定指令全生命周期流水追踪详情
+ * 具备离线仿真与 SEED_COMMAND_TRACES 匹配降级
+ */
+export async function fetchCommandTraceApi(commandId: string): Promise<CommandTraceDto> {
+  try {
+    const trace = await http.get<CommandTraceDto>(`/commands/${commandId}/trace`);
+    return trace;
+  } catch (err: unknown) {
+    if (isApiError(err) && err.statusCode !== 404 && err.statusCode !== 500 && err.statusCode !== 502) {
+      throw err;
+    }
+
+    // 1. 尝试在预置高保真全链路切片池中查找
+    const matchedSeed = SEED_COMMAND_TRACES.find((item) => item.commandId === commandId);
+    if (matchedSeed) {
+      return matchedSeed;
+    }
+
+    // 2. 尝试从内存历史流水中还原生成链路
+    const record = inMemoryHistory.find((item) => item.id === commandId);
+    if (record) {
+      const createdAt = typeof record.createdAt === 'string' ? record.createdAt : new Date(record.createdAt).toISOString();
+      const duration = record.durationMs || 1000;
+      const finishedAt = record.finishedAt
+        ? typeof record.finishedAt === 'string'
+          ? record.finishedAt
+          : new Date(record.finishedAt).toISOString()
+        : new Date(new Date(createdAt).getTime() + duration).toISOString();
+
+      const t0 = new Date(createdAt).getTime();
+      const valDelta = Math.min(45, Math.floor(duration * 0.05)) || 35;
+      const lockDelta = Math.min(75, Math.floor(duration * 0.08)) || 65;
+      const downDelta = Math.min(180, Math.floor(duration * 0.15)) || 140;
+      const ackWaitDelta = 20;
+
+      const steps: CommandLifecycleStep[] = [
+        {
+          stepIndex: 0,
+          name: 'CREATED',
+          title: '客户端指令创建',
+          status: 'finish',
+          timestamp: new Date(t0).toISOString(),
+          durationMs: 0,
+          description: '系统已初始化并生成指令唯一流水号',
+        },
+        {
+          stepIndex: 1,
+          name: 'VALIDATING',
+          title: '网关安全与权限校验',
+          status: 'finish',
+          timestamp: new Date(t0 + valDelta).toISOString(),
+          durationMs: valDelta,
+          description: '操作员权限与安全级别校验通过',
+        },
+        {
+          stepIndex: 2,
+          name: 'QUEUED',
+          title: '分布式排他加锁与入队',
+          status: 'finish',
+          timestamp: new Date(t0 + valDelta + lockDelta).toISOString(),
+          durationMs: lockDelta,
+          description: '成功获得分布式互斥排他锁',
+        },
+        {
+          stepIndex: 3,
+          name: 'SENT',
+          title: 'MQTT Broker 下发报文',
+          status: 'finish',
+          timestamp: new Date(t0 + valDelta + lockDelta + downDelta).toISOString(),
+          durationMs: downDelta,
+          description: '通过 MQTT 主题发布控制指令',
+        },
+        {
+          stepIndex: 4,
+          name: 'WAITING_ACK',
+          title: '车载终端执行中',
+          status: 'finish',
+          timestamp: new Date(t0 + valDelta + lockDelta + downDelta + ackWaitDelta).toISOString(),
+          durationMs: ackWaitDelta,
+          description: '车载 T-Box 执行中，等待控制器 ACK',
+        },
+        {
+          stepIndex: 5,
+          name: record.status,
+          title: record.status === CommandStatus.SUCCESS ? '终端执行成功并应答' : (record.errorMessage || '执行状态闭环'),
+          status: record.status === CommandStatus.SUCCESS ? 'finish' : 'error',
+          timestamp: finishedAt,
+          durationMs: Math.max(10, duration - (valDelta + lockDelta + downDelta + ackWaitDelta)),
+          description: record.errorMessage || '车机终端执行完毕并回传应答',
+        },
+      ];
+
+      return {
+        commandId: record.id,
+        commandCode: record.commandCode,
+        vehicleId: record.vehicleId,
+        deviceId: record.deviceId,
+        status: record.status,
+        operatorId: record.operatorId,
+        createdAt,
+        finishedAt,
+        durationMs: duration,
+        errorMessage: record.errorMessage,
+        steps,
+        downlinkPayload: {
+          traceId: record.traceId,
+          commandId: record.id,
+          commandCode: record.commandCode,
+          vehicleId: record.vehicleId,
+          deviceId: record.deviceId,
+          idempotencyKey: record.idempotencyKey,
+          params: record.params,
+          timestamp: createdAt,
+        },
+        uplinkPayload:
+          record.status === CommandStatus.SUCCESS
+            ? {
+                traceId: record.traceId,
+                commandId: record.id,
+                ackCode: 0,
+                status: record.status,
+                timestamp: finishedAt,
+              }
+            : undefined,
+      };
+    }
+
+    // 3. 兜底回退：以 SEED_COMMAND_TRACES[0] 为模版返回
+    const fallbackTemplate = SEED_COMMAND_TRACES[0];
+    return {
+      ...fallbackTemplate,
+      commandId,
+      downlinkPayload: fallbackTemplate.downlinkPayload
+        ? {
+            ...fallbackTemplate.downlinkPayload,
+            commandId,
+          }
+        : undefined,
+      uplinkPayload: fallbackTemplate.uplinkPayload
+        ? {
+            ...fallbackTemplate.uplinkPayload,
+            commandId,
+          }
+        : undefined,
+    };
   }
 }

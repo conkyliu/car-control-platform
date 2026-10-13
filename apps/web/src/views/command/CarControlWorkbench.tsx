@@ -72,6 +72,7 @@ import {
   type CommandRecord,
 } from '../../api/command.ts';
 import { useVehicleStore } from '../../store/useVehicleStore.ts';
+import { CommandStreamDrawer } from './CommandStreamDrawer.tsx';
 
 const { Title, Text } = Typography;
 
@@ -129,6 +130,15 @@ export const CarControlWorkbench: React.FC = () => {
 
   // 后备箱财产风险二次确认弹窗
   const [trunkModalOpen, setTrunkModalOpen] = useState(false);
+
+  // 指令全链路流水与状态机追踪抽屉
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [selectedCommandId, setSelectedCommandId] = useState<string | null>(null);
+
+  const handleOpenTraceDrawer = (cmdId?: string) => {
+    setSelectedCommandId(cmdId || commandLogs[0]?.id || 'cmd-seed-01');
+    setDrawerOpen(true);
+  };
 
   // 全局车辆 store 联动
   const setGlobalVehicle = useVehicleStore((s) => s.setVehicle);
@@ -562,6 +572,12 @@ export const CarControlWorkbench: React.FC = () => {
                 />
               </Space>
               <Button
+                icon={<ThunderboltOutlined />}
+                onClick={() => handleOpenTraceDrawer()}
+              >
+                全量链路大屏
+              </Button>
+              <Button
                 icon={<ReloadOutlined />}
                 onClick={() => loadVehicleContext(selectedVehicleId)}
               >
@@ -905,12 +921,23 @@ export const CarControlWorkbench: React.FC = () => {
               </div>
             }
             extra={
-              <Button
-                type="text"
-                size="small"
-                icon={<ReloadOutlined />}
-                onClick={() => loadVehicleContext(selectedVehicleId)}
-              />
+              <Space size="small">
+                <Button
+                  type="link"
+                  size="small"
+                  icon={<ThunderboltOutlined />}
+                  style={{ padding: 0 }}
+                  onClick={() => handleOpenTraceDrawer()}
+                >
+                  全量链路大屏
+                </Button>
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<ReloadOutlined />}
+                  onClick={() => loadVehicleContext(selectedVehicleId)}
+                />
+              </Space>
             }
             styles={{ body: { padding: '12px', maxHeight: 720, overflowY: 'auto' } }}
             style={{ borderRadius: 8, height: '100%' }}
@@ -934,6 +961,17 @@ export const CarControlWorkbench: React.FC = () => {
                         borderRadius: 6,
                         border: '1px solid #f0f0f0',
                         fontSize: 13,
+                        cursor: 'pointer',
+                        transition: 'all 0.2s',
+                      }}
+                      onClick={() => handleOpenTraceDrawer(log.id)}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.borderColor = '#91caff';
+                        e.currentTarget.style.backgroundColor = '#f0f7ff';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.borderColor = '#f0f0f0';
+                        e.currentTarget.style.backgroundColor = '#fafafa';
                       }}
                     >
                       <div
@@ -948,7 +986,20 @@ export const CarControlWorkbench: React.FC = () => {
                           <span style={{ color: '#1677ff' }}>{COMMAND_ICON_MAP[log.commandCode]}</span>
                           <Text strong>{meta ? meta.name : log.commandCode}</Text>
                         </Space>
-                        {renderStatusTag(log.status)}
+                        <Space size={4}>
+                          {renderStatusTag(log.status)}
+                          <Button
+                            type="link"
+                            size="small"
+                            style={{ padding: 0, fontSize: 12, height: 'auto' }}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleOpenTraceDrawer(log.id);
+                            }}
+                          >
+                            追踪 &gt;
+                          </Button>
+                        </Space>
                       </div>
 
                       <div
@@ -1244,6 +1295,14 @@ export const CarControlWorkbench: React.FC = () => {
           style={{ marginTop: 12 }}
         />
       </Modal>
+
+      {/* ---------------- 720px 指令全生命周期流水与状态机追踪抽屉 ---------------- */}
+      <CommandStreamDrawer
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        commandId={selectedCommandId}
+        vehicleId={selectedVehicleId}
+      />
     </div>
   );
 };
