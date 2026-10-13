@@ -390,17 +390,25 @@ export const CarControlWorkbench: React.FC = () => {
     });
   };
 
+  // 判定单个指令是否应被禁用 (离线、车型能力不支持、并发排他)
+  const isCommandDisabled = (code: CommandCode) => {
+    const isOffline = !currentVehicle.isOnline;
+    const cap = isCommandSupportedByCapability(code, capabilities);
+    const isAnyExecuting = executingCommandCode !== null;
+    const isExecuting = executingCommandCode === code;
+    return isOffline || !cap.supported || (isAnyExecuting && !isExecuting);
+  };
+
   // 渲染单个指令控制按钮
   const renderCommandButton = (code: CommandCode, customClick?: () => void) => {
     const meta = COMMAND_METADATA[code];
     const icon = COMMAND_ICON_MAP[code] || <CarOutlined />;
     const isExecuting = executingCommandCode === code;
-    const isAnyExecuting = executingCommandCode !== null;
+    const isDisabled = isCommandDisabled(code);
 
-    // 判定车型硬件配置是否支持
+    // 判定车型硬件配置提示
     const cap = isCommandSupportedByCapability(code, capabilities);
     const isOffline = !currentVehicle.isOnline;
-    const isDisabled = isOffline || !cap.supported || (isAnyExecuting && !isExecuting);
 
     let tooltipContent: React.ReactNode = meta.description;
     if (isOffline) {
@@ -743,6 +751,7 @@ export const CarControlWorkbench: React.FC = () => {
                     description="解锁车门后若无人上车，可能存在被盗风险，确认解锁吗？"
                     okText="确认解锁"
                     cancelText="取消"
+                    disabled={isCommandDisabled(CommandCode.CMD_UNLOCK)}
                     onConfirm={() => dispatchCommand(CommandCode.CMD_UNLOCK)}
                   >
                     <div>{renderCommandButton(CommandCode.CMD_UNLOCK, () => {})}</div>
@@ -757,6 +766,7 @@ export const CarControlWorkbench: React.FC = () => {
                     description="关闭后备箱前请确认尾箱周边无人及障碍物，确认关闭吗？"
                     okText="确认关闭"
                     cancelText="取消"
+                    disabled={isCommandDisabled(CommandCode.CMD_TRUNK_CLOSE)}
                     onConfirm={() => dispatchCommand(CommandCode.CMD_TRUNK_CLOSE)}
                   >
                     <div>{renderCommandButton(CommandCode.CMD_TRUNK_CLOSE, () => {})}</div>
@@ -847,6 +857,7 @@ export const CarControlWorkbench: React.FC = () => {
                     description="确认一键降下所有车窗通风吗？离开车辆前请注意天气及防盗"
                     okText="确认降窗"
                     cancelText="取消"
+                    disabled={isCommandDisabled(CommandCode.CMD_WINDOW_OPEN)}
                     onConfirm={() => dispatchCommand(CommandCode.CMD_WINDOW_OPEN)}
                   >
                     <div>{renderCommandButton(CommandCode.CMD_WINDOW_OPEN, () => {})}</div>
@@ -858,6 +869,7 @@ export const CarControlWorkbench: React.FC = () => {
                     description="升窗过程中请特别注意防夹手安全提醒，确认升起车窗吗？"
                     okText="确认升窗"
                     cancelText="取消"
+                    disabled={isCommandDisabled(CommandCode.CMD_WINDOW_CLOSE)}
                     onConfirm={() => dispatchCommand(CommandCode.CMD_WINDOW_CLOSE)}
                   >
                     <div>{renderCommandButton(CommandCode.CMD_WINDOW_CLOSE, () => {})}</div>
@@ -869,6 +881,7 @@ export const CarControlWorkbench: React.FC = () => {
                     description="确认开闭全景天窗吗？请确认车顶无异物阻挡"
                     okText="确认操作"
                     cancelText="取消"
+                    disabled={isCommandDisabled(CommandCode.CMD_SUNROOF_CONTROL)}
                     onConfirm={() => dispatchCommand(CommandCode.CMD_SUNROOF_CONTROL)}
                   >
                     <div>{renderCommandButton(CommandCode.CMD_SUNROOF_CONTROL, () => {})}</div>
