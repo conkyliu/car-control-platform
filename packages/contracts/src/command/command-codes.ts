@@ -10,6 +10,8 @@ export enum CommandCode {
   CMD_WINDOW_CLOSE = 'CMD_WINDOW_CLOSE',
   CMD_AC_START = 'CMD_AC_START',
   CMD_AC_STOP = 'CMD_AC_STOP',
+  CMD_SEAT_HEAT = 'CMD_SEAT_HEAT',
+  CMD_SUNROOF_CONTROL = 'CMD_SUNROOF_CONTROL',
 }
 
 export enum SecurityLevel {
@@ -91,5 +93,17 @@ export const COMMAND_DEFINITIONS: Record<CommandCode, CommandDefinitionMeta> = {
     name: '关闭空调',
     defaultTimeoutMs: 10000,
     defaultSecurityLevel: SecurityLevel.L0,
+  },
+  [CommandCode.CMD_SEAT_HEAT]: {
+    code: CommandCode.CMD_SEAT_HEAT,
+    name: '座椅加热',
+    defaultTimeoutMs: 10000,
+    defaultSecurityLevel: SecurityLevel.L1,
+  },
+  [CommandCode.CMD_SUNROOF_CONTROL]: {
+    code: CommandCode.CMD_SUNROOF_CONTROL,
+    name: '开启/关闭天窗',
+    defaultTimeoutMs: 10000,
+    defaultSecurityLevel: SecurityLevel.L1,
   },
 };
