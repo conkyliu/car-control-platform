@@ -16,6 +16,7 @@ export const RoutePath = {
   MONITOR: '/monitor',
   MODELS: '/models',
   PROJECTS: '/projects',
+  CAPABILITIES: '/capabilities',
 } as const;
 
 export type RoutePathType = (typeof RoutePath)[keyof typeof RoutePath];
@@ -215,6 +216,15 @@ export const routes: RouteMeta[] = [
     permission: 'device:read',
     hideInMenu: true,
     description: '项目全生命周期运营、机构归属与设备调配中枢',
+  },
+  {
+    path: RoutePath.CAPABILITIES,
+    title: '车型能力配置',
+    icon: 'ControlOutlined',
+    category: RouteCategory.VEHICLE_CONTROL,
+    permission: 'vehicle:control',
+    hideInMenu: true,
+    description: '车型级车控能力模板矩阵、安全等级与参数Schema约束中心',
   },
 ];
 

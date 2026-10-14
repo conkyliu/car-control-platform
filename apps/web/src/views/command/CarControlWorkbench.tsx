@@ -47,6 +47,7 @@ import {
   DashboardOutlined,
   ReloadOutlined,
   InfoCircleOutlined,
+  ControlOutlined,
 } from '@ant-design/icons';
 import {
   CommandCode,
@@ -72,6 +73,8 @@ import {
   type CommandRecord,
 } from '../../api/command.ts';
 import { useVehicleStore } from '../../store/useVehicleStore.ts';
+import { useNavTabsStore } from '../../store/useNavTabsStore.ts';
+import { RoutePath } from '../../router/routes.ts';
 import { CommandStreamDrawer } from './CommandStreamDrawer.tsx';
 
 const { Title, Text } = Typography;
@@ -94,6 +97,8 @@ const COMMAND_ICON_MAP: Record<CommandCode, React.ReactNode> = {
 };
 
 export const CarControlWorkbench: React.FC = () => {
+  const openTab = useNavTabsStore((s) => s.openTab);
+
   // 当前选中的车辆 ID 与车辆列表
   const [vehicles, setVehicles] = useState<VehicleWorkbenchItem[]>(SEED_WORKBENCH_VEHICLES);
   const [selectedVehicleId, setSelectedVehicleId] = useState<string>(SEED_WORKBENCH_VEHICLES[0]!.id);
@@ -571,6 +576,17 @@ export const CarControlWorkbench: React.FC = () => {
                   unCheckedChildren="离线"
                 />
               </Space>
+              <Button
+                icon={<ControlOutlined />}
+                onClick={() => {
+                  openTab({
+                    key: RoutePath.CAPABILITIES,
+                    title: '车型能力模板配置',
+                  });
+                }}
+              >
+                车型能力配置
+              </Button>
               <Button
                 icon={<ThunderboltOutlined />}
                 onClick={() => handleOpenTraceDrawer()}
