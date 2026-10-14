@@ -160,6 +160,28 @@ export const CommandStreamDrawer: React.FC<CommandStreamDrawerProps> = ({
     }
   };
 
+  // 动态控制 Steps 节点图标
+  const getStepIcon = (index: number) => {
+    if (!fsmInfo || !trace) return undefined;
+    const currentIndex = fsmInfo.stepIndex;
+    if (index < currentIndex) {
+      return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
+    }
+    if (index === currentIndex) {
+      if (fsmInfo.isError) {
+        if (trace.status === CommandStatus.DEVICE_REJECTED) {
+          return <WarningOutlined style={{ color: '#faad14' }} />;
+        }
+        return <CloseCircleOutlined style={{ color: '#ff4d4f' }} />;
+      }
+      if (fsmInfo.stepStatus === 'finish') {
+        return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
+      }
+      return <LoadingOutlined spin style={{ color: '#1677ff' }} />;
+    }
+    return undefined;
+  };
+
   return (
     <Drawer
       title={
@@ -440,13 +462,7 @@ export const CommandStreamDrawer: React.FC<CommandStreamDrawerProps> = ({
               direction="vertical"
               size="small"
               current={fsmInfo?.stepIndex ?? 5}
-              status={
-                trace.status === CommandStatus.SUCCESS
-                  ? 'finish'
-                  : trace.status === CommandStatus.WAITING_ACK
-                  ? 'process'
-                  : 'error'
-              }
+              status={fsmInfo?.stepStatus || 'process'}
               items={[
                 {
                   title: (
@@ -462,7 +478,7 @@ export const CommandStreamDrawer: React.FC<CommandStreamDrawerProps> = ({
                       Web 控制台生成指令跟踪流，分配初始幂等 Key (+0ms)
                     </div>
                   ),
-                  icon: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+                  icon: getStepIcon(0),
                 },
                 {
                   title: (
@@ -478,7 +494,7 @@ export const CommandStreamDrawer: React.FC<CommandStreamDrawerProps> = ({
                       {meta?.securityLevel === SecurityLevel.L2 ? 'L2 6位数字安全码校验' : 'L0/L1 基础鉴权'} · 车型能力配置比对通过
                     </div>
                   ),
-                  icon: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+                  icon: getStepIcon(1),
                 },
                 {
                   title: (
@@ -501,7 +517,7 @@ export const CommandStreamDrawer: React.FC<CommandStreamDrawerProps> = ({
                   icon: lockDetails.isConflict ? (
                     <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
                   ) : (
-                    <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                    getStepIcon(2)
                   ),
                 },
                 {
@@ -518,7 +534,7 @@ export const CommandStreamDrawer: React.FC<CommandStreamDrawerProps> = ({
                       下发 QoS=1 二进制控制帧至车载设备订阅主题
                     </div>
                   ),
-                  icon: <CheckCircleOutlined style={{ color: '#52c41a' }} />,
+                  icon: getStepIcon(3),
                 },
                 {
                   title: (
@@ -534,12 +550,7 @@ export const CommandStreamDrawer: React.FC<CommandStreamDrawerProps> = ({
                       T-Box 接收控制帧并向车身 BCM/VCU 发送 CAN 指令
                     </div>
                   ),
-                  icon:
-                    trace.status === CommandStatus.WAITING_ACK ? (
-                      <LoadingOutlined spin style={{ color: '#1677ff' }} />
-                    ) : (
-                      <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                    ),
+                  icon: getStepIcon(4),
                 },
                 {
                   title: (
@@ -566,16 +577,7 @@ export const CommandStreamDrawer: React.FC<CommandStreamDrawerProps> = ({
                       )}
                     </div>
                   ),
-                  icon:
-                    trace.status === CommandStatus.SUCCESS ? (
-                      <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                    ) : trace.status === CommandStatus.DEVICE_REJECTED ? (
-                      <WarningOutlined style={{ color: '#faad14' }} />
-                    ) : trace.status === CommandStatus.WAITING_ACK ? (
-                      <ClockCircleOutlined style={{ color: '#faad14' }} />
-                    ) : (
-                      <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
-                    ),
+                  icon: getStepIcon(5),
                 },
               ]}
             />

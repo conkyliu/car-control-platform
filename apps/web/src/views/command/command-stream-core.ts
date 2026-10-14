@@ -308,7 +308,7 @@ export function calculateStepTimings(steps: CommandLifecycleStep[]): StepTimingB
     valPct = Number(((validationDurationMs / totalDurationMs) * 100).toFixed(1));
     lockPct = Number(((lockingDurationMs / totalDurationMs) * 100).toFixed(1));
     downPct = Number(((downlinkDurationMs / totalDurationMs) * 100).toFixed(1));
-    ackPct = Number((100 - valPct - lockPct - downPct).toFixed(1));
+    ackPct = Math.max(0, Number((100 - valPct - lockPct - downPct).toFixed(1)));
   } else {
     valPct = 25;
     lockPct = 25;
