@@ -1,0 +1,32 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: car-control-api
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    container_name: car-control-web
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+  simulator:
+    build:
+      context: .
+      dockerfile: Dockerfile.simulator
+    container_name: car-control-simulator
+    depends_on:
+      - api
+    restart: "no"

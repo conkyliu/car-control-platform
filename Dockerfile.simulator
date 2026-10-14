@@ -1,0 +1,23 @@
+# syntax=docker/dockerfile:1
+FROM node:20-alpine AS builder
+WORKDIR /workspace
+
+RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
+
+COPY . .
+
+RUN pnpm install --frozen-lockfile
+RUN pnpm -r --filter "@car-control/simulator" build
+
+FROM node:20-alpine AS runtime
+WORKDIR /workspace
+
+ENV NODE_ENV=production
+
+RUN corepack enable && corepack prepare pnpm@11.20.0 --activate
+
+COPY . .
+RUN pnpm install --frozen-lockfile --prod --filter "@car-control/simulator"
+
+WORKDIR /workspace/apps/simulator
+ENTRYPOINT ["node", "dist/cli.js"]
