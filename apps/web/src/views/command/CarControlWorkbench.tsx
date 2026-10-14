@@ -48,6 +48,7 @@ import {
   ReloadOutlined,
   InfoCircleOutlined,
   ControlOutlined,
+  SlidersOutlined,
 } from '@ant-design/icons';
 import {
   CommandCode,
@@ -76,6 +77,7 @@ import { useVehicleStore } from '../../store/useVehicleStore.ts';
 import { useNavTabsStore } from '../../store/useNavTabsStore.ts';
 import { RoutePath } from '../../router/routes.ts';
 import { CommandStreamDrawer } from './CommandStreamDrawer.tsx';
+import { VehicleOverrideDrawer } from './VehicleOverrideDrawer.tsx';
 
 const { Title, Text } = Typography;
 
@@ -139,6 +141,9 @@ export const CarControlWorkbench: React.FC = () => {
   // 指令全链路流水与状态机追踪抽屉
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [selectedCommandId, setSelectedCommandId] = useState<string | null>(null);
+
+  // 单车专属可控范围能力覆盖抽屉
+  const [overrideDrawerOpen, setOverrideDrawerOpen] = useState(false);
 
   const handleOpenTraceDrawer = (cmdId?: string) => {
     setSelectedCommandId(cmdId || commandLogs[0]?.id || 'cmd-seed-01');
@@ -586,6 +591,12 @@ export const CarControlWorkbench: React.FC = () => {
                 }}
               >
                 车型能力配置
+              </Button>
+              <Button
+                icon={<SlidersOutlined />}
+                onClick={() => setOverrideDrawerOpen(true)}
+              >
+                专属能力覆盖
               </Button>
               <Button
                 icon={<ThunderboltOutlined />}
@@ -1318,6 +1329,16 @@ export const CarControlWorkbench: React.FC = () => {
         onClose={() => setDrawerOpen(false)}
         commandId={selectedCommandId}
         vehicleId={selectedVehicleId}
+      />
+
+      {/* ---------------- 720px 单车专属可控范围能力覆盖抽屉 ---------------- */}
+      <VehicleOverrideDrawer
+        open={overrideDrawerOpen}
+        onClose={() => setOverrideDrawerOpen(false)}
+        vehicleId={selectedVehicleId}
+        vehicle={currentVehicle as any}
+        onSaved={() => loadVehicleContext(selectedVehicleId)}
+        onReset={() => loadVehicleContext(selectedVehicleId)}
       />
     </div>
   );

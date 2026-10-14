@@ -69,6 +69,7 @@ import { fetchProjectsApi, fetchDevicesApi, type ProjectDto, type DeviceDto } fr
 import { SEED_PROJECTS } from '../device/device-core.ts';
 import { useTenantStore } from '../../store/useTenantStore.ts';
 import { VehicleBindModal } from './VehicleBindModal.tsx';
+import { VehicleOverrideDrawer } from '../command/VehicleOverrideDrawer.tsx';
 
 const { Text } = Typography;
 
@@ -95,8 +96,15 @@ export const VehicleListView: React.FC = () => {
   const [detailModalOpen, setDetailModalOpen] = useState(false);
   const [statusModalOpen, setStatusModalOpen] = useState(false);
   const [bindModalOpen, setBindModalOpen] = useState(false);
+  const [overrideDrawerOpen, setOverrideDrawerOpen] = useState(false);
+  const [selectedVehicleForOverride, setSelectedVehicleForOverride] = useState<VehicleDto | null>(null);
   const [selectedVehicle, setSelectedVehicle] = useState<VehicleDto | null>(null);
   const [targetStatus, setTargetStatus] = useState<VehicleStatus>('NORMAL');
+
+  const handleOpenOverrideDrawer = (veh: VehicleDto) => {
+    setSelectedVehicleForOverride(veh);
+    setOverrideDrawerOpen(true);
+  };
 
   const [createForm] = Form.useForm();
   const selectedBrandInForm = Form.useWatch('brandId', createForm);
@@ -454,7 +462,7 @@ export const VehicleListView: React.FC = () => {
       title: '操作',
       key: 'action',
       fixed: 'right',
-      width: 200,
+      width: 260,
       render: (_, record) => {
         const isScrapped = record.status === 'SCRAPPED';
 
@@ -494,6 +502,14 @@ export const VehicleListView: React.FC = () => {
               }}
             >
               {record.deviceId ? '换绑/解绑' : '绑定'}
+            </Button>
+
+            <Button
+              type="link"
+              size="small"
+              onClick={() => handleOpenOverrideDrawer(record)}
+            >
+              能力覆盖
             </Button>
           </Space>
         );
@@ -1079,6 +1095,16 @@ export const VehicleListView: React.FC = () => {
         onSuccess={() => {
           setBindModalOpen(false);
           loadData();
+        }}
+      />
+
+      {/* 单车专属能力覆盖配置抽屉 */}
+      <VehicleOverrideDrawer
+        open={overrideDrawerOpen}
+        vehicle={selectedVehicleForOverride}
+        onClose={() => {
+          setOverrideDrawerOpen(false);
+          setSelectedVehicleForOverride(null);
         }}
       />
     </div>
