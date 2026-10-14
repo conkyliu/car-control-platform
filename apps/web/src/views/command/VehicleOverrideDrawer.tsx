@@ -55,7 +55,7 @@ import {
   calculateOverrideSummary,
   cleanRedundantOverrides,
 } from './vehicle-override-core.ts';
-import { COMMAND_METADATA } from './command-core.ts';
+import { COMMAND_METADATA, type VehicleWorkbenchItem } from './command-core.ts';
 import {
   fetchVehicleOverrideApi,
   saveVehicleOverrideApi,
@@ -67,6 +67,8 @@ import { type VehicleDto, SEED_VEHICLES } from '../vehicle/vehicle-core.ts';
 import { POWERTRAIN_MAP, type PowertrainType } from '../vehicle/model-core.ts';
 
 const { Text } = Typography;
+
+export type VehicleOverrideTarget = VehicleDto | VehicleWorkbenchItem;
 
 // 指令图标映射字典
 const COMMAND_ICON_MAP: Record<CommandCode, React.ReactNode> = {
@@ -89,7 +91,7 @@ export interface VehicleOverrideDrawerProps {
   open: boolean;
   onClose: () => void;
   vehicleId?: string | null;
-  vehicle?: VehicleDto | null;
+  vehicle?: VehicleOverrideTarget | null;
   onSaved?: (override: VehicleCapabilityOverrideDto) => void;
   onReset?: () => void;
 }
@@ -103,7 +105,7 @@ export const VehicleOverrideDrawer: React.FC<VehicleOverrideDrawerProps> = ({
   onReset,
 }) => {
   // 当前目标车辆信息
-  const [targetVehicle, setTargetVehicle] = useState<VehicleDto | null>(vehicle || null);
+  const [targetVehicle, setTargetVehicle] = useState<VehicleOverrideTarget | null>(vehicle || null);
   // 当前车辆对应的基准车型能力模板
   const [template, setTemplate] = useState<ModelTemplateDto | null>(null);
   // 当前正在编辑的单车覆盖规则集合
@@ -129,7 +131,7 @@ export const VehicleOverrideDrawer: React.FC<VehicleOverrideDrawerProps> = ({
 
     try {
       // 1. 获取车辆基础信息
-      let currentVeh: VehicleDto | null = vehicle || null;
+      let currentVeh: VehicleOverrideTarget | null = vehicle || null;
       if (!currentVeh) {
         currentVeh = SEED_VEHICLES.find((v) => v.id === effectiveVehId) || null;
         if (!currentVeh) {

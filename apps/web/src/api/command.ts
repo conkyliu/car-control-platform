@@ -18,6 +18,7 @@ import {
   type CommandLifecycleStep,
   SEED_COMMAND_TRACES,
 } from '../views/command/command-stream-core.ts';
+import { getInMemoryVehicleOverrides } from './vehicle-override.ts';
 
 export interface CommandRecord {
   id: string;
@@ -204,7 +205,31 @@ export async function fetchVehicleCapabilitiesApi(
   } catch {
     // 离线降级：匹配车辆模型能力
     const targetVehicle = SEED_WORKBENCH_VEHICLES.find((v) => v.id === vehicleId);
-    return generateDefaultCapabilities(targetVehicle?.modelId);
+    const caps = generateDefaultCapabilities(targetVehicle?.modelId);
+
+    // 合并单车专属能力覆盖 (最高优先级)
+    try {
+      const overrides = getInMemoryVehicleOverrides().find((o) => o.vehicleId === vehicleId);
+      if (overrides && overrides.overrides) {
+        for (const [cCode, rule] of Object.entries(overrides.overrides)) {
+          const code = cCode as CommandCode;
+          if (rule && caps[code]) {
+            caps[code] = {
+              ...caps[code],
+              supported: rule.supported,
+              securityLevel: rule.securityLevel ?? caps[code].securityLevel,
+              timeoutMs: rule.timeoutMs ?? caps[code].timeoutMs,
+              frequencyLimitSeconds: rule.frequencyLimitSeconds ?? caps[code].frequencyLimitSeconds,
+              reason: rule.supported ? undefined : '单车专属能力覆盖禁用',
+            };
+          }
+        }
+      }
+    } catch {
+      // 忽略合并异常
+    }
+
+    return caps;
   }
 }
 

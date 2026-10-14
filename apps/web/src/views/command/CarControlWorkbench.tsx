@@ -1336,7 +1336,7 @@ export const CarControlWorkbench: React.FC = () => {
         open={overrideDrawerOpen}
         onClose={() => setOverrideDrawerOpen(false)}
         vehicleId={selectedVehicleId}
-        vehicle={currentVehicle as any}
+        vehicle={currentVehicle}
         onSaved={() => loadVehicleContext(selectedVehicleId)}
         onReset={() => loadVehicleContext(selectedVehicleId)}
       />
