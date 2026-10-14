@@ -353,9 +353,10 @@ export const CapabilityTemplateView: React.FC = () => {
   };
 
   // 保存参数配置
-  const handleSaveParams = () => {
+  const handleSaveParams = async () => {
     if (!paramEditingCode) return;
-    paramForm.validateFields().then((values) => {
+    try {
+      const values = await paramForm.validateFields();
       const validation = validateParamConstraints(paramEditingCode, values);
       if (!validation.valid) {
         message.error(validation.message || '参数约束校验不通过');
@@ -365,7 +366,9 @@ export const CapabilityTemplateView: React.FC = () => {
       updateRuleField(paramEditingCode, 'paramConstraints', values);
       setParamModalVisible(false);
       message.success(`【${COMMAND_METADATA[paramEditingCode].name}】专属参数约束已更新`);
-    });
+    } catch {
+      // 表单字段验证未通过
+    }
   };
 
   // 提交新建模板

@@ -86,6 +86,43 @@ export function getCategoryForCommand(code: CommandCode): CommandCategory {
 }
 
 /**
+ * 空调参数约束接口
+ */
+export interface AcParamConstraints {
+  minTemp?: number;
+  maxTemp?: number;
+  tempStep?: number;
+  allowedModes?: ('AUTO' | 'COOL' | 'HEAT' | 'VENT')[];
+  allowedFanSpeeds?: (1 | 2 | 3)[];
+}
+
+/**
+ * 远程启动参数约束接口
+ */
+export interface EngineParamConstraints {
+  minDurationMinutes?: number;
+  maxDurationMinutes?: number;
+  durationStep?: number;
+}
+
+/**
+ * 座椅加热参数约束接口
+ */
+export interface SeatHeatParamConstraints {
+  maxLevel?: 1 | 2 | 3;
+  allowedPositions?: ('DRIVER' | 'PASSENGER' | 'REAR_LEFT' | 'REAR_RIGHT')[];
+}
+
+/**
+ * 参数约束模式总联合类型
+ */
+export type ParamConstraintSchema =
+  | AcParamConstraints
+  | EngineParamConstraints
+  | SeatHeatParamConstraints
+  | Record<string, unknown>;
+
+/**
  * 单项指令能力规则
  */
 export interface CapabilityRule {
@@ -93,7 +130,7 @@ export interface CapabilityRule {
   securityLevel: SecurityLevel;
   timeoutMs: number;
   frequencyLimitSeconds: number;
-  paramConstraints?: Record<string, unknown>;
+  paramConstraints?: ParamConstraintSchema;
   description?: string;
 }
 
@@ -320,6 +357,35 @@ export interface CommandDiffItem {
 }
 
 /**
+ * 健壮的参数约束等价性比对工具 (忽略键序与 undefined 干扰)
+ */
+export function areConstraintsEqual(
+  a?: Record<string, unknown>,
+  b?: Record<string, unknown>
+): boolean {
+  if (a === b) return true;
+  if (!a && !b) return true;
+  if (!a || !b) return false;
+  const aKeys = Object.keys(a).filter((k) => a[k] !== undefined).sort();
+  const bKeys = Object.keys(b).filter((k) => b[k] !== undefined).sort();
+  if (aKeys.length !== bKeys.length) return false;
+  for (let i = 0; i < aKeys.length; i++) {
+    const k = aKeys[i];
+    if (k !== bKeys[i]) return false;
+    const aVal = a[k];
+    const bVal = b[k];
+    if (Array.isArray(aVal) && Array.isArray(bVal)) {
+      if (aVal.length !== bVal.length || aVal.some((v, idx) => v !== bVal[idx])) return false;
+    } else if (typeof aVal === 'object' && typeof bVal === 'object' && aVal !== null && bVal !== null) {
+      if (!areConstraintsEqual(aVal as Record<string, unknown>, bVal as Record<string, unknown>)) return false;
+    } else if (aVal !== bVal) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * 模板比对结果
  */
 export interface TemplateDiffResult {
@@ -361,10 +427,7 @@ export function diffCapabilityTemplates(
     if (baseRule.frequencyLimitSeconds !== targetRule.frequencyLimitSeconds) {
       changes.push('frequencyLimitSeconds');
     }
-    if (
-      JSON.stringify(baseRule.paramConstraints ?? {}) !==
-      JSON.stringify(targetRule.paramConstraints ?? {})
-    ) {
+    if (!areConstraintsEqual(baseRule.paramConstraints as any, targetRule.paramConstraints as any)) {
       changes.push('paramConstraints');
     }
 
