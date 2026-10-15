@@ -53,6 +53,7 @@ import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/in
 import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
 import { VehicleListView, ModelManageView } from '../views/vehicle/index.ts';
 import { RealtimeLocationMap, GeofenceManageView } from '../views/telemetry/index.ts';
+import { AlertCenterView } from '../views/alarm/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -186,6 +187,10 @@ export const AdminLayout: React.FC = () => {
 
     if (activeKey === RoutePath.GEOFENCE) {
       return <GeofenceManageView />;
+    }
+
+    if (activeKey === RoutePath.ALARMS) {
+      return <AlertCenterView />;
     }
 
     return (
