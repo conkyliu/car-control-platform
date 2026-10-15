@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
-import { Button, Tooltip, Card, Tag, Space, Typography } from 'antd';
+import { Button, Tooltip, Tag, Typography } from 'antd';
 import {
   PlusOutlined,
   MinusOutlined,
@@ -11,9 +11,6 @@ import {
   CloseOutlined,
   EnvironmentOutlined,
   CarOutlined,
-  CompassOutlined,
-  WarningOutlined,
-  CheckCircleOutlined,
 } from '@ant-design/icons';
 import {
   type Coordinates,
@@ -91,6 +88,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   // Dragging State
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const dragStartRef = useRef<{ mouseX: number; mouseY: number; startCenter: Coordinates } | null>(null);
+  const wheelDeltaAccumulatorRef = useRef<number>(0);
+  const wheelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Sync prop changes
   useEffect(() => {
@@ -198,14 +197,24 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     dragStartRef.current = null;
   };
 
-  // Scroll wheel zoom
+  // Scroll wheel zoom with trackpad dampening
   const handleWheel = (e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault();
-    if (e.deltaY < 0) {
+    wheelDeltaAccumulatorRef.current += e.deltaY;
+    const threshold = 60; // 60px accumulator for smooth trackpad and mouse wheel
+
+    if (wheelDeltaAccumulatorRef.current <= -threshold) {
       setZoom((z) => Math.min(18, z + 1));
-    } else if (e.deltaY > 0) {
+      wheelDeltaAccumulatorRef.current = 0;
+    } else if (wheelDeltaAccumulatorRef.current >= threshold) {
       setZoom((z) => Math.max(3, z - 1));
+      wheelDeltaAccumulatorRef.current = 0;
     }
+
+    if (wheelTimeoutRef.current) clearTimeout(wheelTimeoutRef.current);
+    wheelTimeoutRef.current = setTimeout(() => {
+      wheelDeltaAccumulatorRef.current = 0;
+    }, 200);
   };
 
   // Double click zoom in
@@ -1056,7 +1065,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             </span>
             <div
               style={{
-                width: 70,
+                width: 80,
                 height: 4,
                 borderBottom: `2px solid ${theme.textColor}`,
                 borderLeft: `2px solid ${theme.textColor}`,

@@ -149,7 +149,8 @@ export function calculateDistanceMeters(p1: Coordinates, p2: Coordinates): numbe
   const a =
     Math.sin(deltaLat / 2) * Math.sin(deltaLat / 2) +
     Math.cos(radLat1) * Math.cos(radLat2) * Math.sin(deltaLng / 2) * Math.sin(deltaLng / 2);
-  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  const aClamped = Math.min(1, Math.max(0, a));
+  const c = 2 * Math.atan2(Math.sqrt(aClamped), Math.sqrt(1 - aClamped));
 
   return Math.round(EARTH_RADIUS_METERS * c * 100) / 100;
 }
