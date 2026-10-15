@@ -110,7 +110,7 @@ Scan clean. Ready to execute Sprint 4 Task 1.
 Scan clean. Ready to execute Sprint 5 Task 1.
 
 ## Sprint 5 Progress
-- Sprint 5 Task 1: pending (固件包管理工作台 `FirmwareManageView.tsx`)
+- Sprint 5 Task 1: complete (commits 23464cd..44efa48, review APPROVED, 503/503 web tests, 615/615 monorepo tests, build pass)
 - Sprint 5 Task 2: pending (批量 OTA 升级计划制定向导 `OtaPlanWizardModal.tsx`)
 - Sprint 5 Task 3: pending (OTA 批量任务执行监控大屏 `OtaExecutionDashboardView.tsx`)
 - Sprint 5 Task 4: pending (原始通讯日志与 Hex 报文解析器 `CommLogSearchView.tsx`)
