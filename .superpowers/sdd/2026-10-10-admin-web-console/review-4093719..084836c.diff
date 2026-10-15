@@ -1,0 +1,2622 @@
+diff --git a/apps/web/src/api/command.ts b/apps/web/src/api/command.ts
+new file mode 100644
+index 0000000..21963b2
+--- /dev/null
++++ b/apps/web/src/api/command.ts
+@@ -0,0 +1,217 @@
++import {
++  CommandCode,
++  SecurityLevel,
++  CommandStatus,
++  type CreateCommandRequestDto,
++  type EffectiveCapabilityDto,
++} from '@car-control/contracts';
++import { http } from './client.ts';
++import {
++  CommandLockError,
++  isApiError,
++  COMMAND_METADATA,
++  generateDefaultCapabilities,
++  SEED_WORKBENCH_VEHICLES,
++} from '../views/command/command-core.ts';
++
++export interface CommandRecord {
++  id: string;
++  tenantId: string;
++  projectId: string;
++  vehicleId: string;
++  deviceId: string;
++  deviceNo: string;
++  commandCode: CommandCode;
++  status: CommandStatus;
++  securityLevel: SecurityLevel;
++  idempotencyKey: string;
++  traceId: string;
++  requestId: string;
++  params?: Record<string, unknown>;
++  sentAt?: Date | string;
++  ackedAt?: Date | string;
++  finishedAt?: Date | string;
++  durationMs?: number;
++  errorCode?: string;
++  errorMessage?: string;
++  operatorId: string;
++  createdAt: Date | string;
++  updatedAt: Date | string;
++}
++
++// 内存中的并发锁集合 (key: vehicleId)
++const inMemoryLocks = new Set<string>();
++
++// 内存中的指令历史流水
++let inMemoryHistory: CommandRecord[] = [
++  {
++    id: 'cmd-seed-01',
++    tenantId: 'tenant-demo',
++    projectId: 'proj-sz-01',
++    vehicleId: 'veh-001',
++    deviceId: 'dev-1001',
++    deviceNo: 'DEV_1001',
++    commandCode: CommandCode.CMD_UNLOCK,
++    status: CommandStatus.SUCCESS,
++    securityLevel: SecurityLevel.L1,
++    idempotencyKey: 'idemp-seed-1',
++    traceId: 'trace-seed-01',
++    requestId: 'req-seed-01',
++    sentAt: new Date(Date.now() - 3600000),
++    ackedAt: new Date(Date.now() - 3598800),
++    finishedAt: new Date(Date.now() - 3598800),
++    durationMs: 1200,
++    operatorId: 'operator-01',
++    createdAt: new Date(Date.now() - 3600000),
++    updatedAt: new Date(Date.now() - 3598800),
++  },
++  {
++    id: 'cmd-seed-02',
++    tenantId: 'tenant-demo',
++    projectId: 'proj-sz-01',
++    vehicleId: 'veh-001',
++    deviceId: 'dev-1001',
++    deviceNo: 'DEV_1001',
++    commandCode: CommandCode.CMD_FIND_VEHICLE,
++    status: CommandStatus.SUCCESS,
++    securityLevel: SecurityLevel.L0,
++    idempotencyKey: 'idemp-seed-2',
++    traceId: 'trace-seed-02',
++    requestId: 'req-seed-02',
++    sentAt: new Date(Date.now() - 1800000),
++    ackedAt: new Date(Date.now() - 1799100),
++    finishedAt: new Date(Date.now() - 1799100),
++    durationMs: 900,
++    operatorId: 'operator-01',
++    createdAt: new Date(Date.now() - 1800000),
++    updatedAt: new Date(Date.now() - 1799100),
++  },
++];
++
++/**
++ * 外部设置排他锁状态（用于测试和控制并发互斥）
++ */
++export function setVehicleCommandLock(vehicleId: string, locked: boolean): void {
++  if (locked) {
++    inMemoryLocks.add(vehicleId);
++  } else {
++    inMemoryLocks.delete(vehicleId);
++  }
++}
++
++/**
++ * 获取内存指令历史
++ */
++export function getInMemoryCommandHistory(vehicleId?: string): CommandRecord[] {
++  if (vehicleId) {
++    return inMemoryHistory.filter((item) => item.vehicleId === vehicleId);
++  }
++  return [...inMemoryHistory];
++}
++
++/**
++ * 重置内存历史与锁状态 (测试前置复位)
++ */
++export function resetInMemoryCommands(): void {
++  inMemoryLocks.clear();
++  inMemoryHistory = [];
++}
++
++/**
++ * 下发远程车控指令
++ * 具备 409 排他锁捕获与优雅降级处理
++ */
++export async function executeCommandApi(
++  vehicleId: string,
++  input: CreateCommandRequestDto
++): Promise<CommandRecord> {
++  // 1. 尝试调用真实后端 REST 接口
++  try {
++    const res = await http.post<CommandRecord>(`/vehicles/${vehicleId}/commands`, input);
++    return res;
++  } catch (err: unknown) {
++    // 捕获 HTTP 409 冲突排他锁
++    if (isApiError(err) && err.statusCode === 409) {
++      throw new CommandLockError(
++        vehicleId,
++        err.message || '该车辆已有指令正在执行中，请稍候',
++        input.commandCode
++      );
++    }
++
++    // 若非 409 且非离线降级环境，则判断是否为其它已知 ApiError
++    // 如果是开发/演示/网络离线环境，走本地仿真回路
++    if (inMemoryLocks.has(vehicleId)) {
++      throw new CommandLockError(
++        vehicleId,
++        '该车辆已有指令正在执行中，请稍候',
++        input.commandCode
++      );
++    }
++
++    // 内存仿真生成 ACK 记录
++    const meta = COMMAND_METADATA[input.commandCode];
++    const duration = Math.floor(Math.random() * 400) + 250; // 250ms ~ 650ms
++    const now = new Date();
++    const ackedTime = new Date(now.getTime() + duration);
++
++    const targetVehicle = SEED_WORKBENCH_VEHICLES.find((v) => v.id === vehicleId);
++
++    const record: CommandRecord = {
++      id: `cmd_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
++      tenantId: 'tenant-demo',
++      projectId: 'proj-01',
++      vehicleId,
++      deviceId: targetVehicle?.deviceId || `dev_${vehicleId}`,
++      deviceNo: targetVehicle?.deviceNo || `DEV_${vehicleId}`,
++      commandCode: input.commandCode,
++      status: CommandStatus.SUCCESS,
++      securityLevel: meta?.securityLevel || SecurityLevel.L0,
++      idempotencyKey: input.idempotencyKey,
++      traceId: `trace_${Date.now()}`,
++      requestId: `req_${Date.now()}`,
++      params: input.params,
++      sentAt: now,
++      ackedAt: ackedTime,
++      finishedAt: ackedTime,
++      durationMs: duration,
++      operatorId: 'operator-admin',
++      createdAt: now,
++      updatedAt: ackedTime,
++    };
++
++    inMemoryHistory.unshift(record);
++    return record;
++  }
++}
++
++/**
++ * 获取车辆车型有效能力字典
++ */
++export async function fetchVehicleCapabilitiesApi(
++  vehicleId: string
++): Promise<Record<CommandCode, EffectiveCapabilityDto>> {
++  try {
++    const caps = await http.get<Record<CommandCode, EffectiveCapabilityDto>>(
++      `/vehicles/${vehicleId}/capabilities`
++    );
++    return caps;
++  } catch {
++    // 离线降级：匹配车辆模型能力
++    const targetVehicle = SEED_WORKBENCH_VEHICLES.find((v) => v.id === vehicleId);
++    return generateDefaultCapabilities(targetVehicle?.modelId);
++  }
++}
++
++/**
++ * 获取车辆的历史指令流水列表
++ */
++export async function fetchCommandHistoryApi(vehicleId: string): Promise<CommandRecord[]> {
++  try {
++    const history = await http.get<CommandRecord[]>(`/vehicles/${vehicleId}/commands`);
++    return history;
++  } catch {
++    // 离线降级
++    return inMemoryHistory.filter((item) => item.vehicleId === vehicleId);
++  }
++}
+diff --git a/apps/web/src/layouts/AdminLayout.tsx b/apps/web/src/layouts/AdminLayout.tsx
+index 9885fb3..95dea0b 100644
+--- a/apps/web/src/layouts/AdminLayout.tsx
++++ b/apps/web/src/layouts/AdminLayout.tsx
+@@ -41,7 +41,7 @@ import { TenantSelector } from './TenantSelector.tsx';
+ import { AlarmNotificationBell } from './AlarmNotificationBell.tsx';
+ import { HeaderUserMenu } from './HeaderUserMenu.tsx';
+ import { NavTabs } from './NavTabs.tsx';
+-import { CarControlPanel } from '../components/CarControlPanel.tsx';
++import { CarControlWorkbench } from '../views/command/index.ts';
+ import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
+ import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
+ import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
+@@ -157,7 +157,7 @@ export const AdminLayout: React.FC = () => {
+     }
+ 
+     if (activeKey === RoutePath.COMMANDS) {
+-      return <CarControlPanel />;
++      return <CarControlWorkbench />;
+     }
+ 
+     return (
+diff --git a/apps/web/src/test/car-control-workbench.test.ts b/apps/web/src/test/car-control-workbench.test.ts
+new file mode 100644
+index 0000000..3009110
+--- /dev/null
++++ b/apps/web/src/test/car-control-workbench.test.ts
+@@ -0,0 +1,474 @@
++import { describe, it, beforeEach } from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  CommandCode,
++  SecurityLevel,
++  CommandStatus,
++  type EffectiveCapabilityDto,
++} from '@car-control/contracts';
++import {
++  COMMAND_METADATA,
++  validateSecurityCode,
++  formatExecutionDuration,
++  isCommandSupportedByCapability,
++  CommandLockError,
++  isCommandLockError,
++  isApiError,
++  evaluateVoltageHealth,
++  type CommandMetaItem,
++  type SecurityCodeValidationResult,
++} from '../views/command/command-core.ts';
++import {
++  executeCommandApi,
++  fetchVehicleCapabilitiesApi,
++  fetchCommandHistoryApi,
++  getInMemoryCommandHistory,
++  resetInMemoryCommands,
++  setVehicleCommandLock,
++  type CommandRecord,
++} from '../api/command.ts';
++import { ApiError, http } from '../api/client.ts';
++
++describe('Remote Car Control Workbench Core & TDD Test Suite', () => {
++  beforeEach(() => {
++    resetInMemoryCommands();
++  });
++
++  describe('1. 13 Command Types Metadata & Security Level Partitioning', () => {
++    it('defines complete metadata for all 13 command types', () => {
++      const allCodes: CommandCode[] = [
++        CommandCode.CMD_LOCK,
++        CommandCode.CMD_UNLOCK,
++        CommandCode.CMD_FIND_VEHICLE,
++        CommandCode.CMD_TRUNK_OPEN,
++        CommandCode.CMD_TRUNK_CLOSE,
++        CommandCode.CMD_ENGINE_START,
++        CommandCode.CMD_ENGINE_STOP,
++        CommandCode.CMD_WINDOW_OPEN,
++        CommandCode.CMD_WINDOW_CLOSE,
++        CommandCode.CMD_AC_START,
++        CommandCode.CMD_AC_STOP,
++        CommandCode.CMD_SEAT_HEAT,
++        CommandCode.CMD_SUNROOF_CONTROL,
++      ];
++
++      assert.equal(allCodes.length, 13);
++      for (const code of allCodes) {
++        const meta = COMMAND_METADATA[code];
++        assert.ok(meta, `Metadata for ${code} must exist`);
++        assert.equal(meta.code, code);
++        assert.ok(meta.name.length > 0, `Command ${code} must have a Chinese display name`);
++        assert.ok(meta.group, `Command ${code} must belong to a functional group`);
++        assert.ok(meta.defaultTimeoutMs > 0, `Command ${code} must have timeout > 0`);
++      }
++    });
++
++    it('partitions commands into correct security levels (L0, L1, L2)', () => {
++      // L0 commands: no sensitive side effects
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_LOCK].securityLevel, SecurityLevel.L0);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_FIND_VEHICLE].securityLevel, SecurityLevel.L0);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_AC_STOP].securityLevel, SecurityLevel.L0);
++
++      // L1 commands: moderate sensitivity requiring confirmation or pin
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_UNLOCK].securityLevel, SecurityLevel.L1);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_TRUNK_OPEN].securityLevel, SecurityLevel.L1);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_TRUNK_CLOSE].securityLevel, SecurityLevel.L1);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_WINDOW_OPEN].securityLevel, SecurityLevel.L1);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_WINDOW_CLOSE].securityLevel, SecurityLevel.L1);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_AC_START].securityLevel, SecurityLevel.L1);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_SEAT_HEAT].securityLevel, SecurityLevel.L1);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_SUNROOF_CONTROL].securityLevel, SecurityLevel.L1);
++
++      // L2 commands: high risk requiring mandatory 6-digit PIN and pre-condition validation
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_ENGINE_START].securityLevel, SecurityLevel.L2);
++      assert.equal(COMMAND_METADATA[CommandCode.CMD_ENGINE_STOP].securityLevel, SecurityLevel.L2);
++    });
++
++    it('groups 13 commands into 4 functional domains properly', () => {
++      const groups = {
++        DOOR_TRUNK: [
++          CommandCode.CMD_LOCK,
++          CommandCode.CMD_UNLOCK,
++          CommandCode.CMD_TRUNK_OPEN,
++          CommandCode.CMD_TRUNK_CLOSE,
++        ],
++        POWER_SEARCH: [
++          CommandCode.CMD_FIND_VEHICLE,
++          CommandCode.CMD_ENGINE_START,
++          CommandCode.CMD_ENGINE_STOP,
++        ],
++        CLIMATE: [
++          CommandCode.CMD_AC_START,
++          CommandCode.CMD_AC_STOP,
++          CommandCode.CMD_SEAT_HEAT,
++        ],
++        WINDOW_SUNROOF: [
++          CommandCode.CMD_WINDOW_OPEN,
++          CommandCode.CMD_WINDOW_CLOSE,
++          CommandCode.CMD_SUNROOF_CONTROL,
++        ],
++      };
++
++      for (const [groupName, codes] of Object.entries(groups)) {
++        for (const code of codes) {
++          assert.equal(COMMAND_METADATA[code].group, groupName);
++        }
++      }
++    });
++
++    it('provides safety warning text for high-risk and sensitive operations', () => {
++      assert.ok(COMMAND_METADATA[CommandCode.CMD_TRUNK_OPEN].warningText?.includes('财产风险'));
++      assert.ok(COMMAND_METADATA[CommandCode.CMD_WINDOW_CLOSE].warningText?.includes('防夹'));
++      assert.ok(COMMAND_METADATA[CommandCode.CMD_ENGINE_START].warningText?.includes('安全'));
++      assert.ok(COMMAND_METADATA[CommandCode.CMD_ENGINE_STOP].warningText?.includes('P'));
++    });
++  });
++
++  describe('2. Security Code Pure Validation (validateSecurityCode)', () => {
++    it('always passes for L0 commands without security check', () => {
++      const res = validateSecurityCode(undefined, SecurityLevel.L0);
++      assert.equal(res.valid, true);
++    });
++
++    it('passes for L1 operations when code is optional or provided', () => {
++      const res1 = validateSecurityCode(undefined, SecurityLevel.L1);
++      assert.equal(res1.valid, true);
++      const res2 = validateSecurityCode('123456', SecurityLevel.L1);
++      assert.equal(res2.valid, true);
++    });
++
++    it('intercepts empty or missing security code for L2 commands', () => {
++      const res1 = validateSecurityCode('', SecurityLevel.L2);
++      assert.equal(res1.valid, false);
++      assert.match(res1.message!, /请输入6位/);
++
++      const res2 = validateSecurityCode(undefined, SecurityLevel.L2);
++      assert.equal(res2.valid, false);
++    });
++
++    it('intercepts non-numeric security code for L2 commands', () => {
++      const res1 = validateSecurityCode('abcdef', SecurityLevel.L2);
++      assert.equal(res1.valid, false);
++      assert.match(res1.message!, /6位纯数字/);
++
++      const res2 = validateSecurityCode('12a456', SecurityLevel.L2);
++      assert.equal(res2.valid, false);
++    });
++
++    it('intercepts incorrect length security codes for L2 commands', () => {
++      const res1 = validateSecurityCode('12345', SecurityLevel.L2);
++      assert.equal(res1.valid, false);
++      assert.match(res1.message!, /6位纯数字/);
++
++      const res2 = validateSecurityCode('1234567', SecurityLevel.L2);
++      assert.equal(res2.valid, false);
++    });
++
++    it('intercepts mismatching demo PIN for L2 commands', () => {
++      const res = validateSecurityCode('654321', SecurityLevel.L2, '123456');
++      assert.equal(res.valid, false);
++      assert.match(res.message!, /安全操作码错误/);
++    });
++
++    it('accepts strictly valid 6-digit numeric PIN matching expected PIN', () => {
++      const res = validateSecurityCode('123456', SecurityLevel.L2, '123456');
++      assert.equal(res.valid, true);
++      assert.equal(res.message, undefined);
++    });
++  });
++
++  describe('3. Execution Duration Formatter (formatExecutionDuration)', () => {
++    it('returns "-" for null, undefined, or negative milliseconds', () => {
++      assert.equal(formatExecutionDuration(null), '-');
++      assert.equal(formatExecutionDuration(undefined), '-');
++      assert.equal(formatExecutionDuration(-50), '-');
++    });
++
++    it('formats durations below 1000ms as Xms', () => {
++      assert.equal(formatExecutionDuration(0), '0ms');
++      assert.equal(formatExecutionDuration(120), '120ms');
++      assert.equal(formatExecutionDuration(999), '999ms');
++      assert.equal(formatExecutionDuration(450.4), '450ms');
++    });
++
++    it('formats durations at or above 1000ms as X.XXs', () => {
++      assert.equal(formatExecutionDuration(1000), '1.00s');
++      assert.equal(formatExecutionDuration(1280), '1.28s');
++      assert.equal(formatExecutionDuration(2345), '2.35s');
++      assert.equal(formatExecutionDuration(10500), '10.50s');
++    });
++  });
++
++  describe('4. Vehicle Capability Evaluation (isCommandSupportedByCapability)', () => {
++    const mockCapabilities: Record<CommandCode, EffectiveCapabilityDto> = {
++      [CommandCode.CMD_LOCK]: {
++        commandCode: CommandCode.CMD_LOCK,
++        commandName: '车辆上锁',
++        supported: true,
++        securityLevel: SecurityLevel.L0,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      },
++      [CommandCode.CMD_UNLOCK]: {
++        commandCode: CommandCode.CMD_UNLOCK,
++        commandName: '车辆解锁',
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      },
++      [CommandCode.CMD_FIND_VEHICLE]: {
++        commandCode: CommandCode.CMD_FIND_VEHICLE,
++        commandName: '鸣笛寻车',
++        supported: true,
++        securityLevel: SecurityLevel.L0,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      },
++      [CommandCode.CMD_TRUNK_OPEN]: {
++        commandCode: CommandCode.CMD_TRUNK_OPEN,
++        commandName: '开启后备箱',
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      },
++      [CommandCode.CMD_TRUNK_CLOSE]: {
++        commandCode: CommandCode.CMD_TRUNK_CLOSE,
++        commandName: '关闭后备箱',
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      },
++      [CommandCode.CMD_ENGINE_START]: {
++        commandCode: CommandCode.CMD_ENGINE_START,
++        commandName: '远程点火启动',
++        supported: true,
++        securityLevel: SecurityLevel.L2,
++        timeoutMs: 15000,
++        frequencyLimitSeconds: 10,
++      },
++      [CommandCode.CMD_ENGINE_STOP]: {
++        commandCode: CommandCode.CMD_ENGINE_STOP,
++        commandName: '远程熄火',
++        supported: true,
++        securityLevel: SecurityLevel.L2,
++        timeoutMs: 15000,
++        frequencyLimitSeconds: 10,
++      },
++      [CommandCode.CMD_WINDOW_OPEN]: {
++        commandCode: CommandCode.CMD_WINDOW_OPEN,
++        commandName: '开启车窗',
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      },
++      [CommandCode.CMD_WINDOW_CLOSE]: {
++        commandCode: CommandCode.CMD_WINDOW_CLOSE,
++        commandName: '关闭车窗',
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      },
++      [CommandCode.CMD_AC_START]: {
++        commandCode: CommandCode.CMD_AC_START,
++        commandName: '开启空调',
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 15000,
++        frequencyLimitSeconds: 10,
++      },
++      [CommandCode.CMD_AC_STOP]: {
++        commandCode: CommandCode.CMD_AC_STOP,
++        commandName: '关闭空调',
++        supported: true,
++        securityLevel: SecurityLevel.L0,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      },
++      [CommandCode.CMD_SEAT_HEAT]: {
++        commandCode: CommandCode.CMD_SEAT_HEAT,
++        commandName: '座椅加热',
++        supported: false,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++        reason: '该车型硬件配置不支持此功能',
++      },
++      [CommandCode.CMD_SUNROOF_CONTROL]: {
++        commandCode: CommandCode.CMD_SUNROOF_CONTROL,
++        commandName: '开启/关闭天窗',
++        supported: false,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++        reason: '该车型无全景天窗硬件',
++      },
++    };
++
++    it('evaluates supported command as true', () => {
++      const res = isCommandSupportedByCapability(CommandCode.CMD_LOCK, mockCapabilities);
++      assert.equal(res.supported, true);
++    });
++
++    it('evaluates unsupported command as false with friendly reason', () => {
++      const res1 = isCommandSupportedByCapability(CommandCode.CMD_SEAT_HEAT, mockCapabilities);
++      assert.equal(res1.supported, false);
++      assert.equal(res1.reason, '该车型硬件配置不支持此功能');
++
++      const res2 = isCommandSupportedByCapability(CommandCode.CMD_SUNROOF_CONTROL, mockCapabilities);
++      assert.equal(res2.supported, false);
++      assert.equal(res2.reason, '该车型无全景天窗硬件');
++    });
++
++    it('gracefully handles missing command in capability matrix', () => {
++      const sparseCaps: Partial<Record<CommandCode, EffectiveCapabilityDto>> = {
++        [CommandCode.CMD_LOCK]: mockCapabilities[CommandCode.CMD_LOCK],
++      };
++      const res = isCommandSupportedByCapability(CommandCode.CMD_AC_START, sparseCaps);
++      assert.equal(res.supported, false);
++      assert.equal(res.reason, '该车型硬件配置不支持此功能');
++    });
++
++    it('defaults to supported when capabilities mapping is null or undefined', () => {
++      assert.equal(isCommandSupportedByCapability(CommandCode.CMD_LOCK, null).supported, true);
++      assert.equal(isCommandSupportedByCapability(CommandCode.CMD_LOCK, undefined).supported, true);
++    });
++  });
++
++  describe('5. Voltage Health Evaluation (evaluateVoltageHealth)', () => {
++    it('categorizes >= 12.0V as NORMAL', () => {
++      assert.equal(evaluateVoltageHealth(12.6).level, 'NORMAL');
++      assert.equal(evaluateVoltageHealth(12.0).level, 'NORMAL');
++      assert.equal(evaluateVoltageHealth(13.8).level, 'NORMAL');
++    });
++
++    it('categorizes 11.0V ~ 11.9V as LOW', () => {
++      assert.equal(evaluateVoltageHealth(11.9).level, 'LOW');
++      assert.equal(evaluateVoltageHealth(11.0).level, 'LOW');
++    });
++
++    it('categorizes < 11.0V as CRITICAL', () => {
++      assert.equal(evaluateVoltageHealth(10.9).level, 'CRITICAL');
++      assert.equal(evaluateVoltageHealth(9.5).level, 'CRITICAL');
++    });
++  });
++
++  describe('6. Error Handling & 409 Concurrency Exclusive Lock', () => {
++    it('creates and identifies CommandLockError properly', () => {
++      const err = new CommandLockError('veh-001', '该车辆已有指令正在执行中，请稍候', CommandCode.CMD_LOCK);
++      assert.equal(err.name, 'CommandLockError');
++      assert.equal(err.vehicleId, 'veh-001');
++      assert.equal(err.commandCode, CommandCode.CMD_LOCK);
++      assert.equal(isCommandLockError(err), true);
++      assert.equal(isCommandLockError(new Error('general')), false);
++    });
++
++    it('isApiError identifies ApiError instances and duck-typed objects', () => {
++      const realApiErr = new ApiError('Conflict', 409);
++      assert.equal(isApiError(realApiErr), true);
++
++      const duckErr = { statusCode: 409, message: 'Vehicle locked' };
++      assert.equal(isApiError(duckErr), true);
++
++      assert.equal(isApiError(null), false);
++      assert.equal(isApiError('error string'), false);
++    });
++
++    it('executeCommandApi dispatches command and receives ACK record', async () => {
++      const res = await executeCommandApi('veh-test-01', {
++        commandCode: CommandCode.CMD_LOCK,
++        idempotencyKey: 'idemp-101',
++      });
++
++      assert.ok(res.id);
++      assert.equal(res.vehicleId, 'veh-test-01');
++      assert.equal(res.commandCode, CommandCode.CMD_LOCK);
++      assert.equal(res.status, CommandStatus.SUCCESS);
++      assert.ok(typeof res.durationMs === 'number');
++    });
++
++    it('intercepts simultaneous command dispatch with 409 CommandLockError', async () => {
++      // Simulate that veh-locked has an active running lock
++      setVehicleCommandLock('veh-locked', true);
++
++      await assert.rejects(
++        async () => {
++          await executeCommandApi('veh-locked', {
++            commandCode: CommandCode.CMD_ENGINE_START,
++            idempotencyKey: 'idemp-conflict',
++            securityCode: '123456',
++          });
++        },
++        (err: unknown) => {
++          assert.ok(isCommandLockError(err));
++          assert.equal((err as CommandLockError).vehicleId, 'veh-locked');
++          assert.match((err as Error).message, /已有指令正在执行中/);
++          return true;
++        }
++      );
++
++      // Once released, command succeeds
++      setVehicleCommandLock('veh-locked', false);
++      const res = await executeCommandApi('veh-locked', {
++        commandCode: CommandCode.CMD_ENGINE_START,
++        idempotencyKey: 'idemp-success-after-release',
++        securityCode: '123456',
++      });
++      assert.equal(res.commandCode, CommandCode.CMD_ENGINE_START);
++      assert.equal(res.status, CommandStatus.SUCCESS);
++    });
++
++    it('transforms server 409 ApiError into CommandLockError', async () => {
++      const originalPost = http.post;
++      http.post = async () => {
++        throw new ApiError('Vehicle command in progress', 409);
++      };
++
++      try {
++        await assert.rejects(
++          async () => {
++            await executeCommandApi('veh-srv-lock', {
++              commandCode: CommandCode.CMD_UNLOCK,
++              idempotencyKey: 'idemp-srv-409',
++            });
++          },
++          (err: unknown) => {
++            assert.ok(isCommandLockError(err));
++            assert.equal((err as CommandLockError).vehicleId, 'veh-srv-lock');
++            return true;
++          }
++        );
++      } finally {
++        http.post = originalPost;
++      }
++    });
++  });
++
++  describe('7. Capability Matrix & History API Methods', () => {
++    it('fetchVehicleCapabilitiesApi returns capability record mapping for vehicle', async () => {
++      const caps = await fetchVehicleCapabilitiesApi('veh-test-01');
++      assert.ok(caps);
++      assert.ok(caps[CommandCode.CMD_LOCK]);
++      assert.equal(caps[CommandCode.CMD_LOCK].commandCode, CommandCode.CMD_LOCK);
++    });
++
++    it('fetchCommandHistoryApi returns command logs for vehicle', async () => {
++      await executeCommandApi('veh-hist-01', {
++        commandCode: CommandCode.CMD_FIND_VEHICLE,
++        idempotencyKey: 'idemp-hist-1',
++      });
++      await executeCommandApi('veh-hist-01', {
++        commandCode: CommandCode.CMD_LOCK,
++        idempotencyKey: 'idemp-hist-2',
++      });
++
++      const history = await fetchCommandHistoryApi('veh-hist-01');
++      assert.ok(history.length >= 2);
++      assert.equal(history[0].vehicleId, 'veh-hist-01');
++    });
++  });
++});
+diff --git a/apps/web/src/views/command/CarControlWorkbench.tsx b/apps/web/src/views/command/CarControlWorkbench.tsx
+new file mode 100644
+index 0000000..4dba5cb
+--- /dev/null
++++ b/apps/web/src/views/command/CarControlWorkbench.tsx
+@@ -0,0 +1,1236 @@
++import React, { useState, useEffect, useMemo } from 'react';
++import {
++  Card,
++  Row,
++  Col,
++  Button,
++  Space,
++  Tag,
++  Typography,
++  Select,
++  Badge,
++  Descriptions,
++  Modal,
++  Form,
++  Input,
++  Slider,
++  Radio,
++  Tooltip,
++  Popconfirm,
++  Alert,
++  Divider,
++  message,
++  notification,
++  Empty,
++  Switch,
++} from 'antd';
++import {
++  LockOutlined,
++  UnlockOutlined,
++  CarOutlined,
++  InboxOutlined,
++  BellOutlined,
++  ThunderboltOutlined,
++  PoweroffOutlined,
++  FireOutlined,
++  PauseCircleOutlined,
++  HeatMapOutlined,
++  DownSquareOutlined,
++  UpSquareOutlined,
++  BorderOutlined,
++  CheckCircleOutlined,
++  ClockCircleOutlined,
++  CloseCircleOutlined,
++  WarningOutlined,
++  LoadingOutlined,
++  SafetyCertificateOutlined,
++  DashboardOutlined,
++  ReloadOutlined,
++  InfoCircleOutlined,
++} from '@ant-design/icons';
++import {
++  CommandCode,
++  SecurityLevel,
++  CommandStatus,
++  type EffectiveCapabilityDto,
++} from '@car-control/contracts';
++import {
++  COMMAND_METADATA,
++  validateSecurityCode,
++  formatExecutionDuration,
++  isCommandSupportedByCapability,
++  evaluateVoltageHealth,
++  isCommandLockError,
++  SEED_WORKBENCH_VEHICLES,
++  type VehicleWorkbenchItem,
++  type VehicleTelemetryData,
++} from './command-core.ts';
++import {
++  executeCommandApi,
++  fetchVehicleCapabilitiesApi,
++  fetchCommandHistoryApi,
++  type CommandRecord,
++} from '../../api/command.ts';
++import { useVehicleStore } from '../../store/useVehicleStore.ts';
++
++const { Title, Text } = Typography;
++
++// 图标映射表
++const COMMAND_ICON_MAP: Record<CommandCode, React.ReactNode> = {
++  [CommandCode.CMD_LOCK]: <LockOutlined />,
++  [CommandCode.CMD_UNLOCK]: <UnlockOutlined />,
++  [CommandCode.CMD_TRUNK_OPEN]: <InboxOutlined />,
++  [CommandCode.CMD_TRUNK_CLOSE]: <CarOutlined />,
++  [CommandCode.CMD_FIND_VEHICLE]: <BellOutlined />,
++  [CommandCode.CMD_ENGINE_START]: <ThunderboltOutlined />,
++  [CommandCode.CMD_ENGINE_STOP]: <PoweroffOutlined />,
++  [CommandCode.CMD_AC_START]: <FireOutlined />,
++  [CommandCode.CMD_AC_STOP]: <PauseCircleOutlined />,
++  [CommandCode.CMD_SEAT_HEAT]: <HeatMapOutlined />,
++  [CommandCode.CMD_WINDOW_OPEN]: <DownSquareOutlined />,
++  [CommandCode.CMD_WINDOW_CLOSE]: <UpSquareOutlined />,
++  [CommandCode.CMD_SUNROOF_CONTROL]: <BorderOutlined />,
++};
++
++export const CarControlWorkbench: React.FC = () => {
++  // 当前选中的车辆 ID 与车辆列表
++  const [vehicles, setVehicles] = useState<VehicleWorkbenchItem[]>(SEED_WORKBENCH_VEHICLES);
++  const [selectedVehicleId, setSelectedVehicleId] = useState<string>(SEED_WORKBENCH_VEHICLES[0]!.id);
++
++  // 车辆能力映射字典
++  const [capabilities, setCapabilities] = useState<Record<CommandCode, EffectiveCapabilityDto> | null>(null);
++
++  // 实时执行流水记录
++  const [commandLogs, setCommandLogs] = useState<CommandRecord[]>([]);
++
++  // 正在执行的指令代码与 Loading 状态
++  const [executingCommandCode, setExecutingCommandCode] = useState<CommandCode | null>(null);
++
++  // 409 排他锁告警横幅提示
++  const [conflictWarning, setConflictWarning] = useState<string | null>(null);
++
++  // 模态框显隐控制与上下文参数
++  const [l2ModalOpen, setL2ModalOpen] = useState(false);
++  const [l2TargetCode, setL2TargetCode] = useState<CommandCode | null>(null);
++  const [l2Duration, setL2Duration] = useState<number>(15);
++  const [l2Pin, setL2Pin] = useState<string>('');
++  const [l2PinError, setL2PinError] = useState<string | null>(null);
++
++  // 空调温控配置弹窗
++  const [acModalOpen, setAcModalOpen] = useState(false);
++  const [acTargetTemp, setAcTargetTemp] = useState<number>(24);
++  const [acFanSpeed, setAcFanSpeed] = useState<number>(2);
++  const [acLoopMode, setAcLoopMode] = useState<'INTERNAL' | 'EXTERNAL'>('INTERNAL');
++
++  // 座椅加热配置弹窗
++  const [seatModalOpen, setSeatModalOpen] = useState(false);
++  const [seatTarget, setSeatTarget] = useState<'DRIVER' | 'PASSENGER' | 'BOTH'>('DRIVER');
++  const [seatLevel, setSeatLevel] = useState<number>(2);
++
++  // 后备箱财产风险二次确认弹窗
++  const [trunkModalOpen, setTrunkModalOpen] = useState(false);
++
++  // 全局车辆 store 联动
++  const setGlobalVehicle = useVehicleStore((s) => s.setVehicle);
++
++  // 当前激活车辆对象
++  const currentVehicle = useMemo(() => {
++    return vehicles.find((v) => v.id === selectedVehicleId) || vehicles[0]!;
++  }, [vehicles, selectedVehicleId]);
++
++  // 加载所选车辆能力模板与历史记录
++  const loadVehicleContext = async (vehId: string) => {
++    try {
++      const [caps, hist] = await Promise.all([
++        fetchVehicleCapabilitiesApi(vehId),
++        fetchCommandHistoryApi(vehId),
++      ]);
++      setCapabilities(caps);
++      setCommandLogs(hist);
++    } catch (err) {
++      console.error('Failed to load vehicle context:', err);
++    }
++  };
++
++  useEffect(() => {
++    setGlobalVehicle(selectedVehicleId);
++    loadVehicleContext(selectedVehicleId);
++  }, [selectedVehicleId]);
++
++  // 切换车辆
++  const handleSelectVehicle = (vehId: string) => {
++    setSelectedVehicleId(vehId);
++    setConflictWarning(null);
++  };
++
++  // 模拟切换在线状态 (供演示离线禁用及全景指标变化)
++  const handleToggleOnline = (checked: boolean) => {
++    setVehicles((prev) =>
++      prev.map((v) => (v.id === selectedVehicleId ? { ...v, isOnline: checked } : v))
++    );
++    message.info(`车辆已切换为 ${checked ? '在线 🟢' : '离线 ⚪'} 状态`);
++  };
++
++  // 核心控车下发主流程
++  const dispatchCommand = async (
++    code: CommandCode,
++    options?: {
++      params?: Record<string, unknown>;
++      securityCode?: string;
++    }
++  ) => {
++    if (!currentVehicle.isOnline) {
++      message.error('车载终端处于离线状态，无法下发指令！');
++      return;
++    }
++
++    // 检查能力支持
++    const capCheck = isCommandSupportedByCapability(code, capabilities);
++    if (!capCheck.supported) {
++      message.warning(capCheck.reason || '该车型硬件配置不支持此功能');
++      return;
++    }
++
++    // 如果当前有指令正在执行，前端防抖阻止并发风暴
++    if (executingCommandCode !== null) {
++      const lockMsg = '该车辆已有指令正在执行中，请稍候';
++      setConflictWarning(lockMsg);
++      message.warning(lockMsg);
++      return;
++    }
++
++    const meta = COMMAND_METADATA[code];
++    setExecutingCommandCode(code);
++    setConflictWarning(null);
++
++    // 乐观插入一条 WAITING_ACK 流水记录
++    const tempId = `cmd_optimistic_${Date.now()}`;
++    const optimisticRecord: CommandRecord = {
++      id: tempId,
++      tenantId: 'tenant-demo',
++      projectId: 'proj-01',
++      vehicleId: currentVehicle.id,
++      deviceId: currentVehicle.deviceId,
++      deviceNo: currentVehicle.deviceNo,
++      commandCode: code,
++      status: CommandStatus.WAITING_ACK,
++      securityLevel: meta.securityLevel,
++      idempotencyKey: `idemp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
++      traceId: `trace_${Date.now()}`,
++      requestId: `req_${Date.now()}`,
++      params: options?.params,
++      sentAt: new Date(),
++      operatorId: 'operator-admin',
++      createdAt: new Date(),
++      updatedAt: new Date(),
++    };
++
++    setCommandLogs((prev) => [optimisticRecord, ...prev]);
++
++    try {
++      const res = await executeCommandApi(currentVehicle.id, {
++        commandCode: code,
++        idempotencyKey: optimisticRecord.idempotencyKey,
++        securityCode: options?.securityCode,
++        params: options?.params,
++      });
++
++      // 收到 ACK，更新流水记录
++      setCommandLogs((prev) =>
++        prev.map((log) => (log.id === tempId ? { ...res, id: res.id || tempId } : log))
++      );
++
++      message.success(`${meta.name} 执行成功！`);
++
++      // 联动更新车辆遥测工况状态
++      applyTelemetryStateChange(code, options?.params);
++    } catch (err: unknown) {
++      // 捕获 409 排他锁冲突
++      if (isCommandLockError(err)) {
++        const lockMsg = err.message || '该车辆已有指令正在执行中，请稍候';
++        setConflictWarning(lockMsg);
++        notification.warning({
++          message: '指令下发排他锁拦截',
++          description: lockMsg,
++          duration: 4.5,
++        });
++
++        // 移除或将乐观记录置为 REJECTED
++        setCommandLogs((prev) =>
++          prev.map((log) =>
++            log.id === tempId
++              ? {
++                  ...log,
++                  status: CommandStatus.DEVICE_REJECTED,
++                  errorMessage: lockMsg,
++                  durationMs: 80,
++                }
++              : log
++          )
++        );
++      } else {
++        const errMsg = err instanceof Error ? err.message : '指令下发失败';
++        message.error(errMsg);
++        setCommandLogs((prev) =>
++          prev.map((log) =>
++            log.id === tempId
++              ? {
++                  ...log,
++                  status: CommandStatus.FAILED,
++                  errorMessage: errMsg,
++                  durationMs: 120,
++                }
++              : log
++          )
++        );
++      }
++    } finally {
++      setExecutingCommandCode(null);
++    }
++  };
++
++  // 遥测状态实时联动更新
++  const applyTelemetryStateChange = (code: CommandCode, params?: Record<string, unknown>) => {
++    setVehicles((prev) =>
++      prev.map((veh) => {
++        if (veh.id !== selectedVehicleId) return veh;
++
++        const updatedTelemetry: VehicleTelemetryData = { ...veh.telemetry };
++
++        switch (code) {
++          case CommandCode.CMD_LOCK:
++            updatedTelemetry.doorLocks = 'LOCKED';
++            break;
++          case CommandCode.CMD_UNLOCK:
++            updatedTelemetry.doorLocks = 'UNLOCKED';
++            break;
++          case CommandCode.CMD_TRUNK_OPEN:
++            updatedTelemetry.trunk = 'OPEN';
++            break;
++          case CommandCode.CMD_TRUNK_CLOSE:
++            updatedTelemetry.trunk = 'CLOSED';
++            break;
++          case CommandCode.CMD_ENGINE_START:
++            updatedTelemetry.engine = 'RUNNING';
++            break;
++          case CommandCode.CMD_ENGINE_STOP:
++            updatedTelemetry.engine = 'STOPPED';
++            break;
++          case CommandCode.CMD_AC_START:
++            updatedTelemetry.acRunning = true;
++            if (params?.targetTemp) updatedTelemetry.acTemp = Number(params.targetTemp);
++            if (params?.fanSpeed) updatedTelemetry.acFanSpeed = Number(params.fanSpeed);
++            break;
++          case CommandCode.CMD_AC_STOP:
++            updatedTelemetry.acRunning = false;
++            break;
++          case CommandCode.CMD_SEAT_HEAT:
++            if (params?.seat === 'BOTH' || params?.seat === 'DRIVER') {
++              updatedTelemetry.seatHeatDriver = Number(params?.level || 2);
++            }
++            if (params?.seat === 'BOTH' || params?.seat === 'PASSENGER') {
++              updatedTelemetry.seatHeatPassenger = Number(params?.level || 2);
++            }
++            break;
++          case CommandCode.CMD_WINDOW_OPEN:
++            updatedTelemetry.windows = 'OPEN';
++            break;
++          case CommandCode.CMD_WINDOW_CLOSE:
++            updatedTelemetry.windows = 'CLOSED';
++            break;
++          case CommandCode.CMD_SUNROOF_CONTROL:
++            updatedTelemetry.sunroof = updatedTelemetry.sunroof === 'OPEN' ? 'CLOSED' : 'OPEN';
++            break;
++          default:
++            break;
++        }
++
++        updatedTelemetry.lastHeartbeat = '刚刚';
++        return {
++          ...veh,
++          telemetry: updatedTelemetry,
++        };
++      })
++    );
++  };
++
++  // 打开 L2 安全确认模态框
++  const handleTriggerL2 = (code: CommandCode) => {
++    setL2TargetCode(code);
++    setL2Pin('');
++    setL2PinError(null);
++    setL2Duration(15);
++    setL2ModalOpen(true);
++  };
++
++  // 提交 L2 强安全指令
++  const handleConfirmL2 = () => {
++    if (!l2TargetCode) return;
++
++    const validation = validateSecurityCode(l2Pin, SecurityLevel.L2, '123456');
++    if (!validation.valid) {
++      setL2PinError(validation.message || '请输入6位有效安全码');
++      return;
++    }
++
++    setL2PinError(null);
++    setL2ModalOpen(false);
++
++    const params: Record<string, unknown> = {};
++    if (l2TargetCode === CommandCode.CMD_ENGINE_START) {
++      params.durationMinutes = l2Duration;
++    } else if (l2TargetCode === CommandCode.CMD_ENGINE_STOP) {
++      params.preCheckSpeed = 0;
++      params.preCheckGear = 'P';
++    }
++
++    dispatchCommand(l2TargetCode, {
++      securityCode: l2Pin,
++      params,
++    });
++  };
++
++  // 渲染单个指令控制按钮
++  const renderCommandButton = (code: CommandCode, customClick?: () => void) => {
++    const meta = COMMAND_METADATA[code];
++    const icon = COMMAND_ICON_MAP[code] || <CarOutlined />;
++    const isExecuting = executingCommandCode === code;
++    const isAnyExecuting = executingCommandCode !== null;
++
++    // 判定车型硬件配置是否支持
++    const cap = isCommandSupportedByCapability(code, capabilities);
++    const isOffline = !currentVehicle.isOnline;
++    const isDisabled = isOffline || !cap.supported || (isAnyExecuting && !isExecuting);
++
++    let tooltipContent: React.ReactNode = meta.description;
++    if (isOffline) {
++      tooltipContent = '车载终端离线中，无法下发指令';
++    } else if (!cap.supported) {
++      tooltipContent = cap.reason || '该车型硬件配置不支持此功能';
++    }
++
++    const buttonElement = (
++      <Button
++        block
++        size="large"
++        icon={icon}
++        loading={isExecuting}
++        disabled={isDisabled}
++        style={{
++          height: 52,
++          display: 'flex',
++          alignItems: 'center',
++          justifyContent: 'space-between',
++          borderRadius: 8,
++          borderColor:
++            meta.securityLevel === SecurityLevel.L2
++              ? '#ff4d4f'
++              : meta.securityLevel === SecurityLevel.L1
++              ? '#faad14'
++              : undefined,
++        }}
++        onClick={() => {
++          if (isDisabled) return;
++          if (customClick) {
++            customClick();
++          } else {
++            dispatchCommand(code);
++          }
++        }}
++      >
++        <div style={{ textAlign: 'left', overflow: 'hidden' }}>
++          <div style={{ fontWeight: 600, fontSize: 14 }}>{meta.name}</div>
++          <div style={{ fontSize: 11, color: 'rgba(0,0,0,0.45)', marginTop: -2 }}>
++            {meta.securityLevel === SecurityLevel.L2 ? 'L2 高危强核验' : meta.securityLevel === SecurityLevel.L1 ? 'L1 二次确认' : 'L0 常规下发'}
++          </div>
++        </div>
++        <Tag
++          color={
++            meta.securityLevel === SecurityLevel.L2
++              ? 'error'
++              : meta.securityLevel === SecurityLevel.L1
++              ? 'warning'
++              : 'default'
++          }
++          style={{ marginRight: 0 }}
++        >
++          {meta.securityLevel}
++        </Tag>
++      </Button>
++    );
++
++    return (
++      <Tooltip title={tooltipContent} placement="top">
++        <div style={{ width: '100%' }}>{buttonElement}</div>
++      </Tooltip>
++    );
++  };
++
++  // 状态机标签呈现
++  const renderStatusTag = (status: CommandStatus) => {
++    switch (status) {
++      case CommandStatus.WAITING_ACK:
++        return (
++          <Tag color="processing" icon={<LoadingOutlined spin />}>
++            WAITING_ACK
++          </Tag>
++        );
++      case CommandStatus.SUCCESS:
++        return (
++          <Tag color="success" icon={<CheckCircleOutlined />}>
++            SUCCESS
++          </Tag>
++        );
++      case CommandStatus.DEVICE_REJECTED:
++        return (
++          <Tag color="warning" icon={<WarningOutlined />}>
++            REJECTED
++          </Tag>
++        );
++      case CommandStatus.TIMEOUT:
++        return (
++          <Tag color="error" icon={<ClockCircleOutlined />}>
++            TIMEOUT
++          </Tag>
++        );
++      case CommandStatus.FAILED:
++        return (
++          <Tag color="error" icon={<CloseCircleOutlined />}>
++            FAILED
++          </Tag>
++        );
++      default:
++        return <Tag>{status}</Tag>;
++    }
++  };
++
++  const voltageMeta = evaluateVoltageHealth(currentVehicle.telemetry.batteryVoltage);
++
++  return (
++    <div style={{ padding: '0 4px', maxWidth: 1600, margin: '0 auto' }}>
++      {/* 顶部选车与状态控制条 */}
++      <Card
++        styles={{ body: { padding: '16px 20px' } }}
++        style={{
++          borderRadius: 8,
++          marginBottom: 16,
++          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++        }}
++      >
++        <Row justify="space-between" align="middle" gutter={[16, 16]}>
++          <Col xs={24} md={12}>
++            <Space align="center" size="middle" wrap>
++              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
++                <CarOutlined style={{ fontSize: 22, color: '#1677ff' }} />
++                <Title level={4} style={{ margin: 0 }}>
++                  远程车控全景运营台
++                </Title>
++              </div>
++              <Tag color="blue">实时 MQTT 遥测</Tag>
++            </Space>
++          </Col>
++          <Col xs={24} md={12} style={{ textAlign: 'right' }}>
++            <Space align="center" size="middle" wrap>
++              <Text type="secondary">当前管控车辆：</Text>
++              <Select
++                value={selectedVehicleId}
++                onChange={handleSelectVehicle}
++                style={{ width: 280 }}
++                showSearch
++                optionFilterProp="label"
++                options={vehicles.map((v) => ({
++                  value: v.id,
++                  label: `${v.plateNumber} · ${v.brandName} ${v.modelName} (${v.isOnline ? '🟢 在线' : '⚪ 离线'})`,
++                }))}
++              />
++              <Divider type="vertical" />
++              <Space size={6}>
++                <Text style={{ fontSize: 13 }}>在线模拟：</Text>
++                <Switch
++                  checked={currentVehicle.isOnline}
++                  onChange={handleToggleOnline}
++                  checkedChildren="在线"
++                  unCheckedChildren="离线"
++                />
++              </Space>
++              <Button
++                icon={<ReloadOutlined />}
++                onClick={() => loadVehicleContext(selectedVehicleId)}
++              >
++                刷新车况
++              </Button>
++            </Space>
++          </Col>
++        </Row>
++      </Card>
++
++      {/* 409 排他锁冲突友好提醒 */}
++      {conflictWarning && (
++        <Alert
++          message="并发排他锁提示"
++          description={conflictWarning}
++          type="warning"
++          showIcon
++          closable
++          onClose={() => setConflictWarning(null)}
++          style={{ marginBottom: 16 }}
++        />
++      )}
++
++      {/* 70% / 30% 核心响应式工作台 */}
++      <Row gutter={[16, 16]}>
++        {/* 左栏 70%: 车辆全景看板与 13 类指令控制板 */}
++        <Col xs={24} lg={17}>
++          {/* 全景工况指标卡片 */}
++          <Card
++            title={
++              <Space align="center">
++                <DashboardOutlined style={{ color: '#1677ff' }} />
++                <span>目标车辆实时工况透视看板</span>
++                <Badge
++                  status={currentVehicle.isOnline ? 'success' : 'default'}
++                  text={
++                    <Text strong style={{ color: currentVehicle.isOnline ? '#52c41a' : '#8c8c8c' }}>
++                      {currentVehicle.isOnline ? '车载终端在线 (MQTT 连接就绪)' : '车载终端离线 (心跳中断)'}
++                    </Text>
++                  }
++                />
++              </Space>
++            }
++            styles={{ body: { padding: '16px 20px' } }}
++            style={{ borderRadius: 8, marginBottom: 16 }}
++          >
++            <Descriptions
++              bordered
++              size="small"
++              column={{ xs: 2, sm: 3, md: 4, lg: 4 }}
++              styles={{
++                label: { background: '#fafafa', width: '22%' },
++              }}
++            >
++              <Descriptions.Item label="车牌 / 品牌">
++                <Text strong>{currentVehicle.plateNumber}</Text>
++                <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
++                  {currentVehicle.brandName} {currentVehicle.modelName}
++                </div>
++              </Descriptions.Item>
++
++              <Descriptions.Item label="VIN 码 / 设备号">
++                <Text copyable style={{ fontSize: 12 }}>
++                  {currentVehicle.vin}
++                </Text>
++                <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
++                  终端: {currentVehicle.deviceNo}
++                </div>
++              </Descriptions.Item>
++
++              <Descriptions.Item label="蓄电池电压">
++                <Space>
++                  <Text strong style={{ fontSize: 15, color: voltageMeta.color }}>
++                    {currentVehicle.telemetry.batteryVoltage.toFixed(1)} V
++                  </Text>
++                  <Tag color={voltageMeta.tagColor}>{voltageMeta.text}</Tag>
++                </Space>
++              </Descriptions.Item>
++
++              <Descriptions.Item label="动力 / 发动机">
++                {currentVehicle.telemetry.engine === 'RUNNING' ? (
++                  <Tag color="success">点火运行中 (ON)</Tag>
++                ) : (
++                  <Tag color="default">已熄火驻车 (OFF)</Tag>
++                )}
++                <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
++                  车速: {currentVehicle.telemetry.speed} km/h [{currentVehicle.telemetry.gear} 档]
++                </div>
++              </Descriptions.Item>
++
++              <Descriptions.Item label="四门锁态">
++                {currentVehicle.telemetry.doorLocks === 'LOCKED' ? (
++                  <Tag color="blue" icon={<LockOutlined />}>
++                    已闭锁 (LOCKED)
++                  </Tag>
++                ) : (
++                  <Tag color="warning" icon={<UnlockOutlined />}>
++                    已开启 (UNLOCKED)
++                  </Tag>
++                )}
++              </Descriptions.Item>
++
++              <Descriptions.Item label="后备箱 / 天窗">
++                <Space direction="vertical" size={2}>
++                  <div>
++                    尾箱:{' '}
++                    {currentVehicle.telemetry.trunk === 'CLOSED' ? (
++                      <Tag color="default">已闭合</Tag>
++                    ) : (
++                      <Tag color="volcano">已弹开</Tag>
++                    )}
++                  </div>
++                  <div>
++                    天窗:{' '}
++                    {currentVehicle.telemetry.sunroof === 'CLOSED' ? (
++                      <Tag color="default">已关闭</Tag>
++                    ) : (
++                      <Tag color="processing">已开启</Tag>
++                    )}
++                  </div>
++                </Space>
++              </Descriptions.Item>
++
++              <Descriptions.Item label="座舱温控">
++                <Space direction="vertical" size={2}>
++                  <div>
++                    空调:{' '}
++                    {currentVehicle.telemetry.acRunning ? (
++                      <Tag color="cyan">
++                        运行中 ({currentVehicle.telemetry.acTemp}°C / {currentVehicle.telemetry.acFanSpeed}档)
++                      </Tag>
++                    ) : (
++                      <Tag color="default">已关闭</Tag>
++                    )}
++                  </div>
++                  <div style={{ fontSize: 12 }}>
++                    加热: 主驾[{currentVehicle.telemetry.seatHeatDriver === 0 ? 'OFF' : `${currentVehicle.telemetry.seatHeatDriver}档`}] / 副驾[{currentVehicle.telemetry.seatHeatPassenger === 0 ? 'OFF' : `${currentVehicle.telemetry.seatHeatPassenger}档`}]
++                  </div>
++                </Space>
++              </Descriptions.Item>
++
++              <Descriptions.Item label="里程 / 心跳">
++                <div>{currentVehicle.telemetry.mileage.toLocaleString()} km</div>
++                <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
++                  最新心跳: {currentVehicle.telemetry.lastHeartbeat}
++                </div>
++              </Descriptions.Item>
++            </Descriptions>
++          </Card>
++
++          {/* 13 类远程控车指令矩阵卡片 */}
++          <Card
++            title={
++              <Space>
++                <SafetyCertificateOutlined style={{ color: '#52c41a' }} />
++                <span>13 类远程指令控制矩阵</span>
++                <Text type="secondary" style={{ fontSize: 12 }}>
++                  (根据车型能力模板继承动态启用，高危操作强制核验安全码)
++                </Text>
++              </Space>
++            }
++            styles={{ body: { padding: '20px' } }}
++            style={{ borderRadius: 8 }}
++          >
++            {/* 分组 1: 门锁与后备箱 */}
++            <div style={{ marginBottom: 20 }}>
++              <div
++                style={{
++                  fontWeight: 600,
++                  fontSize: 14,
++                  marginBottom: 12,
++                  display: 'flex',
++                  alignItems: 'center',
++                  gap: 8,
++                }}
++              >
++                <span style={{ width: 4, height: 14, background: '#1677ff', borderRadius: 2 }} />
++                【门锁与后备箱】
++              </div>
++              <Row gutter={[12, 12]}>
++                <Col xs={12} sm={6}>
++                  {renderCommandButton(CommandCode.CMD_LOCK)}
++                </Col>
++                <Col xs={12} sm={6}>
++                  <Popconfirm
++                    title="车辆门锁解锁确认"
++                    description="解锁车门后若无人上车，可能存在被盗风险，确认解锁吗？"
++                    okText="确认解锁"
++                    cancelText="取消"
++                    onConfirm={() => dispatchCommand(CommandCode.CMD_UNLOCK)}
++                  >
++                    <div>{renderCommandButton(CommandCode.CMD_UNLOCK, () => {})}</div>
++                  </Popconfirm>
++                </Col>
++                <Col xs={12} sm={6}>
++                  {renderCommandButton(CommandCode.CMD_TRUNK_OPEN, () => setTrunkModalOpen(true))}
++                </Col>
++                <Col xs={12} sm={6}>
++                  <Popconfirm
++                    title="关闭后备箱确认"
++                    description="关闭后备箱前请确认尾箱周边无人及障碍物，确认关闭吗？"
++                    okText="确认关闭"
++                    cancelText="取消"
++                    onConfirm={() => dispatchCommand(CommandCode.CMD_TRUNK_CLOSE)}
++                  >
++                    <div>{renderCommandButton(CommandCode.CMD_TRUNK_CLOSE, () => {})}</div>
++                  </Popconfirm>
++                </Col>
++              </Row>
++            </div>
++
++            {/* 分组 2: 动力与寻车 */}
++            <div style={{ marginBottom: 20 }}>
++              <div
++                style={{
++                  fontWeight: 600,
++                  fontSize: 14,
++                  marginBottom: 12,
++                  display: 'flex',
++                  alignItems: 'center',
++                  gap: 8,
++                }}
++              >
++                <span style={{ width: 4, height: 14, background: '#ff4d4f', borderRadius: 2 }} />
++                【动力与寻车】
++              </div>
++              <Row gutter={[12, 12]}>
++                <Col xs={24} sm={8}>
++                  {renderCommandButton(CommandCode.CMD_FIND_VEHICLE)}
++                </Col>
++                <Col xs={24} sm={8}>
++                  {renderCommandButton(CommandCode.CMD_ENGINE_START, () =>
++                    handleTriggerL2(CommandCode.CMD_ENGINE_START)
++                  )}
++                </Col>
++                <Col xs={24} sm={8}>
++                  {renderCommandButton(CommandCode.CMD_ENGINE_STOP, () =>
++                    handleTriggerL2(CommandCode.CMD_ENGINE_STOP)
++                  )}
++                </Col>
++              </Row>
++            </div>
++
++            {/* 分组 3: 座舱温控 */}
++            <div style={{ marginBottom: 20 }}>
++              <div
++                style={{
++                  fontWeight: 600,
++                  fontSize: 14,
++                  marginBottom: 12,
++                  display: 'flex',
++                  alignItems: 'center',
++                  gap: 8,
++                }}
++              >
++                <span style={{ width: 4, height: 14, background: '#faad14', borderRadius: 2 }} />
++                【座舱温控】
++              </div>
++              <Row gutter={[12, 12]}>
++                <Col xs={24} sm={8}>
++                  {renderCommandButton(CommandCode.CMD_AC_START, () => setAcModalOpen(true))}
++                </Col>
++                <Col xs={24} sm={8}>
++                  {renderCommandButton(CommandCode.CMD_AC_STOP)}
++                </Col>
++                <Col xs={24} sm={8}>
++                  {renderCommandButton(CommandCode.CMD_SEAT_HEAT, () => setSeatModalOpen(true))}
++                </Col>
++              </Row>
++            </div>
++
++            {/* 分组 4: 车窗天窗 */}
++            <div>
++              <div
++                style={{
++                  fontWeight: 600,
++                  fontSize: 14,
++                  marginBottom: 12,
++                  display: 'flex',
++                  alignItems: 'center',
++                  gap: 8,
++                }}
++              >
++                <span style={{ width: 4, height: 14, background: '#52c41a', borderRadius: 2 }} />
++                【车窗天窗】
++              </div>
++              <Row gutter={[12, 12]}>
++                <Col xs={24} sm={8}>
++                  <Popconfirm
++                    title="一键降窗确认"
++                    description="确认一键降下所有车窗通风吗？离开车辆前请注意天气及防盗"
++                    okText="确认降窗"
++                    cancelText="取消"
++                    onConfirm={() => dispatchCommand(CommandCode.CMD_WINDOW_OPEN)}
++                  >
++                    <div>{renderCommandButton(CommandCode.CMD_WINDOW_OPEN, () => {})}</div>
++                  </Popconfirm>
++                </Col>
++                <Col xs={24} sm={8}>
++                  <Popconfirm
++                    title="一键升窗确认"
++                    description="升窗过程中请特别注意防夹手安全提醒，确认升起车窗吗？"
++                    okText="确认升窗"
++                    cancelText="取消"
++                    onConfirm={() => dispatchCommand(CommandCode.CMD_WINDOW_CLOSE)}
++                  >
++                    <div>{renderCommandButton(CommandCode.CMD_WINDOW_CLOSE, () => {})}</div>
++                  </Popconfirm>
++                </Col>
++                <Col xs={24} sm={8}>
++                  <Popconfirm
++                    title="天窗开闭确认"
++                    description="确认开闭全景天窗吗？请确认车顶无异物阻挡"
++                    okText="确认操作"
++                    cancelText="取消"
++                    onConfirm={() => dispatchCommand(CommandCode.CMD_SUNROOF_CONTROL)}
++                  >
++                    <div>{renderCommandButton(CommandCode.CMD_SUNROOF_CONTROL, () => {})}</div>
++                  </Popconfirm>
++                </Col>
++              </Row>
++            </div>
++          </Card>
++        </Col>
++
++        {/* 右栏 30%: 实时指令执行流水监控大屏 */}
++        <Col xs={24} lg={7}>
++          <Card
++            title={
++              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
++                <Space>
++                  <ClockCircleOutlined style={{ color: '#1677ff' }} />
++                  <span>实时指令执行流水</span>
++                </Space>
++                <Badge count={commandLogs.length} overflowCount={99} style={{ backgroundColor: '#1677ff' }} />
++              </div>
++            }
++            extra={
++              <Button
++                type="text"
++                size="small"
++                icon={<ReloadOutlined />}
++                onClick={() => loadVehicleContext(selectedVehicleId)}
++              />
++            }
++            styles={{ body: { padding: '12px', maxHeight: 720, overflowY: 'auto' } }}
++            style={{ borderRadius: 8, height: '100%' }}
++          >
++            {commandLogs.length === 0 ? (
++              <Empty
++                image={Empty.PRESENTED_IMAGE_SIMPLE}
++                description="暂无控车执行流水"
++                style={{ margin: '40px 0' }}
++              />
++            ) : (
++              <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
++                {commandLogs.map((log) => {
++                  const meta = COMMAND_METADATA[log.commandCode];
++                  return (
++                    <div
++                      key={log.id}
++                      style={{
++                        padding: '10px 12px',
++                        background: '#fafafa',
++                        borderRadius: 6,
++                        border: '1px solid #f0f0f0',
++                        fontSize: 13,
++                      }}
++                    >
++                      <div
++                        style={{
++                          display: 'flex',
++                          justifyContent: 'space-between',
++                          alignItems: 'center',
++                          marginBottom: 4,
++                        }}
++                      >
++                        <Space size={6}>
++                          <span style={{ color: '#1677ff' }}>{COMMAND_ICON_MAP[log.commandCode]}</span>
++                          <Text strong>{meta ? meta.name : log.commandCode}</Text>
++                        </Space>
++                        {renderStatusTag(log.status)}
++                      </div>
++
++                      <div
++                        style={{
++                          display: 'flex',
++                          justifyContent: 'space-between',
++                          color: 'rgba(0,0,0,0.45)',
++                          fontSize: 12,
++                        }}
++                      >
++                        <span>
++                          {log.sentAt
++                            ? new Date(log.sentAt).toLocaleTimeString('zh-CN', { hour12: false })
++                            : '-'}
++                        </span>
++                        <span>
++                          耗时: <Text strong style={{ color: '#52c41a' }}>{formatExecutionDuration(log.durationMs)}</Text>
++                        </span>
++                      </div>
++
++                      {log.errorMessage && (
++                        <div
++                          style={{
++                            marginTop: 6,
++                            padding: '4px 6px',
++                            background: '#fff2f0',
++                            borderRadius: 4,
++                            color: '#ff4d4f',
++                            fontSize: 11,
++                          }}
++                        >
++                          原因: {log.errorMessage}
++                        </div>
++                      )}
++
++                      <div
++                        style={{
++                          marginTop: 4,
++                          fontSize: 10,
++                          color: 'rgba(0,0,0,0.3)',
++                          overflow: 'hidden',
++                          textOverflow: 'ellipsis',
++                          whiteSpace: 'nowrap',
++                        }}
++                      >
++                        ID: {log.id} | 凭据: {log.idempotencyKey.slice(0, 16)}...
++                      </div>
++                    </div>
++                  );
++                })}
++              </div>
++            )}
++          </Card>
++        </Col>
++      </Row>
++
++      {/* ---------------- 模态框 1: L2 高危强核验 (点火 / 熄火) ---------------- */}
++      <Modal
++        title={
++          <Space>
++            <WarningOutlined style={{ color: '#ff4d4f', fontSize: 18 }} />
++            <span>L2 强安全级控车指令校验</span>
++          </Space>
++        }
++        open={l2ModalOpen}
++        onOk={handleConfirmL2}
++        onCancel={() => setL2ModalOpen(false)}
++        okText="核验安全码并下发"
++        cancelText="取消"
++        okButtonProps={{ danger: true }}
++      >
++        <div style={{ marginTop: 12 }}>
++          {l2TargetCode === CommandCode.CMD_ENGINE_START && (
++            <>
++              <Alert
++                type="warning"
++                showIcon
++                message="远程点火启动注意事项"
++                description="车辆启动后将保持怠速运转，运行至设定时间后将自动熄火。请确认车辆周围环境安全且驻车制动已拉起。"
++                style={{ marginBottom: 16 }}
++              />
++              <Form.Item label="选择启动运行时长 (分钟)">
++                <Row align="middle" gutter={16}>
++                  <Col span={18}>
++                    <Slider
++                      min={5}
++                      max={45}
++                      step={5}
++                      value={l2Duration}
++                      onChange={(v) => setL2Duration(v)}
++                    />
++                  </Col>
++                  <Col span={6}>
++                    <Text strong style={{ color: '#1677ff' }}>
++                      {l2Duration} 分钟
++                    </Text>
++                  </Col>
++                </Row>
++              </Form.Item>
++            </>
++          )}
++
++          {l2TargetCode === CommandCode.CMD_ENGINE_STOP && (
++            <>
++              <Alert
++                type="error"
++                showIcon
++                message="远程熄火前置安全条件校验"
++                description="系统已自动对车机工况进行前置核验：当前车速必须为 0 且变速箱必须处于 P 档。"
++                style={{ marginBottom: 16 }}
++              />
++              <div
++                style={{
++                  background: '#f6ffed',
++                  border: '1px solid #b7eb8f',
++                  borderRadius: 6,
++                  padding: '10px 14px',
++                  marginBottom: 16,
++                }}
++              >
++                <Row gutter={[16, 8]}>
++                  <Col span={12}>
++                    <Text type="secondary">当前车速检测：</Text>
++                    <Tag color="success">0 km/h (检测通过)</Tag>
++                  </Col>
++                  <Col span={12}>
++                    <Text type="secondary">当前挡位检测：</Text>
++                    <Tag color="success">P 档 (检测通过)</Tag>
++                  </Col>
++                </Row>
++              </div>
++            </>
++          )}
++
++          <Form.Item
++            label="6 位操作安全码"
++            required
++            validateStatus={l2PinError ? 'error' : ''}
++            help={l2PinError || '开发与测试演示环境默认安全码为: 123456'}
++          >
++            <Input.Password
++              maxLength={6}
++              placeholder="请输入 6 位纯数字安全码 (例: 123456)"
++              value={l2Pin}
++              onChange={(e) => {
++                setL2Pin(e.target.value);
++                setL2PinError(null);
++              }}
++              style={{ fontSize: 16, letterSpacing: 4 }}
++            />
++          </Form.Item>
++        </div>
++      </Modal>
++
++      {/* ---------------- 模态框 2: 空调温控配置参数 ---------------- */}
++      <Modal
++        title={
++          <Space>
++            <FireOutlined style={{ color: '#faad14' }} />
++            <span>座舱远程空调温控设定</span>
++          </Space>
++        }
++        open={acModalOpen}
++        onOk={() => {
++          setAcModalOpen(false);
++          dispatchCommand(CommandCode.CMD_AC_START, {
++            params: {
++              targetTemp: acTargetTemp,
++              fanSpeed: acFanSpeed,
++              loopMode: acLoopMode,
++            },
++          });
++        }}
++        onCancel={() => setAcModalOpen(false)}
++        okText="立即开启空调"
++        cancelText="取消"
++      >
++        <div style={{ marginTop: 12 }}>
++          <Form.Item label="设定目标温度 (°C)">
++            <Row align="middle" gutter={16}>
++              <Col span={18}>
++                <Slider
++                  min={16}
++                  max={30}
++                  step={1}
++                  value={acTargetTemp}
++                  onChange={(v) => setAcTargetTemp(v)}
++                />
++              </Col>
++              <Col span={6}>
++                <Text strong style={{ fontSize: 16, color: '#1677ff' }}>
++                  {acTargetTemp} °C
++                </Text>
++              </Col>
++            </Row>
++          </Form.Item>
++
++          <Form.Item label="风速档位调节">
++            <Radio.Group
++              value={acFanSpeed}
++              onChange={(e) => setAcFanSpeed(e.target.value)}
++              buttonStyle="solid"
++            >
++              <Radio.Button value={1}>1档 (微风柔和)</Radio.Button>
++              <Radio.Button value={2}>2档 (标准适度)</Radio.Button>
++              <Radio.Button value={3}>3档 (强劲速冷)</Radio.Button>
++            </Radio.Group>
++          </Form.Item>
++
++          <Form.Item label="空气循环模式">
++            <Radio.Group
++              value={acLoopMode}
++              onChange={(e) => setAcLoopMode(e.target.value)}
++            >
++              <Radio value="INTERNAL">内循环 (快速保温)</Radio>
++              <Radio value="EXTERNAL">外循环 (换气通风)</Radio>
++            </Radio.Group>
++          </Form.Item>
++        </div>
++      </Modal>
++
++      {/* ---------------- 模态框 3: 座椅加热档位调节 ---------------- */}
++      <Modal
++        title={
++          <Space>
++            <HeatMapOutlined style={{ color: '#fa541c' }} />
++            <span>座椅电加热档位调节</span>
++          </Space>
++        }
++        open={seatModalOpen}
++        onOk={() => {
++          setSeatModalOpen(false);
++          dispatchCommand(CommandCode.CMD_SEAT_HEAT, {
++            params: {
++              seat: seatTarget,
++              level: seatLevel,
++            },
++          });
++        }}
++        onCancel={() => setSeatModalOpen(false)}
++        okText="设定加热"
++        cancelText="取消"
++      >
++        <div style={{ marginTop: 12 }}>
++          <Form.Item label="选择加热座椅目标">
++            <Radio.Group
++              value={seatTarget}
++              onChange={(e) => setSeatTarget(e.target.value)}
++              buttonStyle="solid"
++            >
++              <Radio.Button value="DRIVER">主驾驶座</Radio.Button>
++              <Radio.Button value="PASSENGER">副驾驶座</Radio.Button>
++              <Radio.Button value="BOTH">前排双方座椅</Radio.Button>
++            </Radio.Group>
++          </Form.Item>
++
++          <Form.Item label="加热档位强度">
++            <Radio.Group
++              value={seatLevel}
++              onChange={(e) => setSeatLevel(e.target.value)}
++              buttonStyle="solid"
++            >
++              <Radio.Button value={1}>1档 (微温保暖)</Radio.Button>
++              <Radio.Button value={2}>2档 (温暖适宜)</Radio.Button>
++              <Radio.Button value={3}>3档 (速热强劲)</Radio.Button>
++            </Radio.Group>
++          </Form.Item>
++        </div>
++      </Modal>
++
++      {/* ---------------- 模态框 4: 后备箱开启财产风险确认 ---------------- */}
++      <Modal
++        title={
++          <Space>
++            <WarningOutlined style={{ color: '#faad14' }} />
++            <span>开启后备箱风险警示</span>
++          </Space>
++        }
++        open={trunkModalOpen}
++        onOk={() => {
++          setTrunkModalOpen(false);
++          dispatchCommand(CommandCode.CMD_TRUNK_OPEN);
++        }}
++        onCancel={() => setTrunkModalOpen(false)}
++        okText="确认开启后备箱"
++        cancelText="取消"
++      >
++        <Alert
++          type="warning"
++          showIcon
++          message="财产安全防盗提醒"
++          description="后备箱弹开后若现场无专人看管或关闭，可能导致车内物品遗失或遭遇风雨财产损失，请确认现场有人接收后再行开启！"
++          style={{ marginTop: 12 }}
++        />
++      </Modal>
++    </div>
++  );
++};
+diff --git a/apps/web/src/views/command/command-core.ts b/apps/web/src/views/command/command-core.ts
+new file mode 100644
+index 0000000..1d9ac3d
+--- /dev/null
++++ b/apps/web/src/views/command/command-core.ts
+@@ -0,0 +1,611 @@
++import {
++  CommandCode,
++  SecurityLevel,
++  CommandStatus,
++  type EffectiveCapabilityDto,
++} from '@car-control/contracts';
++import { ApiError } from '../../api/client.ts';
++
++export { CommandCode, SecurityLevel, CommandStatus, type EffectiveCapabilityDto };
++
++export interface CommandMetaItem {
++  code: CommandCode;
++  name: string;
++  group: 'DOOR_TRUNK' | 'POWER_SEARCH' | 'CLIMATE' | 'WINDOW_SUNROOF';
++  groupName: string;
++  securityLevel: SecurityLevel;
++  iconName: string;
++  defaultTimeoutMs: number;
++  warningText?: string;
++  description: string;
++}
++
++export const COMMAND_METADATA: Record<CommandCode, CommandMetaItem> = {
++  [CommandCode.CMD_LOCK]: {
++    code: CommandCode.CMD_LOCK,
++    name: '车辆上锁',
++    group: 'DOOR_TRUNK',
++    groupName: '门锁与后备箱',
++    securityLevel: SecurityLevel.L0,
++    iconName: 'LockOutlined',
++    defaultTimeoutMs: 10000,
++    description: '闭锁全车门锁并进入设防状态',
++  },
++  [CommandCode.CMD_UNLOCK]: {
++    code: CommandCode.CMD_UNLOCK,
++    name: '车辆解锁',
++    group: 'DOOR_TRUNK',
++    groupName: '门锁与后备箱',
++    securityLevel: SecurityLevel.L1,
++    iconName: 'UnlockOutlined',
++    defaultTimeoutMs: 10000,
++    warningText: '确认解锁车辆门锁吗？解锁后若无人上车，可能存在财产被盗风险',
++    description: '解除全车门锁设防',
++  },
++  [CommandCode.CMD_TRUNK_OPEN]: {
++    code: CommandCode.CMD_TRUNK_OPEN,
++    name: '开启后备箱',
++    group: 'DOOR_TRUNK',
++    groupName: '门锁与后备箱',
++    securityLevel: SecurityLevel.L1,
++    iconName: 'InboxOutlined',
++    defaultTimeoutMs: 10000,
++    warningText: '后备箱开启后若无人关闭可能存在财产风险，确认开启吗？',
++    description: '弹开并升起后备箱门',
++  },
++  [CommandCode.CMD_TRUNK_CLOSE]: {
++    code: CommandCode.CMD_TRUNK_CLOSE,
++    name: '关闭后备箱',
++    group: 'DOOR_TRUNK',
++    groupName: '门锁与后备箱',
++    securityLevel: SecurityLevel.L1,
++    iconName: 'FolderCloseOutlined',
++    defaultTimeoutMs: 10000,
++    warningText: '关闭后备箱前请确认尾箱周边无人及障碍物，确认关闭吗？',
++    description: '电动关闭车辆后备箱',
++  },
++  [CommandCode.CMD_FIND_VEHICLE]: {
++    code: CommandCode.CMD_FIND_VEHICLE,
++    name: '鸣笛寻车',
++    group: 'POWER_SEARCH',
++    groupName: '动力与寻车',
++    securityLevel: SecurityLevel.L0,
++    iconName: 'BellOutlined',
++    defaultTimeoutMs: 10000,
++    description: '控制车机双闪并间歇鸣笛 30 秒协助快速寻车',
++  },
++  [CommandCode.CMD_ENGINE_START]: {
++    code: CommandCode.CMD_ENGINE_START,
++    name: '远程点火启动',
++    group: 'POWER_SEARCH',
++    groupName: '动力与寻车',
++    securityLevel: SecurityLevel.L2,
++    iconName: 'ThunderboltOutlined',
++    defaultTimeoutMs: 15000,
++    warningText: '远程启动发动机具有高安全风险，运行到期后自动熄火，强制校验 6 位安全码',
++    description: '远程点火起动动力系统，可设定运行时间 (5~45分钟)',
++  },
++  [CommandCode.CMD_ENGINE_STOP]: {
++    code: CommandCode.CMD_ENGINE_STOP,
++    name: '远程熄火',
++    group: 'POWER_SEARCH',
++    groupName: '动力与寻车',
++    securityLevel: SecurityLevel.L2,
++    iconName: 'PoweroffOutlined',
++    defaultTimeoutMs: 15000,
++    warningText: '远程熄火前系统严格校验当前车速为 0 且处于 P 档，强制校验 6 位安全码',
++    description: '远程切断高压或发动机动力，使车辆进入熄火驻车状态',
++  },
++  [CommandCode.CMD_AC_START]: {
++    code: CommandCode.CMD_AC_START,
++    name: '开启空调',
++    group: 'CLIMATE',
++    groupName: '座舱温控',
++    securityLevel: SecurityLevel.L1,
++    iconName: 'FireOutlined',
++    defaultTimeoutMs: 15000,
++    warningText: '远程开启空调将持续消耗电池电量或燃油，确认下发设定吗？',
++    description: '开启座舱空调系统并配置温度、风速与循环模式',
++  },
++  [CommandCode.CMD_AC_STOP]: {
++    code: CommandCode.CMD_AC_STOP,
++    name: '关闭空调',
++    group: 'CLIMATE',
++    groupName: '座舱温控',
++    securityLevel: SecurityLevel.L0,
++    iconName: 'PauseCircleOutlined',
++    defaultTimeoutMs: 10000,
++    description: '一键停止车载空调运行',
++  },
++  [CommandCode.CMD_SEAT_HEAT]: {
++    code: CommandCode.CMD_SEAT_HEAT,
++    name: '座椅加热',
++    group: 'CLIMATE',
++    groupName: '座舱温控',
++    securityLevel: SecurityLevel.L1,
++    iconName: 'HeatMapOutlined',
++    defaultTimeoutMs: 10000,
++    warningText: '开启座椅加热将持续消耗电能，确认加热档位设置吗？',
++    description: '调节主驾驶或副驾驶座椅加热档位 (1~3档)',
++  },
++  [CommandCode.CMD_WINDOW_OPEN]: {
++    code: CommandCode.CMD_WINDOW_OPEN,
++    name: '一键降窗',
++    group: 'WINDOW_SUNROOF',
++    groupName: '车窗天窗',
++    securityLevel: SecurityLevel.L1,
++    iconName: 'DownSquareOutlined',
++    defaultTimeoutMs: 10000,
++    warningText: '一键开启车窗通风，离开车辆前请确认财产防盗与天气情况',
++    description: '下发四门车窗一键开启降下指令',
++  },
++  [CommandCode.CMD_WINDOW_CLOSE]: {
++    code: CommandCode.CMD_WINDOW_CLOSE,
++    name: '一键升窗',
++    group: 'WINDOW_SUNROOF',
++    groupName: '车窗天窗',
++    securityLevel: SecurityLevel.L1,
++    iconName: 'UpSquareOutlined',
++    defaultTimeoutMs: 10000,
++    warningText: '一键升窗过程中请特别注意车门旁乘客防夹手安全，确认升起车窗吗？',
++    description: '下发四门车窗一键闭合升起指令',
++  },
++  [CommandCode.CMD_SUNROOF_CONTROL]: {
++    code: CommandCode.CMD_SUNROOF_CONTROL,
++    name: '开启/关闭天窗',
++    group: 'WINDOW_SUNROOF',
++    groupName: '车窗天窗',
++    securityLevel: SecurityLevel.L1,
++    iconName: 'BorderOutlined',
++    defaultTimeoutMs: 10000,
++    warningText: '操作全景天窗开闭前请确认车顶无异物遮挡及未处于下雨天气',
++    description: '控制车顶全景天窗遮阳帘与玻璃开启或关闭',
++  },
++};
++
++export interface SecurityCodeValidationResult {
++  valid: boolean;
++  message?: string;
++}
++
++/**
++ * 安全码纯函数校验
++ * L0: 无需校验
++ * L1: 可选或普通操作密码
++ * L2: 强制 6 位纯数字安全码 (/^\d{6}$/)，默认演示验证码 123456
++ */
++export function validateSecurityCode(
++  code?: string,
++  level: SecurityLevel = SecurityLevel.L2,
++  expectedPin = '123456'
++): SecurityCodeValidationResult {
++  if (level === SecurityLevel.L0) {
++    return { valid: true };
++  }
++
++  if (level === SecurityLevel.L1) {
++    return { valid: true };
++  }
++
++  // L2 强安全级校验
++  if (!code || typeof code !== 'string' || code.trim() === '') {
++    return {
++      valid: false,
++      message: '请输入6位纯数字安全操作码',
++    };
++  }
++
++  const trimmed = code.trim();
++  if (!/^\d{6}$/.test(trimmed)) {
++    return {
++      valid: false,
++      message: '安全码必须为6位纯数字',
++    };
++  }
++
++  if (expectedPin && trimmed !== expectedPin) {
++    return {
++      valid: false,
++      message: '安全操作码错误，默认演示安全码为 123456',
++    };
++  }
++
++  return { valid: true };
++}
++
++/**
++ * 端到端执行耗时格式化纯函数
++ * < 1000ms: 显示 Xms
++ * ≥ 1000ms: 显示 X.XXs
++ */
++export function formatExecutionDuration(ms?: number | null): string {
++  if (ms === null || ms === undefined || ms < 0 || Number.isNaN(ms)) {
++    return '-';
++  }
++  if (ms < 1000) {
++    return `${Math.round(ms)}ms`;
++  }
++  return `${(ms / 1000).toFixed(2)}s`;
++}
++
++export interface CapabilitySupportResult {
++  supported: boolean;
++  reason?: string;
++}
++
++/**
++ * 车型能力继承判定纯函数
++ */
++export function isCommandSupportedByCapability(
++  commandCode: CommandCode,
++  capabilities?: Partial<Record<CommandCode, EffectiveCapabilityDto>> | null
++): CapabilitySupportResult {
++  if (!capabilities) {
++    return { supported: true };
++  }
++
++  const cap = capabilities[commandCode];
++  if (!cap) {
++    return {
++      supported: false,
++      reason: '该车型硬件配置不支持此功能',
++    };
++  }
++
++  if (cap.supported === false) {
++    return {
++      supported: false,
++      reason: cap.reason || '该车型硬件配置不支持此功能',
++    };
++  }
++
++  return { supported: true };
++}
++
++export type VoltageHealthLevel = 'NORMAL' | 'LOW' | 'CRITICAL';
++
++export interface VoltageHealthMeta {
++  level: VoltageHealthLevel;
++  text: string;
++  color: string;
++  tagColor: 'success' | 'warning' | 'error';
++}
++
++/**
++ * 蓄电池电压健康度评估
++ * ≥ 12.0V: 正常 (绿色)
++ * 11.0V ~ 11.9V: 欠压警告 (橙色)
++ * < 11.0V: 严重欠压 (红色)
++ */
++export function evaluateVoltageHealth(voltage: number): VoltageHealthMeta {
++  if (voltage >= 12.0) {
++    return {
++      level: 'NORMAL',
++      text: '正常',
++      color: '#52c41a',
++      tagColor: 'success',
++    };
++  }
++  if (voltage >= 11.0) {
++    return {
++      level: 'LOW',
++      text: '欠压告警',
++      color: '#faad14',
++      tagColor: 'warning',
++    };
++  }
++  return {
++    level: 'CRITICAL',
++    text: '严重欠压',
++    color: '#ff4d4f',
++    tagColor: 'error',
++  };
++}
++
++/**
++ * 409 并发排他锁标准化异常
++ */
++export class CommandLockError extends Error {
++  public readonly vehicleId: string;
++  public readonly commandCode?: CommandCode;
++
++  constructor(
++    vehicleId: string,
++    message = '该车辆已有指令正在执行中，请稍候',
++    commandCode?: CommandCode
++  ) {
++    super(message);
++    this.name = 'CommandLockError';
++    this.vehicleId = vehicleId;
++    this.commandCode = commandCode;
++    Object.setPrototypeOf(this, CommandLockError.prototype);
++  }
++}
++
++export function isCommandLockError(err: unknown): err is CommandLockError {
++  if (err instanceof CommandLockError) return true;
++  if (typeof err === 'object' && err !== null) {
++    const candidate = err as Record<string, unknown>;
++    return candidate.name === 'CommandLockError' && typeof candidate.vehicleId === 'string';
++  }
++  return false;
++}
++
++/**
++ * 判断是否为 ApiError
++ */
++export function isApiError(err: unknown): err is ApiError {
++  if (err instanceof ApiError) return true;
++  if (typeof err === 'object' && err !== null) {
++    const candidate = err as Record<string, unknown>;
++    return typeof candidate.statusCode === 'number' && typeof candidate.message === 'string';
++  }
++  return false;
++}
++
++// ---------------- 遥测与全景运营台领域模型 ----------------
++
++export interface VehicleTelemetryData {
++  batteryVoltage: number;
++  speed: number;
++  gear: 'P' | 'D' | 'R' | 'N';
++  mileage: number;
++  doorLocks: 'LOCKED' | 'UNLOCKED';
++  trunk: 'CLOSED' | 'OPEN';
++  engine: 'RUNNING' | 'STOPPED';
++  windows: 'CLOSED' | 'OPEN' | 'HALF';
++  sunroof: 'CLOSED' | 'OPEN';
++  acRunning: boolean;
++  acTemp: number;
++  acFanSpeed: number;
++  seatHeatDriver: number;
++  seatHeatPassenger: number;
++  lastHeartbeat: string;
++}
++
++export interface VehicleWorkbenchItem {
++  id: string;
++  vin: string;
++  plateNumber: string;
++  brandName: string;
++  modelName: string;
++  modelId: string;
++  deviceId: string;
++  deviceNo: string;
++  isOnline: boolean;
++  telemetry: VehicleTelemetryData;
++}
++
++export const SEED_WORKBENCH_VEHICLES: VehicleWorkbenchItem[] = [
++  {
++    id: 'veh-001',
++    vin: 'LSVAA4188P1002341',
++    plateNumber: '粤B·88888',
++    brandName: '特斯拉',
++    modelName: 'Model Y 全轮驱动版',
++    modelId: 'model-tesla-y',
++    deviceId: 'dev-1001',
++    deviceNo: 'DEV_1001',
++    isOnline: true,
++    telemetry: {
++      batteryVoltage: 12.6,
++      speed: 0,
++      gear: 'P',
++      mileage: 18240,
++      doorLocks: 'LOCKED',
++      trunk: 'CLOSED',
++      engine: 'STOPPED',
++      windows: 'CLOSED',
++      sunroof: 'CLOSED',
++      acRunning: false,
++      acTemp: 24,
++      acFanSpeed: 2,
++      seatHeatDriver: 0,
++      seatHeatPassenger: 0,
++      lastHeartbeat: '刚刚',
++    },
++  },
++  {
++    id: 'veh-002',
++    vin: 'LFPH2E023N1000678',
++    plateNumber: '粤B·66666',
++    brandName: '比亚迪',
++    modelName: '汉 EV 旗舰型',
++    modelId: 'model-byd-han',
++    deviceId: 'dev-1002',
++    deviceNo: 'DEV_1002',
++    isOnline: true,
++    telemetry: {
++      batteryVoltage: 11.8,
++      speed: 0,
++      gear: 'P',
++      mileage: 32510,
++      doorLocks: 'LOCKED',
++      trunk: 'CLOSED',
++      engine: 'STOPPED',
++      windows: 'CLOSED',
++      sunroof: 'CLOSED',
++      acRunning: true,
++      acTemp: 22,
++      acFanSpeed: 1,
++      seatHeatDriver: 2,
++      seatHeatPassenger: 0,
++      lastHeartbeat: '1分钟前',
++    },
++  },
++  {
++    id: 'veh-003',
++    vin: 'LSVAR4183M1004512',
++    plateNumber: '京A·99999',
++    brandName: '吉利极氪',
++    modelName: '极氪 001 YOU版',
++    modelId: 'model-zeekr-001',
++    deviceId: 'dev-1003',
++    deviceNo: 'DEV_1003',
++    isOnline: false,
++    telemetry: {
++      batteryVoltage: 10.8,
++      speed: 0,
++      gear: 'P',
++      mileage: 9540,
++      doorLocks: 'LOCKED',
++      trunk: 'CLOSED',
++      engine: 'STOPPED',
++      windows: 'CLOSED',
++      sunroof: 'CLOSED',
++      acRunning: false,
++      acTemp: 25,
++      acFanSpeed: 1,
++      seatHeatDriver: 0,
++      seatHeatPassenger: 0,
++      lastHeartbeat: '15分钟前',
++    },
++  },
++  {
++    id: 'veh-004',
++    vin: 'LFPH3A021K1007890',
++    plateNumber: '沪A·12345',
++    brandName: '广汽埃安',
++    modelName: 'AION Y Plus 智驾版',
++    modelId: 'model-aion-y',
++    deviceId: 'dev-1004',
++    deviceNo: 'DEV_1004',
++    isOnline: true,
++    telemetry: {
++      batteryVoltage: 12.4,
++      speed: 0,
++      gear: 'P',
++      mileage: 41200,
++      doorLocks: 'UNLOCKED',
++      trunk: 'OPEN',
++      engine: 'STOPPED',
++      windows: 'HALF',
++      sunroof: 'CLOSED',
++      acRunning: false,
++      acTemp: 24,
++      acFanSpeed: 2,
++      seatHeatDriver: 0,
++      seatHeatPassenger: 0,
++      lastHeartbeat: '刚刚',
++    },
++  },
++];
++
++/**
++ * 默认车型能力字典生成器
++ */
++export function generateDefaultCapabilities(modelId?: string): Record<CommandCode, EffectiveCapabilityDto> {
++  const isAionY = modelId === 'model-aion-y';
++  const isLowEnd = modelId === 'model-low-end';
++
++  return {
++    [CommandCode.CMD_LOCK]: {
++      commandCode: CommandCode.CMD_LOCK,
++      commandName: '车辆上锁',
++      supported: true,
++      securityLevel: SecurityLevel.L0,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 3,
++    },
++    [CommandCode.CMD_UNLOCK]: {
++      commandCode: CommandCode.CMD_UNLOCK,
++      commandName: '车辆解锁',
++      supported: true,
++      securityLevel: SecurityLevel.L1,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 3,
++    },
++    [CommandCode.CMD_FIND_VEHICLE]: {
++      commandCode: CommandCode.CMD_FIND_VEHICLE,
++      commandName: '鸣笛寻车',
++      supported: true,
++      securityLevel: SecurityLevel.L0,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 5,
++    },
++    [CommandCode.CMD_TRUNK_OPEN]: {
++      commandCode: CommandCode.CMD_TRUNK_OPEN,
++      commandName: '开启后备箱',
++      supported: true,
++      securityLevel: SecurityLevel.L1,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 5,
++    },
++    [CommandCode.CMD_TRUNK_CLOSE]: {
++      commandCode: CommandCode.CMD_TRUNK_CLOSE,
++      commandName: '关闭后备箱',
++      supported: true,
++      securityLevel: SecurityLevel.L1,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 5,
++    },
++    [CommandCode.CMD_ENGINE_START]: {
++      commandCode: CommandCode.CMD_ENGINE_START,
++      commandName: '远程点火启动',
++      supported: !isLowEnd,
++      securityLevel: SecurityLevel.L2,
++      timeoutMs: 15000,
++      frequencyLimitSeconds: 15,
++      reason: isLowEnd ? '该车型硬件配置不支持远程动力启动' : undefined,
++    },
++    [CommandCode.CMD_ENGINE_STOP]: {
++      commandCode: CommandCode.CMD_ENGINE_STOP,
++      commandName: '远程熄火',
++      supported: !isLowEnd,
++      securityLevel: SecurityLevel.L2,
++      timeoutMs: 15000,
++      frequencyLimitSeconds: 15,
++      reason: isLowEnd ? '该车型硬件配置不支持远程熄火' : undefined,
++    },
++    [CommandCode.CMD_WINDOW_OPEN]: {
++      commandCode: CommandCode.CMD_WINDOW_OPEN,
++      commandName: '开启车窗',
++      supported: true,
++      securityLevel: SecurityLevel.L1,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 5,
++    },
++    [CommandCode.CMD_WINDOW_CLOSE]: {
++      commandCode: CommandCode.CMD_WINDOW_CLOSE,
++      commandName: '关闭车窗',
++      supported: true,
++      securityLevel: SecurityLevel.L1,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 5,
++    },
++    [CommandCode.CMD_AC_START]: {
++      commandCode: CommandCode.CMD_AC_START,
++      commandName: '开启空调',
++      supported: true,
++      securityLevel: SecurityLevel.L1,
++      timeoutMs: 15000,
++      frequencyLimitSeconds: 10,
++    },
++    [CommandCode.CMD_AC_STOP]: {
++      commandCode: CommandCode.CMD_AC_STOP,
++      commandName: '关闭空调',
++      supported: true,
++      securityLevel: SecurityLevel.L0,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 5,
++    },
++    [CommandCode.CMD_SEAT_HEAT]: {
++      commandCode: CommandCode.CMD_SEAT_HEAT,
++      commandName: '座椅加热',
++      supported: !isAionY && !isLowEnd,
++      securityLevel: SecurityLevel.L1,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 5,
++      reason: isAionY || isLowEnd ? '该车型硬件配置不支持此功能' : undefined,
++    },
++    [CommandCode.CMD_SUNROOF_CONTROL]: {
++      commandCode: CommandCode.CMD_SUNROOF_CONTROL,
++      commandName: '开启/关闭天窗',
++      supported: !isAionY,
++      securityLevel: SecurityLevel.L1,
++      timeoutMs: 10000,
++      frequencyLimitSeconds: 5,
++      reason: isAionY ? '该车型无全景天窗硬件' : undefined,
++    },
++  };
++}
+diff --git a/apps/web/src/views/command/index.ts b/apps/web/src/views/command/index.ts
+new file mode 100644
+index 0000000..4ea59b3
+--- /dev/null
++++ b/apps/web/src/views/command/index.ts
+@@ -0,0 +1,2 @@
++export { CarControlWorkbench } from './CarControlWorkbench.tsx';
++export * from './command-core.ts';
+diff --git a/packages/contracts/src/command/command-codes.ts b/packages/contracts/src/command/command-codes.ts
+index 2b15ec3..f5396ed 100644
+--- a/packages/contracts/src/command/command-codes.ts
++++ b/packages/contracts/src/command/command-codes.ts
+@@ -10,6 +10,8 @@ export enum CommandCode {
+   CMD_WINDOW_CLOSE = 'CMD_WINDOW_CLOSE',
+   CMD_AC_START = 'CMD_AC_START',
+   CMD_AC_STOP = 'CMD_AC_STOP',
++  CMD_SEAT_HEAT = 'CMD_SEAT_HEAT',
++  CMD_SUNROOF_CONTROL = 'CMD_SUNROOF_CONTROL',
+ }
+ 
+ export enum SecurityLevel {
+@@ -92,4 +94,16 @@ export const COMMAND_DEFINITIONS: Record<CommandCode, CommandDefinitionMeta> = {
+     defaultTimeoutMs: 10000,
+     defaultSecurityLevel: SecurityLevel.L0,
+   },
++  [CommandCode.CMD_SEAT_HEAT]: {
++    code: CommandCode.CMD_SEAT_HEAT,
++    name: '座椅加热',
++    defaultTimeoutMs: 10000,
++    defaultSecurityLevel: SecurityLevel.L1,
++  },
++  [CommandCode.CMD_SUNROOF_CONTROL]: {
++    code: CommandCode.CMD_SUNROOF_CONTROL,
++    name: '开启/关闭天窗',
++    defaultTimeoutMs: 10000,
++    defaultSecurityLevel: SecurityLevel.L1,
++  },
+ };

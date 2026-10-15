@@ -1,0 +1,1385 @@
+diff --git a/apps/web/src/App.tsx b/apps/web/src/App.tsx
+index 9fe9edc..8714f3f 100644
+--- a/apps/web/src/App.tsx
++++ b/apps/web/src/App.tsx
+@@ -1,35 +1,71 @@
+ import React from 'react';
+-import { Layout, Typography, Space } from 'antd';
++import { Layout, Typography, Space, ConfigProvider } from 'antd';
+ import { CarOutlined } from '@ant-design/icons';
+-import { CarControlPanel } from './components/CarControlPanel';
++import { CarControlPanel } from './components/CarControlPanel.tsx';
++import { LoginView } from './views/auth/LoginView.tsx';
++import { useAuthStore } from './store/useAuthStore.ts';
+ 
+ const { Header, Content, Footer } = Layout;
+ const { Title } = Typography;
+ 
++export const carControlTheme = {
++  cssVar: true,
++  token: {
++    colorPrimary: '#1677ff',
++    colorSuccess: '#52c41a',
++    colorWarning: '#faad14',
++    colorError: '#ff4d4f',
++    colorInfo: '#1677ff',
++    borderRadius: 6,
++    fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC', sans-serif",
++  },
++  components: {
++    Layout: {
++      headerBg: '#001529',
++      siderBg: '#001529',
++    },
++    Table: {
++      headerBg: '#fafafa',
++      rowHoverBg: '#f0f5ff',
++    },
++    Card: {
++      headerHeight: 48,
++    },
++  },
++};
++
+ export const App: React.FC = () => {
++  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
++
+   return (
+-    <Layout style={{ minHeight: '100vh' }}>
+-      <Header
+-        style={{
+-          display: 'flex',
+-          alignItems: 'center',
+-          backgroundColor: '#001529',
+-          padding: '0 24px',
+-        }}
+-      >
+-        <Space size="middle">
+-          <CarOutlined style={{ fontSize: 24, color: '#1890ff' }} />
+-          <Title level={4} style={{ color: '#fff', margin: 0 }}>
+-            手机控车平台 · 全栈控制台 V2.0
+-          </Title>
+-        </Space>
+-      </Header>
+-      <Content style={{ padding: '16px 24px' }}>
+-        <CarControlPanel />
+-      </Content>
+-      <Footer style={{ textAlign: 'center', color: '#888' }}>
+-        手机控车平台 (Car Control Platform) · 企业级全栈架构 · 2026
+-      </Footer>
+-    </Layout>
++    <ConfigProvider theme={carControlTheme}>
++      {!isAuthenticated ? (
++        <LoginView />
++      ) : (
++        <Layout style={{ minHeight: '100vh' }}>
++          <Header
++            style={{
++              display: 'flex',
++              alignItems: 'center',
++              backgroundColor: '#001529',
++              padding: '0 24px',
++            }}
++          >
++            <Space size="middle">
++              <CarOutlined style={{ fontSize: 24, color: '#1890ff' }} />
++              <Title level={4} style={{ color: '#fff', margin: 0 }}>
++                手机控车平台 · 全栈控制台 V2.0
++              </Title>
++            </Space>
++          </Header>
++          <Content style={{ padding: '16px 24px' }}>
++            <CarControlPanel />
++          </Content>
++          <Footer style={{ textAlign: 'center', color: '#888' }}>
++            手机控车平台 (Car Control Platform) · 企业级全栈架构 · 2026
++          </Footer>
++        </Layout>
++      )}
++    </ConfigProvider>
+   );
+ };
+diff --git a/apps/web/src/components/SliderCaptcha/SliderCaptcha.tsx b/apps/web/src/components/SliderCaptcha/SliderCaptcha.tsx
+new file mode 100644
+index 0000000..0c98c42
+--- /dev/null
++++ b/apps/web/src/components/SliderCaptcha/SliderCaptcha.tsx
+@@ -0,0 +1,287 @@
++import React, {
++  useState,
++  useRef,
++  useImperativeHandle,
++  forwardRef,
++  useEffect,
++  useCallback,
++} from 'react';
++import { DoubleRightOutlined, CheckCircleFilled } from '@ant-design/icons';
++import {
++  calculateSliderOffset,
++  evaluateSliderVerification,
++  generateCaptchaToken,
++} from './slider-captcha-core.ts';
++import type { SliderCaptchaStatus } from './slider-captcha-core.ts';
++
++export * from './slider-captcha-core.ts';
++
++export interface SliderCaptchaHandle {
++  reset: () => void;
++  isVerified: () => boolean;
++}
++
++export interface SliderCaptchaProps {
++  onSuccess?: (captchaToken: string) => void;
++  onReset?: () => void;
++  disabled?: boolean;
++  width?: number | string;
++  height?: number;
++  thumbWidth?: number;
++  threshold?: number;
++  text?: string;
++  successText?: string;
++  className?: string;
++  style?: React.CSSProperties;
++}
++
++export const SliderCaptcha = forwardRef<SliderCaptchaHandle, SliderCaptchaProps>(
++  (
++    {
++      onSuccess,
++      onReset,
++      disabled = false,
++      width = '100%',
++      height = 40,
++      thumbWidth = 44,
++      threshold = 0.9,
++      text = '向右滑动完成人机验证',
++      successText = '验证通过',
++      className,
++      style,
++    },
++    ref
++  ) => {
++    const trackRef = useRef<HTMLDivElement>(null);
++    const [status, setStatus] = useState<SliderCaptchaStatus>('idle');
++    const [offset, setOffset] = useState<number>(0);
++    const [token, setToken] = useState<string | null>(null);
++
++    const isDraggingRef = useRef<boolean>(false);
++    const startXRef = useRef<number>(0);
++
++    const getMaxOffset = useCallback(() => {
++      if (!trackRef.current) {
++        return typeof width === 'number' ? Math.max(0, width - thumbWidth) : 276;
++      }
++      return Math.max(0, trackRef.current.clientWidth - thumbWidth);
++    }, [width, thumbWidth]);
++
++    const handleReset = useCallback(() => {
++      setStatus('idle');
++      setOffset(0);
++      setToken(null);
++      isDraggingRef.current = false;
++      onReset?.();
++    }, [onReset]);
++
++    useImperativeHandle(
++      ref,
++      () => ({
++        reset: handleReset,
++        isVerified: () => status === 'success',
++      }),
++      [handleReset, status]
++    );
++
++    const handleStartDrag = (clientX: number) => {
++      if (disabled || status === 'success') {
++        return;
++      }
++      isDraggingRef.current = true;
++      startXRef.current = clientX;
++      setStatus('dragging');
++    };
++
++    const handleMove = useCallback(
++      (clientX: number) => {
++        if (!isDraggingRef.current || status === 'success') {
++          return;
++        }
++        const maxOffset = getMaxOffset();
++        const nextOffset = calculateSliderOffset(clientX, startXRef.current, maxOffset);
++        setOffset(nextOffset);
++      },
++      [getMaxOffset, status]
++    );
++
++    const handleEnd = useCallback(
++      (currentClientX?: number) => {
++        if (!isDraggingRef.current || status === 'success') {
++          return;
++        }
++        isDraggingRef.current = false;
++        const maxOffset = getMaxOffset();
++        const currentOffset =
++          typeof currentClientX === 'number'
++            ? calculateSliderOffset(currentClientX, startXRef.current, maxOffset)
++            : offset;
++
++        const verified = evaluateSliderVerification(currentOffset, maxOffset, threshold);
++
++        if (verified) {
++          const generatedToken = generateCaptchaToken();
++          setStatus('success');
++          setOffset(maxOffset);
++          setToken(generatedToken);
++          onSuccess?.(generatedToken);
++        } else {
++          setStatus('idle');
++          setOffset(0);
++        }
++      },
++      [getMaxOffset, offset, threshold, onSuccess, status]
++    );
++
++    useEffect(() => {
++      if (status !== 'dragging') {
++        return;
++      }
++
++      const onMouseMove = (e: MouseEvent) => {
++        handleMove(e.clientX);
++      };
++
++      const onMouseUp = (e: MouseEvent) => {
++        handleEnd(e.clientX);
++      };
++
++      const onTouchMove = (e: TouchEvent) => {
++        if (e.touches.length > 0) {
++          handleMove(e.touches[0].clientX);
++        }
++      };
++
++      const onTouchEnd = (e: TouchEvent) => {
++        const lastTouch = e.changedTouches[0];
++        handleEnd(lastTouch ? lastTouch.clientX : undefined);
++      };
++
++      window.addEventListener('mousemove', onMouseMove);
++      window.addEventListener('mouseup', onMouseUp);
++      window.addEventListener('touchmove', onTouchMove);
++      window.addEventListener('touchend', onTouchEnd);
++
++      return () => {
++        window.removeEventListener('mousemove', onMouseMove);
++        window.removeEventListener('mouseup', onMouseUp);
++        window.removeEventListener('touchmove', onTouchMove);
++        window.removeEventListener('touchend', onTouchEnd);
++      };
++    }, [status, handleMove, handleEnd]);
++
++    const isSuccess = status === 'success';
++    const isDragging = status === 'dragging';
++    const maxOffset = getMaxOffset();
++    const progressPercent = maxOffset > 0 ? (offset / maxOffset) * 100 : 0;
++
++    return (
++      <div
++        ref={trackRef}
++        role="slider"
++        aria-valuemin={0}
++        aria-valuemax={100}
++        aria-valuenow={Math.round(progressPercent)}
++        aria-label="人机安全验证滑块"
++        aria-disabled={disabled}
++        className={className}
++        style={{
++          position: 'relative',
++          width,
++          height,
++          boxSizing: 'border-box',
++          backgroundColor: isSuccess ? '#52c41a' : 'var(--car-bg-layout, #f5f7fa)',
++          border: isSuccess
++            ? '1px solid #52c41a'
++            : '1px solid var(--car-color-border, #d9d9d9)',
++          borderRadius: 'var(--car-border-radius, 6px)',
++          overflow: 'hidden',
++          userSelect: 'none',
++          transition: isDragging ? 'none' : 'background-color 0.3s ease, border-color 0.3s ease',
++          ...style,
++        }}
++      >
++        {/* 滑动进度条背景 */}
++        <div
++          style={{
++            position: 'absolute',
++            left: 0,
++            top: 0,
++            height: '100%',
++            width: isSuccess ? '100%' : `${offset + thumbWidth / 2}px`,
++            backgroundColor: isSuccess
++              ? '#52c41a'
++              : 'var(--car-color-primary-bg, #e6f4ff)',
++            transition: isDragging ? 'none' : 'width 0.3s ease, background-color 0.3s ease',
++          }}
++        />
++
++        {/* 居中文案 */}
++        <div
++          style={{
++            position: 'absolute',
++            left: 0,
++            top: 0,
++            width: '100%',
++            height: '100%',
++            display: 'flex',
++            alignItems: 'center',
++            justifyContent: 'center',
++            fontSize: 13,
++            fontWeight: 500,
++            color: isSuccess ? '#ffffff' : 'var(--car-text-regular, rgba(0, 0, 0, 0.65))',
++            opacity: isSuccess ? 1 : Math.max(0.15, 1 - progressPercent / 100),
++            pointerEvents: 'none',
++            zIndex: 1,
++            transition: isDragging ? 'none' : 'opacity 0.3s ease, color 0.3s ease',
++          }}
++        >
++          {isSuccess ? successText : text}
++        </div>
++
++        {/* 拖拽把手 (Thumb) */}
++        <div
++          onMouseDown={(e) => {
++            e.preventDefault();
++            handleStartDrag(e.clientX);
++          }}
++          onTouchStart={(e) => {
++            if (e.touches.length > 0) {
++              handleStartDrag(e.touches[0].clientX);
++            }
++          }}
++          style={{
++            position: 'absolute',
++            left: offset,
++            top: 0,
++            width: thumbWidth,
++            height: '100%',
++            boxSizing: 'border-box',
++            backgroundColor: '#ffffff',
++            borderRadius: 'var(--car-border-radius, 6px)',
++            boxShadow: '0 2px 6px 0 rgba(0, 0, 0, 0.15)',
++            display: 'flex',
++            alignItems: 'center',
++            justifyContent: 'center',
++            cursor: disabled ? 'not-allowed' : isSuccess ? 'default' : isDragging ? 'grabbing' : 'grab',
++            zIndex: 2,
++            transition: isDragging ? 'none' : 'left 0.3s cubic-bezier(0.2, 0, 0, 1)',
++          }}
++        >
++          {isSuccess ? (
++            <CheckCircleFilled style={{ color: '#52c41a', fontSize: 18 }} />
++          ) : (
++            <DoubleRightOutlined
++              style={{
++                color: isDragging ? 'var(--car-color-primary-active, #0958d9)' : 'var(--car-color-primary, #1677ff)',
++                fontSize: 15,
++              }}
++            />
++          )}
++        </div>
++      </div>
++    );
++  }
++);
++
++SliderCaptcha.displayName = 'SliderCaptcha';
+diff --git a/apps/web/src/components/SliderCaptcha/index.ts b/apps/web/src/components/SliderCaptcha/index.ts
+new file mode 100644
+index 0000000..ddeac47
+--- /dev/null
++++ b/apps/web/src/components/SliderCaptcha/index.ts
+@@ -0,0 +1,2 @@
++export * from './SliderCaptcha.tsx';
++export * from './slider-captcha-core.ts';
+diff --git a/apps/web/src/components/SliderCaptcha/slider-captcha-core.ts b/apps/web/src/components/SliderCaptcha/slider-captcha-core.ts
+new file mode 100644
+index 0000000..64053ec
+--- /dev/null
++++ b/apps/web/src/components/SliderCaptcha/slider-captcha-core.ts
+@@ -0,0 +1,159 @@
++export type SliderCaptchaStatus = 'idle' | 'dragging' | 'success';
++
++export interface SliderCaptchaOptions {
++  trackWidth?: number;
++  thumbWidth?: number;
++  threshold?: number;
++}
++
++/**
++ * 计算滑块位移，强制限制在 [0, maxOffset] 区间内
++ */
++export function calculateSliderOffset(
++  clientX: number,
++  startX: number,
++  maxOffset: number
++): number {
++  const delta = clientX - startX;
++  if (delta <= 0) {
++    return 0;
++  }
++  if (delta >= maxOffset) {
++    return maxOffset;
++  }
++  return delta;
++}
++
++/**
++ * 校验滑块是否达到通过阈值（默认 >= 90% 即通过）
++ */
++export function evaluateSliderVerification(
++  offset: number,
++  maxOffset: number,
++  threshold: number = 0.9
++): boolean {
++  if (maxOffset <= 0) {
++    return false;
++  }
++  const target = maxOffset * threshold;
++  return offset >= target;
++}
++
++/**
++ * 生成一次性前端人机验证安全 Ticket/Token
++ */
++export function generateCaptchaToken(): string {
++  const randomPart = Math.random().toString(36).substring(2, 12);
++  const timePart = Date.now().toString(36);
++  return `captcha_${randomPart}_${timePart}`;
++}
++
++/**
++ * 滑块人机验证核心控制器与状态机
++ */
++export class SliderCaptchaController {
++  private trackWidth: number;
++  private thumbWidth: number;
++  private threshold: number;
++
++  private status: SliderCaptchaStatus = 'idle';
++  private startX: number = 0;
++  private offset: number = 0;
++  private token: string | null = null;
++
++  private successCallbacks: Array<(token: string) => void> = [];
++  private resetCallbacks: Array<() => void> = [];
++
++  constructor(options: SliderCaptchaOptions = {}) {
++    this.trackWidth = options.trackWidth ?? 320;
++    this.thumbWidth = options.thumbWidth ?? 44;
++    this.threshold = options.threshold ?? 0.9;
++  }
++
++  public getMaxOffset(): number {
++    return Math.max(0, this.trackWidth - this.thumbWidth);
++  }
++
++  public setDimensions(trackWidth: number, thumbWidth: number): void {
++    this.trackWidth = trackWidth;
++    this.thumbWidth = thumbWidth;
++  }
++
++  public getStatus(): SliderCaptchaStatus {
++    return this.status;
++  }
++
++  public getOffset(): number {
++    return this.offset;
++  }
++
++  public isVerified(): boolean {
++    return this.status === 'success';
++  }
++
++  public getToken(): string | null {
++    return this.token;
++  }
++
++  public startDrag(clientX: number): void {
++    if (this.status === 'success') {
++      return;
++    }
++    this.status = 'dragging';
++    this.startX = clientX;
++  }
++
++  public onDrag(clientX: number): number {
++    if (this.status !== 'dragging') {
++      return this.offset;
++    }
++    const maxOffset = this.getMaxOffset();
++    this.offset = calculateSliderOffset(clientX, this.startX, maxOffset);
++    return this.offset;
++  }
++
++  public endDrag(): { verified: boolean; token: string | null } {
++    if (this.status !== 'dragging') {
++      return { verified: this.isVerified(), token: this.token };
++    }
++
++    const maxOffset = this.getMaxOffset();
++    const verified = evaluateSliderVerification(this.offset, maxOffset, this.threshold);
++
++    if (verified) {
++      this.status = 'success';
++      this.offset = maxOffset;
++      this.token = generateCaptchaToken();
++      this.successCallbacks.forEach((cb) => cb(this.token!));
++      return { verified: true, token: this.token };
++    }
++
++    // 未达阈值弹性归零
++    this.status = 'idle';
++    this.offset = 0;
++    this.token = null;
++    return { verified: false, token: null };
++  }
++
++  public reset(): void {
++    this.status = 'idle';
++    this.offset = 0;
++    this.token = null;
++    this.startX = 0;
++    this.resetCallbacks.forEach((cb) => cb());
++  }
++
++  public onSuccess(cb: (token: string) => void): () => void {
++    this.successCallbacks.push(cb);
++    return () => {
++      this.successCallbacks = this.successCallbacks.filter((fn) => fn !== cb);
++    };
++  }
++
++  public onReset(cb: () => void): () => void {
++    this.resetCallbacks.push(cb);
++    return () => {
++      this.resetCallbacks = this.resetCallbacks.filter((fn) => fn !== cb);
++    };
++  }
++}
+diff --git a/apps/web/src/test/login-view.test.ts b/apps/web/src/test/login-view.test.ts
+new file mode 100644
+index 0000000..2217952
+--- /dev/null
++++ b/apps/web/src/test/login-view.test.ts
+@@ -0,0 +1,186 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++
++// Setup mock localStorage before importing stores
++const mockStorage = new Map<string, string>();
++const storageMock = {
++  getItem: (key: string) => mockStorage.get(key) ?? null,
++  setItem: (key: string, val: string) => { mockStorage.set(key, String(val)); },
++  removeItem: (key: string) => { mockStorage.delete(key); },
++  clear: () => { mockStorage.clear(); },
++  key: (i: number) => Array.from(mockStorage.keys())[i] ?? null,
++  get length() { return mockStorage.size; },
++};
++
++(globalThis as any).localStorage = storageMock;
++if (typeof window === 'undefined') {
++  (globalThis as any).window = globalThis;
++}
++
++import { useAuthStore } from '../store/useAuthStore.ts';
++import { ApiError } from '../api/client.ts';
++import {
++  getRememberedUsername,
++  saveRememberedUsername,
++  clearRememberedUsername,
++  mapLoginErrorToMessage,
++  executeLogin,
++  validateLoginForm,
++  REMEMBER_USERNAME_STORAGE_KEY,
++} from '../views/auth/login-view-core.ts';
++
++test('LoginView Page Core Logic Test Suite', async (t) => {
++  // Test 1: Remember Me Username Persistence
++  await t.test('Remember Me saves, retrieves, and clears username from storage', () => {
++    storageMock.clear();
++    assert.equal(getRememberedUsername(), '');
++
++    saveRememberedUsername('admin_user');
++    assert.equal(getRememberedUsername(), 'admin_user');
++    assert.equal(storageMock.getItem(REMEMBER_USERNAME_STORAGE_KEY), 'admin_user');
++
++    clearRememberedUsername();
++    assert.equal(getRememberedUsername(), '');
++    assert.equal(storageMock.getItem(REMEMBER_USERNAME_STORAGE_KEY), null);
++  });
++
++  // Test 2: Form validation logic
++  await t.test('validateLoginForm checks username, password, and captcha requirements', () => {
++    // Missing username
++    const res1 = validateLoginForm({ username: '', password: 'Password123!', captchaVerified: true });
++    assert.equal(res1.valid, false);
++    assert.ok(res1.error?.includes('账号'));
++
++    // Missing password
++    const res2 = validateLoginForm({ username: 'admin', password: '', captchaVerified: true });
++    assert.equal(res2.valid, false);
++    assert.ok(res2.error?.includes('密码'));
++
++    // Missing captcha verification
++    const res3 = validateLoginForm({ username: 'admin', password: 'Password123!', captchaVerified: false });
++    assert.equal(res3.valid, false);
++    assert.equal(res3.error, '请先完成滑块人机验证');
++
++    // All valid
++    const res4 = validateLoginForm({ username: 'admin', password: 'Password123!', captchaVerified: true });
++    assert.equal(res4.valid, true);
++    assert.equal(res4.error, undefined);
++  });
++
++  // Test 3: Natural language friendly error mapping matching page spec (Section 4)
++  await t.test('mapLoginErrorToMessage returns spec-compliant natural language messages', () => {
++    // 401 Unauthorized / wrong password
++    const err401 = new ApiError('Unauthorized', 401);
++    assert.equal(
++      mapLoginErrorToMessage(err401),
++      '账号或密码不正确，连续失败 5 次将锁定 15 分钟'
++    );
++
++    // 403 Forbidden / account disabled
++    const err403 = new ApiError('Account disabled by admin', 403);
++    assert.equal(
++      mapLoginErrorToMessage(err403),
++      '该账号已被管理员停用，请联系企业管理员'
++    );
++
++    // Network timeout / connection error
++    const errTimeout = new Error('Failed to fetch: timeout');
++    assert.equal(
++      mapLoginErrorToMessage(errTimeout),
++      '连接服务器超时，请检查网络设置'
++    );
++
++    // Fallback message
++    const errGeneral = new Error('Custom validation error');
++    assert.equal(
++      mapLoginErrorToMessage(errGeneral),
++      'Custom validation error'
++    );
++  });
++
++  // Test 4: executeLogin prevents submission if captcha is not verified
++  await t.test('executeLogin blocks API call when captcha is not verified', async () => {
++    let apiCalled = false;
++    const mockLoginApi = async () => {
++      apiCalled = true;
++      return null as any;
++    };
++
++    await assert.rejects(
++      async () => {
++        await executeLogin({
++          input: { username: 'admin', password: 'password123' },
++          captchaVerified: false,
++          captchaToken: null,
++          rememberMe: true,
++          loginFn: mockLoginApi,
++        });
++      },
++      (err: any) => {
++        assert.equal(err.message, '请先完成滑块人机验证');
++        return true;
++      }
++    );
++
++    assert.equal(apiCalled, false);
++  });
++
++  // Test 5: executeLogin succeeds, updates auth store, and saves remembered username
++  await t.test('executeLogin succeeds, stores tokens and user in useAuthStore, persists username', async () => {
++    useAuthStore.getState().clearAuth();
++    storageMock.clear();
++
++    const mockAuthResult = {
++      accessToken: 'acc_token_123',
++      refreshToken: 'ref_token_456',
++      expiresIn: 900,
++      user: {
++        id: 'usr_001',
++        tenantId: 'tnt_default',
++        username: 'super_admin',
++        roles: ['SUPER_ADMIN'],
++        permissions: ['*:*'],
++      },
++    };
++
++    let loginFnArgs: any = null;
++    const mockLoginApi = async (args: any) => {
++      loginFnArgs = args;
++      return mockAuthResult;
++    };
++
++    const result = await executeLogin({
++      input: { username: 'super_admin', password: 'ValidPassword123!' },
++      captchaVerified: true,
++      captchaToken: 'mock_captcha_token_abc',
++      rememberMe: true,
++      loginFn: mockLoginApi,
++    });
++
++    assert.deepEqual(result, mockAuthResult);
++    assert.deepEqual(loginFnArgs, {
++      username: 'super_admin',
++      password: 'ValidPassword123!',
++      captchaToken: 'mock_captcha_token_abc',
++    });
++
++    // Verify useAuthStore updated
++    assert.equal(useAuthStore.getState().isAuthenticated, true);
++    assert.equal(useAuthStore.getState().accessToken, 'acc_token_123');
++    assert.equal(useAuthStore.getState().refreshToken, 'ref_token_456');
++    assert.equal(useAuthStore.getState().user?.username, 'super_admin');
++
++    // Verify remembered username was saved
++    assert.equal(getRememberedUsername(), 'super_admin');
++
++    // Test with rememberMe: false -> should clear stored username
++    await executeLogin({
++      input: { username: 'super_admin', password: 'ValidPassword123!' },
++      captchaVerified: true,
++      captchaToken: 'mock_captcha_token_abc',
++      rememberMe: false,
++      loginFn: mockLoginApi,
++    });
++    assert.equal(getRememberedUsername(), '');
++  });
++});
+diff --git a/apps/web/src/test/slider-captcha.test.ts b/apps/web/src/test/slider-captcha.test.ts
+new file mode 100644
+index 0000000..486afac
+--- /dev/null
++++ b/apps/web/src/test/slider-captcha.test.ts
+@@ -0,0 +1,124 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++
++import {
++  calculateSliderOffset,
++  evaluateSliderVerification,
++  generateCaptchaToken,
++  SliderCaptchaController,
++} from '../components/SliderCaptcha/slider-captcha-core.ts';
++
++test('SliderCaptcha Human Verification Logic Test Suite', async (t) => {
++  // Test 1: Displacement clamping calculation
++  await t.test('calculateSliderOffset clamps displacement correctly within [0, maxOffset]', () => {
++    const maxOffset = 276; // e.g. 320 - 44
++    const startX = 100;
++
++    // Drag to the left (negative offset) -> should clamp to 0
++    assert.equal(calculateSliderOffset(80, startX, maxOffset), 0);
++    assert.equal(calculateSliderOffset(0, startX, maxOffset), 0);
++
++    // Normal dragging within range
++    assert.equal(calculateSliderOffset(150, startX, maxOffset), 50);
++    assert.equal(calculateSliderOffset(200, startX, maxOffset), 100);
++
++    // Drag beyond maxOffset -> should clamp to maxOffset
++    assert.equal(calculateSliderOffset(376, startX, maxOffset), 276);
++    assert.equal(calculateSliderOffset(500, startX, maxOffset), 276);
++  });
++
++  // Test 2: Threshold evaluation (>= 90% passes, < 90% fails)
++  await t.test('evaluateSliderVerification verifies strictly against 90% threshold', () => {
++    const maxOffset = 276;
++    const threshold = 0.9;
++    const targetOffset = maxOffset * threshold; // 248.4
++
++    // Under threshold (e.g. 89.9%) -> fail / rebound
++    assert.equal(evaluateSliderVerification(247, maxOffset, threshold), false);
++    assert.equal(evaluateSliderVerification(0, maxOffset, threshold), false);
++    assert.equal(evaluateSliderVerification(138, maxOffset, threshold), false); // 50%
++
++    // Exactly or above threshold -> pass
++    assert.equal(evaluateSliderVerification(targetOffset, maxOffset, threshold), true);
++    assert.equal(evaluateSliderVerification(250, maxOffset, threshold), true);
++    assert.equal(evaluateSliderVerification(maxOffset, maxOffset, threshold), true);
++
++    // Custom threshold support
++    assert.equal(evaluateSliderVerification(200, maxOffset, 0.7), true); // 200/276 = 72.4% >= 70%
++    assert.equal(evaluateSliderVerification(190, maxOffset, 0.7), false);
++  });
++
++  // Test 3: Token generation
++  await t.test('generateCaptchaToken produces non-empty unique verification tokens', () => {
++    const token1 = generateCaptchaToken();
++    const token2 = generateCaptchaToken();
++
++    assert.ok(token1 && typeof token1 === 'string');
++    assert.ok(token2 && typeof token2 === 'string');
++    assert.ok(token1.length >= 16);
++    assert.notEqual(token1, token2);
++    assert.ok(token1.startsWith('captcha_'));
++  });
++
++  // Test 4: Controller state management and reset
++  await t.test('SliderCaptchaController handles lifecycle, rebound, success, and reset', () => {
++    const controller = new SliderCaptchaController({
++      trackWidth: 320,
++      thumbWidth: 44,
++      threshold: 0.9,
++    });
++
++    // Initial state
++    assert.equal(controller.getStatus(), 'idle');
++    assert.equal(controller.getOffset(), 0);
++    assert.equal(controller.isVerified(), false);
++    assert.equal(controller.getToken(), null);
++
++    // Start drag
++    controller.startDrag(50);
++    assert.equal(controller.getStatus(), 'dragging');
++
++    // Drag below threshold (e.g. 100px / 276px = 36%)
++    controller.onDrag(150);
++    assert.equal(controller.getOffset(), 100);
++
++    // Release below threshold -> should rebound to 0 and become idle
++    const belowResult = controller.endDrag();
++    assert.equal(belowResult.verified, false);
++    assert.equal(controller.getStatus(), 'idle');
++    assert.equal(controller.getOffset(), 0);
++    assert.equal(controller.isVerified(), false);
++    assert.equal(controller.getToken(), null);
++
++    // Drag above threshold (e.g. 260px / 276px = 94.2%)
++    controller.startDrag(50);
++    controller.onDrag(310);
++    assert.equal(controller.getOffset(), 260);
++
++    // Release above threshold -> should succeed, lock at maxOffset, generate token
++    let receivedToken: string | null = null;
++    controller.onSuccess((token) => {
++      receivedToken = token;
++    });
++
++    const passResult = controller.endDrag();
++    assert.equal(passResult.verified, true);
++    assert.ok(passResult.token);
++    assert.equal(controller.getStatus(), 'success');
++    assert.equal(controller.getOffset(), 276); // locked to max
++    assert.equal(controller.isVerified(), true);
++    assert.equal(controller.getToken(), passResult.token);
++    assert.equal(receivedToken, passResult.token);
++
++    // Further drags when verified must be ignored
++    controller.startDrag(100);
++    assert.equal(controller.getStatus(), 'success');
++
++    // Reset back to initial state
++    controller.reset();
++    assert.equal(controller.getStatus(), 'idle');
++    assert.equal(controller.getOffset(), 0);
++    assert.equal(controller.isVerified(), false);
++    assert.equal(controller.getToken(), null);
++  });
++});
+diff --git a/apps/web/src/views/auth/LoginView.tsx b/apps/web/src/views/auth/LoginView.tsx
+new file mode 100644
+index 0000000..aa1f0d8
+--- /dev/null
++++ b/apps/web/src/views/auth/LoginView.tsx
+@@ -0,0 +1,297 @@
++import React, { useState, useEffect, useRef } from 'react';
++import {
++  Form,
++  Input,
++  Button,
++  Checkbox,
++  Card,
++  Typography,
++  Space,
++  message,
++  Modal,
++} from 'antd';
++import {
++  UserOutlined,
++  LockOutlined,
++  CarOutlined,
++} from '@ant-design/icons';
++import {
++  SliderCaptcha,
++} from '../../components/SliderCaptcha/SliderCaptcha.tsx';
++import type { SliderCaptchaHandle } from '../../components/SliderCaptcha/SliderCaptcha.tsx';
++import {
++  getRememberedUsername,
++  mapLoginErrorToMessage,
++  executeLogin,
++} from './login-view-core.ts';
++import type { LoginFormValues } from './login-view-core.ts';
++import type { AuthResult } from '../../api/auth.ts';
++import { useAuthStore } from '../../store/useAuthStore.ts';
++
++export * from './login-view-core.ts';
++
++const { Title, Text, Link } = Typography;
++
++export interface LoginViewProps {
++  onLoginSuccess?: (result?: AuthResult) => void;
++  tenantId?: string;
++  initialUsername?: string;
++  className?: string;
++  style?: React.CSSProperties;
++}
++
++export const LoginView: React.FC<LoginViewProps> = ({
++  onLoginSuccess,
++  tenantId,
++  initialUsername,
++  className,
++  style,
++}) => {
++  const [form] = Form.useForm<LoginFormValues>();
++  const [loading, setLoading] = useState<boolean>(false);
++  const [isCaptchaVerified, setIsCaptchaVerified] = useState<boolean>(false);
++  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
++
++  const sliderRef = useRef<SliderCaptchaHandle>(null);
++  const passwordInputRef = useRef<any>(null);
++
++  // 初始化：检查登录态与记住账号逻辑
++  useEffect(() => {
++    // 若当前已处于鉴权登录态，静默触发导航通知
++    const authState = useAuthStore.getState();
++    if (authState.isAuthenticated && authState.accessToken) {
++      onLoginSuccess?.();
++      return;
++    }
++
++    const remembered = initialUsername ?? getRememberedUsername();
++    if (remembered) {
++      form.setFieldsValue({
++        username: remembered,
++        rememberMe: true,
++      });
++      // 记住账号场景下自动聚焦到密码框
++      setTimeout(() => {
++        passwordInputRef.current?.focus?.();
++      }, 100);
++    } else {
++      form.setFieldsValue({
++        rememberMe: true,
++      });
++    }
++  }, [form, initialUsername, onLoginSuccess]);
++
++  const handleCaptchaSuccess = (token: string) => {
++    setIsCaptchaVerified(true);
++    setCaptchaToken(token);
++  };
++
++  const handleCaptchaReset = () => {
++    setIsCaptchaVerified(false);
++    setCaptchaToken(null);
++  };
++
++  const handleForgotPassword = () => {
++    Modal.info({
++      title: '重置与找回密码',
++      content: (
++        <div>
++          <p>为保障企业车控核心中台资产安全，系统不开放公网自助重置密码通道。</p>
++          <p>请联系您所在企业的系统管理员或中台运维工程师为您派发临时重置链接。</p>
++        </div>
++      ),
++      okText: '知道了',
++    });
++  };
++
++  const handleSubmit = async (values: LoginFormValues) => {
++    if (!isCaptchaVerified) {
++      message.warning('请先完成滑块人机验证');
++      return;
++    }
++
++    setLoading(true);
++
++    try {
++      const authResult = await executeLogin({
++        input: {
++          username: values.username,
++          password: values.password,
++          tenantId,
++        },
++        captchaVerified: isCaptchaVerified,
++        captchaToken,
++        rememberMe: Boolean(values.rememberMe),
++      });
++
++      const displayName =
++        authResult.user?.displayName || authResult.user?.username || '管理员';
++      message.success(`欢迎回来，${displayName}`);
++
++      onLoginSuccess?.(authResult);
++    } catch (err: unknown) {
++      const friendlyNotice = mapLoginErrorToMessage(err);
++      message.error(friendlyNotice);
++
++      // 登录失败异常恢复策略：重置滑块、清空密码并重新聚焦
++      sliderRef.current?.reset();
++      setIsCaptchaVerified(false);
++      setCaptchaToken(null);
++      form.setFieldValue('password', '');
++      passwordInputRef.current?.focus?.();
++    } finally {
++      setLoading(false);
++    }
++  };
++
++  return (
++    <div
++      className={className}
++      style={{
++        minHeight: '100vh',
++        width: '100%',
++        display: 'flex',
++        flexDirection: 'column',
++        justifyContent: 'space-between',
++        alignItems: 'center',
++        padding: '24px 16px',
++        background: 'linear-gradient(135deg, #001529 0%, #002347 50%, #0a3663 100%)',
++        boxSizing: 'border-box',
++        ...style,
++      }}
++    >
++      <div style={{ flex: '1 0 auto', display: 'flex', alignItems: 'center' }}>
++        <Card
++          bordered={false}
++          style={{
++            width: '100%',
++            maxWidth: 420,
++            borderRadius: 8,
++            boxShadow: '0 8px 32px 0 rgba(0, 0, 0, 0.28)',
++            backgroundColor: '#ffffff',
++            padding: '12px 16px',
++          }}
++        >
++          {/* 头部品牌标识 */}
++          <div style={{ textAlign: 'center', marginBottom: 28 }}>
++            <div
++              style={{
++                width: 52,
++                height: 52,
++                borderRadius: '50%',
++                backgroundColor: 'var(--car-color-primary-bg, #e6f4ff)',
++                display: 'inline-flex',
++                alignItems: 'center',
++                justifyContent: 'center',
++                marginBottom: 12,
++              }}
++            >
++              <CarOutlined style={{ fontSize: 28, color: 'var(--car-color-primary, #1677ff)' }} />
++            </div>
++            <Title level={3} style={{ margin: '0 0 6px 0', color: 'var(--car-text-title, rgba(0, 0, 0, 0.88))' }}>
++              手机控车平台 · 企业级管理中台
++            </Title>
++            <Text type="secondary" style={{ fontSize: 13 }}>
++              Enterprise Vehicle IoT Management Console
++            </Text>
++          </div>
++
++          {/* 登录表单 */}
++          <Form
++            form={form}
++            layout="vertical"
++            size="large"
++            onFinish={handleSubmit}
++            requiredMark={false}
++            autoComplete="off"
++          >
++            {/* 用户名 */}
++            <Form.Item
++              name="username"
++              rules={[
++                { required: true, message: '请输入管理员工号 / 账号' },
++                { min: 3, max: 32, message: '账号长度在 3~32 位字符之间' },
++              ]}
++            >
++              <Input
++                prefix={<UserOutlined style={{ color: 'var(--car-text-secondary, #8c8c8c)' }} />}
++                placeholder="请输入管理员工号 / 账号"
++                allowClear
++                autoFocus
++                disabled={loading}
++              />
++            </Form.Item>
++
++            {/* 密码 */}
++            <Form.Item
++              name="password"
++              rules={[{ required: true, message: '请输入登录密码' }]}
++            >
++              <Input.Password
++                ref={passwordInputRef}
++                prefix={<LockOutlined style={{ color: 'var(--car-text-secondary, #8c8c8c)' }} />}
++                placeholder="请输入登录密码"
++                allowClear
++                disabled={loading}
++              />
++            </Form.Item>
++
++            {/* 人机验证滑块 */}
++            <Form.Item style={{ marginBottom: 16 }}>
++              <SliderCaptcha
++                ref={sliderRef}
++                onSuccess={handleCaptchaSuccess}
++                onReset={handleCaptchaReset}
++                disabled={loading}
++              />
++            </Form.Item>
++
++            {/* 记住账号与忘记密码 */}
++            <div
++              style={{
++                display: 'flex',
++                justifyContent: 'space-between',
++                alignItems: 'center',
++                marginBottom: 24,
++              }}
++            >
++              <Form.Item name="rememberMe" valuePropName="checked" noStyle>
++                <Checkbox disabled={loading}>记住账号</Checkbox>
++              </Form.Item>
++              <Link onClick={handleForgotPassword} style={{ fontSize: 13 }}>
++                忘记密码？
++              </Link>
++            </div>
++
++            {/* 立即登录按钮 */}
++            <Form.Item style={{ marginBottom: 8 }}>
++              <Button
++                type="primary"
++                htmlType="submit"
++                block
++                size="large"
++                loading={loading}
++                disabled={!isCaptchaVerified || loading}
++                style={{
++                  height: 44,
++                  borderRadius: 6,
++                  fontSize: 16,
++                  fontWeight: 500,
++                }}
++              >
++                立 即 登 录
++              </Button>
++            </Form.Item>
++          </Form>
++        </Card>
++      </div>
++
++      {/* 底部版权信息 */}
++      <footer style={{ textAlign: 'center', color: 'rgba(255, 255, 255, 0.55)', fontSize: 12 }}>
++        Copyright © 2026 手机控车平台. All rights reserved.
++      </footer>
++    </div>
++  );
++};
++
++LoginView.displayName = 'LoginView';
+diff --git a/apps/web/src/views/auth/index.ts b/apps/web/src/views/auth/index.ts
+new file mode 100644
+index 0000000..4ced62c
+--- /dev/null
++++ b/apps/web/src/views/auth/index.ts
+@@ -0,0 +1,2 @@
++export * from './LoginView.tsx';
++export * from './login-view-core.ts';
+diff --git a/apps/web/src/views/auth/login-view-core.ts b/apps/web/src/views/auth/login-view-core.ts
+new file mode 100644
+index 0000000..6bfe72a
+--- /dev/null
++++ b/apps/web/src/views/auth/login-view-core.ts
+@@ -0,0 +1,179 @@
++import { useAuthStore } from '../../store/useAuthStore.ts';
++import { loginApi } from '../../api/auth.ts';
++import type { AuthResult, LoginInput } from '../../api/auth.ts';
++import { ApiError } from '../../api/client.ts';
++
++export const REMEMBER_USERNAME_STORAGE_KEY = 'car_control_remembered_username';
++
++const getStorage = () => {
++  try {
++    if (typeof window !== 'undefined' && window.localStorage) {
++      return window.localStorage;
++    }
++  } catch {
++    // fallback
++  }
++  if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
++    return (globalThis as any).localStorage;
++  }
++  return null;
++};
++
++/**
++ * 获取本地缓存的已记住用户名
++ */
++export function getRememberedUsername(): string {
++  const storage = getStorage();
++  if (!storage) {
++    return '';
++  }
++  return storage.getItem(REMEMBER_USERNAME_STORAGE_KEY) || '';
++}
++
++/**
++ * 保存记住的用户名
++ */
++export function saveRememberedUsername(username: string): void {
++  const storage = getStorage();
++  if (!storage) {
++    return;
++  }
++  storage.setItem(REMEMBER_USERNAME_STORAGE_KEY, username.trim());
++}
++
++/**
++ * 清除已记住的用户名
++ */
++export function clearRememberedUsername(): void {
++  const storage = getStorage();
++  if (!storage) {
++    return;
++  }
++  storage.removeItem(REMEMBER_USERNAME_STORAGE_KEY);
++}
++
++export interface LoginFormValues {
++  username: string;
++  password: string;
++  rememberMe?: boolean;
++}
++
++export interface ValidateLoginParams {
++  username?: string;
++  password?: string;
++  captchaVerified: boolean;
++}
++
++/**
++ * 校验登录表单与人机验证状态
++ */
++export function validateLoginForm(params: ValidateLoginParams): {
++  valid: boolean;
++  error?: string;
++} {
++  const trimmedUser = params.username?.trim();
++  if (!trimmedUser) {
++    return { valid: false, error: '请输入管理员工号 / 账号' };
++  }
++  if (!params.password) {
++    return { valid: false, error: '请输入登录密码' };
++  }
++  if (!params.captchaVerified) {
++    return { valid: false, error: '请先完成滑块人机验证' };
++  }
++  return { valid: true };
++}
++
++/**
++ * 规范化登录错误信息映射（匹配设计规范 docs/design/page-specs/login.md 状态4）
++ */
++export function mapLoginErrorToMessage(error: unknown): string {
++  if (error instanceof ApiError) {
++    if (error.statusCode === 401) {
++      return '账号或密码不正确，连续失败 5 次将锁定 15 分钟';
++    }
++    if (error.statusCode === 403) {
++      return '该账号已被管理员停用，请联系企业管理员';
++    }
++    if (error.statusCode === 408 || error.statusCode === 504) {
++      return '连接服务器超时，请检查网络设置';
++    }
++    if (error.message) {
++      return error.message;
++    }
++  }
++
++  if (error instanceof Error) {
++    const msg = error.message.toLowerCase();
++    if (
++      msg.includes('timeout') ||
++      msg.includes('network') ||
++      msg.includes('failed to fetch') ||
++      msg.includes('econnrefused')
++    ) {
++      return '连接服务器超时，请检查网络设置';
++    }
++    return error.message;
++  }
++
++  return '登录失败，请检查网络后重试';
++}
++
++export interface ExecuteLoginOptions {
++  input: {
++    username: string;
++    password: string;
++    tenantId?: string;
++  };
++  captchaVerified: boolean;
++  captchaToken: string | null;
++  rememberMe: boolean;
++  loginFn?: (input: LoginInput) => Promise<AuthResult>;
++}
++
++/**
++ * 执行登录全流程：校验 -> API 调用 -> 双令牌与权限持久化 -> 记住账号维护
++ */
++export async function executeLogin(options: ExecuteLoginOptions): Promise<AuthResult> {
++  const { input, captchaVerified, captchaToken, rememberMe, loginFn = loginApi } = options;
++
++  const validation = validateLoginForm({
++    username: input.username,
++    password: input.password,
++    captchaVerified,
++  });
++
++  if (!validation.valid) {
++    throw new Error(validation.error || '登录表单未通过校验');
++  }
++
++  const trimmedUsername = input.username.trim();
++
++  // 组装请求体（包含滑块 Ticket 与可选租户标识）
++  const loginPayload: LoginInput = {
++    username: trimmedUsername,
++    password: input.password,
++    captchaToken: captchaToken ?? undefined,
++  };
++
++  const authResult = await loginFn(loginPayload);
++
++  // 存入 Zustand useAuthStore
++  useAuthStore.getState().setAuth(
++    {
++      accessToken: authResult.accessToken,
++      refreshToken: authResult.refreshToken,
++    },
++    authResult.user,
++    authResult.user?.permissions
++  );
++
++  // 记住账号处理
++  if (rememberMe) {
++    saveRememberedUsername(trimmedUsername);
++  } else {
++    clearRememberedUsername();
++  }
++
++  return authResult;
++}

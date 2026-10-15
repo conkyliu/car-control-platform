@@ -1,0 +1,104 @@
+diff --git a/apps/web/src/layouts/AdminLayout.tsx b/apps/web/src/layouts/AdminLayout.tsx
+index 6cc1cf4..25951bb 100644
+--- a/apps/web/src/layouts/AdminLayout.tsx
++++ b/apps/web/src/layouts/AdminLayout.tsx
+@@ -69,6 +69,7 @@ export const AdminLayout: React.FC = () => {
+   const hasPermission = useAuthStore((s) => s.hasPermission);
+   const activeKey = useNavTabsStore((s) => s.activeKey);
+   const openTab = useNavTabsStore((s) => s.openTab);
++  const refreshCounter = useNavTabsStore((s) => s.refreshCount[s.activeKey] ?? 0);
+ 
+   // 根据当前登录权限过滤可访问路由并按分类归集
+   const accessibleGroups = getAccessibleRoutesByCategory(hasPermission);
+@@ -216,6 +217,7 @@ export const AdminLayout: React.FC = () => {
+           theme="dark"
+           mode="inline"
+           selectedKeys={[activeKey]}
++          defaultOpenKeys={Object.keys(accessibleGroups).map((k) => `group-${k}`)}
+           items={menuItems}
+           onClick={handleMenuClick}
+           style={{ borderRight: 0, backgroundColor: 'transparent' }}
+@@ -292,6 +294,7 @@ export const AdminLayout: React.FC = () => {
+ 
+         {/* 业务内容区域 */}
+         <Content
++          key={`${activeKey}-${refreshCounter}`}
+           style={{
+             padding: '12px 20px 20px',
+             flex: 1,
+diff --git a/apps/web/src/layouts/HeaderUserMenu.tsx b/apps/web/src/layouts/HeaderUserMenu.tsx
+index 25d5c49..8b5a09e 100644
+--- a/apps/web/src/layouts/HeaderUserMenu.tsx
++++ b/apps/web/src/layouts/HeaderUserMenu.tsx
+@@ -22,6 +22,7 @@ import {
+ } from '@ant-design/icons';
+ import { useAuthStore } from '../store/useAuthStore.ts';
+ import { executeLogout } from './admin-layout-core.ts';
++import { logoutApi } from '../api/auth.ts';
+ 
+ const { Text } = Typography;
+ 
+@@ -46,7 +47,7 @@ export const HeaderUserMenu: React.FC = () => {
+ 
+   const handleLogout = async () => {
+     try {
+-      await executeLogout();
++      await executeLogout(logoutApi);
+       message.success('已安全退出登录');
+     } catch {
+       message.error('退出登录异常');
+diff --git a/apps/web/src/layouts/TenantSelector.tsx b/apps/web/src/layouts/TenantSelector.tsx
+index 92fbdc8..e1defb1 100644
+--- a/apps/web/src/layouts/TenantSelector.tsx
++++ b/apps/web/src/layouts/TenantSelector.tsx
+@@ -21,9 +21,13 @@ export const TenantSelector: React.FC = () => {
+ 
+   const isSuperAdmin = isSuperAdminUser(user?.roles as string[] | undefined);
+ 
+-  // 初始化保障：若租户列表为空，注入基线示例租户列表并同步激活租户
++  // 初始化保障：若为普通租户，强制绑定 user.tenantId；若为超级管理员且未设定租户，初始化租户列表
+   useEffect(() => {
+-    if (tenantList.length === 0) {
++    if (!isSuperAdmin && user?.tenantId) {
++      if (currentTenantId !== user.tenantId) {
++        useTenantStore.getState().setCurrentTenantId(user.tenantId);
++      }
++    } else if (tenantList.length === 0) {
+       setTenantList(DEFAULT_DEMO_TENANTS);
+       if (!currentTenantId) {
+         useTenantStore.getState().setCurrentTenantId(DEFAULT_DEMO_TENANTS[0].id);
+@@ -31,10 +35,14 @@ export const TenantSelector: React.FC = () => {
+     } else if (!currentTenantId) {
+       useTenantStore.getState().setCurrentTenantId(tenantList[0]?.id ?? 't_default');
+     }
+-  }, [tenantList.length, currentTenantId, setTenantList]);
++  }, [tenantList.length, currentTenantId, setTenantList, isSuperAdmin, user?.tenantId]);
+ 
+   const activeTenants = tenantList.length > 0 ? tenantList : DEFAULT_DEMO_TENANTS;
+-  const currentTenant = activeTenants.find((t) => t.id === currentTenantId) ?? activeTenants[0];
++  const currentTenant =
++    activeTenants.find((t) => t.id === currentTenantId) ??
++    (currentTenantId
++      ? { id: currentTenantId, name: `企业租户 (${currentTenantId})`, code: currentTenantId, status: 'ACTIVE' as const, quotaDeviceCount: 1000 }
++      : activeTenants[0]);
+ 
+   const handleTenantChange = (value: string) => {
+     switchTenant(value);
+diff --git a/apps/web/src/test/admin-layout.test.ts b/apps/web/src/test/admin-layout.test.ts
+index 527e1cf..cf7c091 100644
+--- a/apps/web/src/test/admin-layout.test.ts
++++ b/apps/web/src/test/admin-layout.test.ts
+@@ -133,9 +133,12 @@ test('AdminLayout and Navigation Hub Core Test Suite', async (t) => {
+ 
+     assert.equal(useTenantStore.getState().currentTenantId, 't_alpha');
+ 
+-    // Switch tenant
++    // Switch tenant triggers tenant update and active tab refresh
++    const beforeSwitchRefresh = useNavTabsStore.getState().refreshCount[useNavTabsStore.getState().activeKey] ?? 0;
+     switchTenant('t_beta');
+     assert.equal(useTenantStore.getState().currentTenantId, 't_beta');
++    const afterSwitchRefresh = useNavTabsStore.getState().refreshCount[useNavTabsStore.getState().activeKey] ?? 0;
++    assert.equal(afterSwitchRefresh, beforeSwitchRefresh + 1);
+ 
+     // Quota display formatting
+     const quotaText1 = formatTenantQuota(mockTenants[0]!, {

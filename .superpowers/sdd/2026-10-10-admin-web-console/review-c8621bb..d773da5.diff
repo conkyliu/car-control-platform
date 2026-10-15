@@ -1,0 +1,2609 @@
+diff --git a/apps/web/src/api/vehicle.ts b/apps/web/src/api/vehicle.ts
+new file mode 100644
+index 0000000..ea91222
+--- /dev/null
++++ b/apps/web/src/api/vehicle.ts
+@@ -0,0 +1,222 @@
++import { http } from './client.ts';
++import {
++  type VehicleDto,
++  type VehicleQueryParams,
++  type VehicleStatsDto,
++  type BrandDto,
++  type ModelDto,
++  type VehicleStatus,
++  filterVehicles,
++  isValidVehicleStatusTransition,
++  isApiError,
++  SEED_BRANDS,
++  SEED_MODELS,
++  SEED_VEHICLES,
++} from '../views/vehicle/vehicle-core.ts';
++import { SEED_PROJECTS } from '../views/device/device-core.ts';
++
++export type {
++  VehicleDto,
++  VehicleQueryParams,
++  VehicleStatsDto,
++  BrandDto,
++  ModelDto,
++  VehicleStatus,
++};
++
++export interface CreateVehicleInput {
++  vin: string;
++  plateNumber: string;
++  projectId: string;
++  brandId: string;
++  modelId: string;
++  deviceId?: string | null;
++  ownerName?: string;
++  ownerPhone?: string;
++  status?: VehicleStatus;
++}
++
++// 本地内存备份状态池 (支持离线演示与无后端环境平滑降级)
++let inMemoryVehicles: VehicleDto[] = [...SEED_VEHICLES];
++let inMemoryBrands: BrandDto[] = [...SEED_BRANDS];
++let inMemoryModels: ModelDto[] = [...SEED_MODELS];
++
++/**
++ * 拉取车辆台账档案列表 API
++ * 遵循 isApiError 模式：真实服务端异常抛出中断并提示，离线环境降级至内存数据池
++ */
++export async function fetchVehiclesApi(params?: VehicleQueryParams): Promise<VehicleDto[]> {
++  try {
++    const data = await http.get<VehicleDto[]>('/vehicles', params);
++    if (Array.isArray(data)) {
++      return data;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 离线/开发降级
++  return filterVehicles(inMemoryVehicles, params);
++}
++
++/**
++ * 拉取单台车辆档案与实时车况详情 API
++ */
++export async function fetchVehicleDetailApi(id: string): Promise<VehicleDto> {
++  try {
++    const result = await http.get<VehicleDto>(`/vehicles/${encodeURIComponent(id)}`);
++    if (result && result.id) {
++      return result;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  const target = inMemoryVehicles.find((v) => v.id === id);
++  if (!target) {
++    throw new Error(`车辆 ID "${id}" 未找到`);
++  }
++  return target;
++}
++
++/**
++ * 新增车辆台账建档 API
++ * 遵循 isApiError 模式：服务端异常抛出，离线时本地建档并存入状态池
++ */
++export async function createVehicleApi(data: CreateVehicleInput): Promise<VehicleDto> {
++  try {
++    const result = await http.post<VehicleDto>('/vehicles', data);
++    if (result && result.id) {
++      return result;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
++  const brand = inMemoryBrands.find((b) => b.id === data.brandId);
++  const model = inMemoryModels.find((m) => m.id === data.modelId);
++  const project = SEED_PROJECTS.find((p) => p.id === data.projectId);
++
++  const newVehicle: VehicleDto = {
++    id: `veh-${Date.now()}`,
++    vin: data.vin.trim().toUpperCase(),
++    plateNumber: data.plateNumber.trim().toUpperCase(),
++    tenantId: 'tenant-001',
++    projectId: data.projectId,
++    projectName: project?.name ?? '默认车队项目',
++    brandId: data.brandId,
++    brandName: brand?.name ?? '未知品牌',
++    modelId: data.modelId,
++    modelName: model?.name ?? '未知车型',
++    deviceId: data.deviceId || null,
++    deviceNo: data.deviceId ? `DEV_${Date.now().toString().slice(-4)}` : null,
++    deviceOnlineStatus: data.deviceId ? 'ONLINE' : undefined,
++    status: data.status || 'NORMAL',
++    telemetry: {
++      doorLocked: true,
++      trunkLocked: true,
++      engineStarted: false,
++      batteryVoltage: 12.6,
++      mileage: 0,
++      speed: 0,
++      fuelOrBatteryLevel: 100,
++      location: '整车交付中心',
++      lastReportedAt: now,
++    },
++    ownerName: data.ownerName?.trim() || undefined,
++    ownerPhone: data.ownerPhone?.trim() || undefined,
++    createdAt: now,
++    updatedAt: now,
++  };
++
++  inMemoryVehicles = [newVehicle, ...inMemoryVehicles];
++  return newVehicle;
++}
++
++/**
++ * 更新车辆运营生命周期状态 API (NORMAL / MAINTENANCE / LOCKED / SCRAPPED)
++ * 校验 isValidVehicleStatusTransition 防御终态逆转
++ */
++export async function updateVehicleStatusApi(
++  id: string,
++  status: VehicleStatus
++): Promise<VehicleDto> {
++  try {
++    const result = await http.patch<VehicleDto>(
++      `/vehicles/${encodeURIComponent(id)}/status`,
++      { status }
++    );
++    if (result && result.id) {
++      return result;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  const index = inMemoryVehicles.findIndex((v) => v.id === id);
++  if (index === -1) {
++    throw new Error(`车辆 ID "${id}" 不存在`);
++  }
++
++  const current = inMemoryVehicles[index]!;
++  if (!isValidVehicleStatusTransition(current.status, status)) {
++    throw new Error('已报废车辆为物理终态，不可逆向变更已报废车辆状态');
++  }
++
++  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
++  const updatedVehicle: VehicleDto = {
++    ...current,
++    status,
++    updatedAt: now,
++  };
++
++  inMemoryVehicles[index] = updatedVehicle;
++  return updatedVehicle;
++}
++
++/**
++ * 获取品牌字典列表 API
++ */
++export async function fetchBrandsApi(): Promise<BrandDto[]> {
++  try {
++    const data = await http.get<BrandDto[]>('/vehicles/brands');
++    if (Array.isArray(data)) {
++      return data;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++  return inMemoryBrands;
++}
++
++/**
++ * 获取车型字典列表 API (支持按品牌联动过滤)
++ */
++export async function fetchModelsApi(brandId?: string): Promise<ModelDto[]> {
++  try {
++    const data = await http.get<ModelDto[]>('/vehicles/models', brandId ? { brandId } : undefined);
++    if (Array.isArray(data)) {
++      return data;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  if (brandId && brandId !== 'ALL') {
++    return inMemoryModels.filter((m) => m.brandId === brandId);
++  }
++  return inMemoryModels;
++}
+diff --git a/apps/web/src/layouts/AdminLayout.tsx b/apps/web/src/layouts/AdminLayout.tsx
+index 9896f49..f1cd36c 100644
+--- a/apps/web/src/layouts/AdminLayout.tsx
++++ b/apps/web/src/layouts/AdminLayout.tsx
+@@ -45,6 +45,7 @@ import { CarControlPanel } from '../components/CarControlPanel.tsx';
+ import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
+ import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
+ import { DeviceListView } from '../views/device/index.ts';
++import { VehicleListView } from '../views/vehicle/index.ts';
+ 
+ const { Header, Sider, Content, Footer } = Layout;
+ const { Title, Text, Paragraph } = Typography;
+@@ -143,6 +144,10 @@ export const AdminLayout: React.FC = () => {
+       return <DeviceListView />;
+     }
+ 
++    if (activeKey === RoutePath.VEHICLES) {
++      return <VehicleListView />;
++    }
++
+     if (activeKey === RoutePath.COMMANDS) {
+       return <CarControlPanel />;
+     }
+diff --git a/apps/web/src/test/vehicle-views.test.ts b/apps/web/src/test/vehicle-views.test.ts
+new file mode 100644
+index 0000000..461a04d
+--- /dev/null
++++ b/apps/web/src/test/vehicle-views.test.ts
+@@ -0,0 +1,556 @@
++import { describe, it } from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  VIN_REGEX,
++  PLATE_REGEX,
++  validateVin,
++  validatePlateNumber,
++  generateSampleVin,
++  maskPhone,
++  formatVoltage,
++  calculateVehicleStats,
++  filterVehicles,
++  getVehicleStatusMeta,
++  isValidVehicleStatusTransition,
++  isApiError,
++  SEED_BRANDS,
++  SEED_MODELS,
++  SEED_VEHICLES,
++  type VehicleDto,
++  type VehicleStatus,
++  type VehicleQueryParams,
++  type BrandDto,
++  type ModelDto,
++} from '../views/vehicle/vehicle-core.ts';
++import {
++  fetchVehiclesApi,
++  fetchVehicleDetailApi,
++  createVehicleApi,
++  updateVehicleStatusApi,
++  fetchBrandsApi,
++  fetchModelsApi,
++  type CreateVehicleInput,
++} from '../api/vehicle.ts';
++import { ApiError } from '../api/client.ts';
++
++describe('Vehicle Asset Management Center Core & TDD Test Suite', () => {
++  const sampleVehicles: VehicleDto[] = [
++    {
++      id: 'veh-001',
++      vin: 'LFPH2E023N1000001',
++      plateNumber: '粤B·88888',
++      tenantId: 'tenant-001',
++      projectId: 'proj-sz-01',
++      projectName: '深圳极速智慧车队',
++      brandId: 'brand-byd',
++      brandName: '比亚迪',
++      modelId: 'model-byd-han',
++      modelName: '汉 EV',
++      deviceId: 'dev-001',
++      deviceNo: 'DEV_1001',
++      deviceOnlineStatus: 'ONLINE',
++      status: 'NORMAL',
++      telemetry: {
++        doorLocked: true,
++        trunkLocked: true,
++        engineStarted: false,
++        batteryVoltage: 12.6,
++        mileage: 15200,
++        speed: 0,
++        fuelOrBatteryLevel: 85,
++        location: '深圳市南山区科技园南区',
++        lastReportedAt: '2026-10-12 10:00:00',
++      },
++      ownerName: '张伟',
++      ownerPhone: '13800138888',
++      createdAt: '2026-03-01 10:00:00',
++      updatedAt: '2026-10-12 10:00:00',
++    },
++    {
++      id: 'veh-002',
++      vin: 'LFPH2E023N1000002',
++      plateNumber: '粤B·D12345',
++      tenantId: 'tenant-001',
++      projectId: 'proj-sz-01',
++      projectName: '深圳极速智慧车队',
++      brandId: 'brand-tesla',
++      brandName: '特斯拉',
++      modelId: 'model-tesla-modely',
++      modelName: 'Model Y',
++      deviceId: 'dev-002',
++      deviceNo: 'DEV_1002',
++      deviceOnlineStatus: 'ONLINE',
++      status: 'NORMAL',
++      telemetry: {
++        doorLocked: true,
++        trunkLocked: true,
++        engineStarted: true,
++        batteryVoltage: 13.8,
++        mileage: 8920,
++        speed: 45,
++        fuelOrBatteryLevel: 72,
++        location: '深圳市福田区深南大道',
++        lastReportedAt: '2026-10-12 10:02:00',
++      },
++      ownerName: '李敏',
++      ownerPhone: '13912345678',
++      createdAt: '2026-03-02 11:00:00',
++      updatedAt: '2026-10-12 10:02:00',
++    },
++    {
++      id: 'veh-003',
++      vin: 'LFPH2E023N1000003',
++      plateNumber: '粤A·99887',
++      tenantId: 'tenant-001',
++      projectId: 'proj-gz-02',
++      projectName: '广州网约出行运营二期',
++      brandId: 'brand-aion',
++      brandName: '广汽埃安',
++      modelId: 'model-aion-s',
++      modelName: 'AION S',
++      deviceId: 'dev-003',
++      deviceNo: 'DEV_1003',
++      deviceOnlineStatus: 'OFFLINE',
++      status: 'MAINTENANCE',
++      telemetry: {
++        doorLocked: false,
++        trunkLocked: true,
++        engineStarted: false,
++        batteryVoltage: 11.2,
++        mileage: 42100,
++        speed: 0,
++        fuelOrBatteryLevel: 30,
++        location: '广州市天河区车陂检修厂',
++        lastReportedAt: '2026-10-11 18:30:00',
++      },
++      ownerName: '王强',
++      ownerPhone: '13788889988',
++      createdAt: '2026-03-05 14:00:00',
++      updatedAt: '2026-10-11 18:30:00',
++    },
++    {
++      id: 'veh-004',
++      vin: 'LFPH2E023N1000004',
++      plateNumber: '沪A·12345',
++      tenantId: 'tenant-001',
++      projectId: 'proj-sh-03',
++      projectName: '华东城际物流专线',
++      brandId: 'brand-byd',
++      brandName: '比亚迪',
++      modelId: 'model-byd-han',
++      modelName: '汉 EV',
++      deviceId: 'dev-004',
++      deviceNo: 'DEV_1004',
++      deviceOnlineStatus: 'ONLINE',
++      status: 'LOCKED',
++      telemetry: {
++        doorLocked: true,
++        trunkLocked: true,
++        engineStarted: false,
++        batteryVoltage: 12.4,
++        mileage: 31200,
++        speed: 0,
++        fuelOrBatteryLevel: 45,
++        location: '上海市浦东新区张江高科',
++        lastReportedAt: '2026-10-12 09:50:00',
++      },
++      ownerName: '陈晨',
++      ownerPhone: '13500004321',
++      createdAt: '2026-03-10 09:00:00',
++      updatedAt: '2026-10-12 09:50:00',
++    },
++    {
++      id: 'veh-005',
++      vin: 'LFPH2E023N1000005',
++      plateNumber: '京A·88990',
++      tenantId: 'tenant-001',
++      projectId: 'proj-bj-04',
++      projectName: '北京高端政企车队',
++      brandId: 'brand-tesla',
++      brandName: '特斯拉',
++      modelId: 'model-tesla-modely',
++      modelName: 'Model Y',
++      deviceId: null,
++      deviceNo: null,
++      deviceOnlineStatus: undefined,
++      status: 'SCRAPPED',
++      telemetry: undefined,
++      ownerName: '孙权',
++      ownerPhone: '13900008890',
++      createdAt: '2026-01-15 10:00:00',
++      updatedAt: '2026-09-01 10:00:00',
++    },
++    {
++      id: 'veh-006',
++      vin: 'LFPH2E023N1000006',
++      plateNumber: '粤B·55443',
++      tenantId: 'tenant-001',
++      projectId: 'proj-sz-01',
++      projectName: '深圳极速智慧车队',
++      brandId: 'brand-zeekr',
++      brandName: '吉利极氪',
++      modelId: 'model-zeekr-001',
++      modelName: '极氪 001',
++      deviceId: null,
++      deviceNo: null,
++      deviceOnlineStatus: undefined,
++      status: 'NORMAL',
++      telemetry: {
++        doorLocked: true,
++        trunkLocked: true,
++        engineStarted: false,
++        batteryVoltage: 12.5,
++        mileage: 1200,
++        speed: 0,
++        fuelOrBatteryLevel: 90,
++      },
++      ownerName: '周杰',
++      ownerPhone: '13700005544',
++      createdAt: '2026-04-01 15:00:00',
++      updatedAt: '2026-10-12 08:00:00',
++    },
++  ];
++
++  describe('1. ISO 3779 VIN 17-Char Validation (validateVin)', () => {
++    it('accepts strictly valid 17-char VIN strings', () => {
++      assert.equal(validateVin('LFPH2E023N1000001'), true);
++      assert.equal(validateVin('LSVAA2180E2000002'), true);
++      assert.equal(validateVin('1HGCR2F83HA000000'), true);
++      assert.equal(validateVin('WP0AA29961S600000'), true);
++    });
++
++    it('intercepts VIN containing excluded characters I, O, Q', () => {
++      // Contains 'I'
++      assert.equal(validateVin('LFPH2E023NI000001'), false);
++      // Contains 'O'
++      assert.equal(validateVin('LFPH2E023NO000001'), false);
++      // Contains 'Q'
++      assert.equal(validateVin('LFPH2E023NQ000001'), false);
++    });
++
++    it('rejects VIN with incorrect lengths or invalid symbols', () => {
++      // 16 chars (too short)
++      assert.equal(validateVin('LFPH2E023N100000'), false);
++      // 18 chars (too long)
++      assert.equal(validateVin('LFPH2E023N10000001'), false);
++      // Contains special symbols
++      assert.equal(validateVin('LFPH2E023N10000-1'), false);
++      assert.equal(validateVin('LFPH2E023N10000@1'), false);
++      // Empty, null, non-string
++      assert.equal(validateVin(''), false);
++      assert.equal(validateVin(null as any), false);
++      assert.equal(validateVin(undefined as any), false);
++    });
++
++    it('automatically trims whitespace and converts lowercase to uppercase', () => {
++      assert.equal(validateVin('  lfph2e023n1000001  '), true);
++    });
++
++    it('generateSampleVin creates valid 17-char VIN passing validateVin', () => {
++      for (let i = 0; i < 5; i++) {
++        const vin = generateSampleVin();
++        assert.equal(vin.length, 17);
++        assert.equal(validateVin(vin), true);
++        assert.equal(/[IOQ]/.test(vin), false);
++      }
++    });
++  });
++
++  describe('2. Chinese Vehicle Plate Number Validation (validatePlateNumber)', () => {
++    it('accepts standard 7-char fuel vehicle plates with or without dot', () => {
++      assert.equal(validatePlateNumber('粤B88888'), true);
++      assert.equal(validatePlateNumber('粤B·88888'), true);
++      assert.equal(validatePlateNumber('京A·12345'), true);
++      assert.equal(validatePlateNumber('沪A12345'), true);
++      assert.equal(validatePlateNumber('苏E·8888A'), true);
++    });
++
++    it('accepts standard 8-char new energy vehicle green plates with or without dot', () => {
++      assert.equal(validatePlateNumber('粤B·D12345'), true);
++      assert.equal(validatePlateNumber('粤BD12345'), true);
++      assert.equal(validatePlateNumber('京A·F66666'), true);
++      assert.equal(validatePlateNumber('沪A·D12345'), true);
++      assert.equal(validatePlateNumber('浙A·DF1234'), true);
++    });
++
++    it('rejects invalid province initials, illegal lengths, or symbols', () => {
++      // Invalid province
++      assert.equal(validatePlateNumber('美A·88888'), false);
++      assert.equal(validatePlateNumber('1A·88888'), false);
++      // Too short
++      assert.equal(validatePlateNumber('粤B888'), false);
++      // Too long
++      assert.equal(validatePlateNumber('粤B·12345678'), false);
++      // Invalid characters
++      assert.equal(validatePlateNumber('粤B·8888I'), false); // I is excluded in plates
++      assert.equal(validatePlateNumber('粤B·8888O'), false); // O is excluded in plates
++      // Empty or non-string
++      assert.equal(validatePlateNumber(''), false);
++      assert.equal(validatePlateNumber(null as any), false);
++    });
++
++    it('handles whitespace trimming and dot normalization', () => {
++      assert.equal(validatePlateNumber('  粤B·88888  '), true);
++      assert.equal(validatePlateNumber('粤b·88888'), true);
++    });
++  });
++
++  describe('3. Vehicle Summary Metrics Calculation (calculateVehicleStats)', () => {
++    it('calculates total, status counts, bound rate, and online rate accurately', () => {
++      const stats = calculateVehicleStats(sampleVehicles, 10);
++      assert.equal(stats.totalCount, 6);
++      assert.equal(stats.normalCount, 3); // veh-001, veh-002, veh-006
++      assert.equal(stats.maintenanceCount, 1); // veh-003
++      assert.equal(stats.lockedCount, 1); // veh-004
++      assert.equal(stats.scrappedCount, 1); // veh-005
++
++      // Bound: veh-001, veh-002, veh-003, veh-004 (4 out of 6 => 66.7%)
++      assert.equal(stats.boundCount, 4);
++      assert.equal(stats.boundRate, 66.7);
++
++      // Online: veh-001, veh-002, veh-004 (3 out of 6 => 50.0%)
++      assert.equal(stats.onlineCount, 3);
++      assert.equal(stats.onlineRate, 50.0);
++
++      // Quota: 6 / 10 = 60.0%, no warning
++      assert.equal(stats.quotaTotal, 10);
++      assert.equal(stats.quotaUsed, 6);
++      assert.equal(stats.quotaUsage, 60.0);
++      assert.equal(stats.isQuotaWarning, false);
++    });
++
++    it('triggers isQuotaWarning when quota usage >= 90%', () => {
++      // 6 vehicles with quota of 6 => 100%
++      const stats = calculateVehicleStats(sampleVehicles, 6);
++      assert.equal(stats.quotaUsage, 100.0);
++      assert.equal(stats.isQuotaWarning, true);
++
++      // 6 vehicles with quota of 6.5 => round
++      const stats90 = calculateVehicleStats(sampleVehicles, 6.6);
++      assert.equal(stats90.quotaUsage >= 90, true);
++      assert.equal(stats90.isQuotaWarning, true);
++    });
++
++    it('handles empty vehicle list safely without NaN', () => {
++      const emptyStats = calculateVehicleStats([], 100);
++      assert.equal(emptyStats.totalCount, 0);
++      assert.equal(emptyStats.boundRate, 0);
++      assert.equal(emptyStats.onlineRate, 0);
++      assert.equal(emptyStats.quotaUsage, 0);
++      assert.equal(emptyStats.isQuotaWarning, false);
++    });
++  });
++
++  describe('4. Multi-dimensional Vehicle Filtering (filterVehicles)', () => {
++    it('filters by keyword across plate, vin, device, owner, phone', () => {
++      // Match plate
++      const byPlate = filterVehicles(sampleVehicles, { keyword: '粤B·88888' });
++      assert.equal(byPlate.length, 1);
++      assert.equal(byPlate[0].id, 'veh-001');
++
++      // Match VIN
++      const byVin = filterVehicles(sampleVehicles, { keyword: '1000003' });
++      assert.equal(byVin.length, 1);
++      assert.equal(byVin[0].id, 'veh-003');
++
++      // Match device
++      const byDev = filterVehicles(sampleVehicles, { keyword: 'DEV_1002' });
++      assert.equal(byDev.length, 1);
++      assert.equal(byDev[0].id, 'veh-002');
++
++      // Match owner name
++      const byOwner = filterVehicles(sampleVehicles, { keyword: '陈晨' });
++      assert.equal(byOwner.length, 1);
++      assert.equal(byOwner[0].id, 'veh-004');
++
++      // Match owner phone
++      const byPhone = filterVehicles(sampleVehicles, { keyword: '5544' });
++      assert.equal(byPhone.length, 1);
++      assert.equal(byPhone[0].id, 'veh-006');
++    });
++
++    it('filters by project, brand, and model', () => {
++      const byProj = filterVehicles(sampleVehicles, { projectId: 'proj-sz-01' });
++      assert.equal(byProj.length, 3); // veh-001, veh-002, veh-006
++
++      const byBrand = filterVehicles(sampleVehicles, { brandId: 'brand-byd' });
++      assert.equal(byBrand.length, 2); // veh-001, veh-004
++
++      const byModel = filterVehicles(sampleVehicles, { modelId: 'model-tesla-modely' });
++      assert.equal(byModel.length, 2); // veh-002, veh-005
++    });
++
++    it('filters by vehicle status', () => {
++      const normal = filterVehicles(sampleVehicles, { status: 'NORMAL' });
++      assert.equal(normal.length, 3);
++
++      const maint = filterVehicles(sampleVehicles, { status: 'MAINTENANCE' });
++      assert.equal(maint.length, 1);
++      assert.equal(maint[0].id, 'veh-003');
++
++      const locked = filterVehicles(sampleVehicles, { status: 'LOCKED' });
++      assert.equal(locked.length, 1);
++
++      const scrapped = filterVehicles(sampleVehicles, { status: 'SCRAPPED' });
++      assert.equal(scrapped.length, 1);
++    });
++
++    it('filters by bindStatus (BOUND / UNBOUND)', () => {
++      const bound = filterVehicles(sampleVehicles, { bindStatus: 'BOUND' });
++      assert.equal(bound.length, 4); // veh-001, 002, 003, 004
++
++      const unbound = filterVehicles(sampleVehicles, { bindStatus: 'UNBOUND' });
++      assert.equal(unbound.length, 2); // veh-005, 006
++    });
++
++    it('filters by onlineStatus (ONLINE / OFFLINE)', () => {
++      const online = filterVehicles(sampleVehicles, { onlineStatus: 'ONLINE' });
++      assert.equal(online.length, 3); // veh-001, 002, 004
++
++      const offline = filterVehicles(sampleVehicles, { onlineStatus: 'OFFLINE' });
++      assert.equal(offline.length, 3); // veh-003, 005, 006
++    });
++  });
++
++  describe('5. Lifecycle State Transition Guard (isValidVehicleStatusTransition)', () => {
++    it('allows transition from NORMAL, MAINTENANCE, LOCKED to any state', () => {
++      assert.equal(isValidVehicleStatusTransition('NORMAL', 'MAINTENANCE'), true);
++      assert.equal(isValidVehicleStatusTransition('NORMAL', 'LOCKED'), true);
++      assert.equal(isValidVehicleStatusTransition('NORMAL', 'SCRAPPED'), true);
++
++      assert.equal(isValidVehicleStatusTransition('MAINTENANCE', 'NORMAL'), true);
++      assert.equal(isValidVehicleStatusTransition('MAINTENANCE', 'LOCKED'), true);
++      assert.equal(isValidVehicleStatusTransition('MAINTENANCE', 'SCRAPPED'), true);
++
++      assert.equal(isValidVehicleStatusTransition('LOCKED', 'NORMAL'), true);
++      assert.equal(isValidVehicleStatusTransition('LOCKED', 'MAINTENANCE'), true);
++      assert.equal(isValidVehicleStatusTransition('LOCKED', 'SCRAPPED'), true);
++    });
++
++    it('strictly protects SCRAPPED as terminal irreversible state', () => {
++      assert.equal(isValidVehicleStatusTransition('SCRAPPED', 'SCRAPPED'), true);
++      assert.equal(isValidVehicleStatusTransition('SCRAPPED', 'NORMAL'), false);
++      assert.equal(isValidVehicleStatusTransition('SCRAPPED', 'MAINTENANCE'), false);
++      assert.equal(isValidVehicleStatusTransition('SCRAPPED', 'LOCKED'), false);
++    });
++  });
++
++  describe('6. Status Metadata and Telemetry Formatting Helpers', () => {
++    it('getVehicleStatusMeta returns standardized theme colors and tags', () => {
++      const normal = getVehicleStatusMeta('NORMAL');
++      assert.equal(normal.label, '正常运营');
++      assert.equal(normal.color, '#52c41a');
++
++      const maint = getVehicleStatusMeta('MAINTENANCE');
++      assert.equal(maint.label, '维保检修');
++      assert.equal(maint.color, '#fa8c16');
++
++      const locked = getVehicleStatusMeta('LOCKED');
++      assert.equal(locked.label, '风控锁死');
++      assert.equal(locked.color, '#722ed1');
++
++      const scrapped = getVehicleStatusMeta('SCRAPPED');
++      assert.equal(scrapped.label, '已报废');
++      assert.equal(scrapped.color, '#8c8c8c');
++    });
++
++    it('formatVoltage formats voltage and flags low voltage (<11.5V)', () => {
++      const normal = formatVoltage(12.6);
++      assert.equal(normal.text, '12.6V');
++      assert.equal(normal.isWarning, false);
++      assert.equal(normal.color, '#52c41a');
++
++      const low = formatVoltage(11.2);
++      assert.equal(low.text, '11.2V');
++      assert.equal(low.isWarning, true);
++      assert.equal(low.color, '#fa8c16');
++
++      const missing = formatVoltage(undefined);
++      assert.equal(missing.text, '-');
++      assert.equal(missing.isWarning, false);
++    });
++
++    it('maskPhone masks middle 4 digits of 11-digit mobile phones', () => {
++      assert.equal(maskPhone('13800138888'), '138****8888');
++      assert.equal(maskPhone('13912345678'), '139****5678');
++      assert.equal(maskPhone('12345'), '12345');
++      assert.equal(maskPhone(''), '-');
++    });
++
++    it('isApiError identifies ApiError instances and duck-typed objects', () => {
++      const apiErr = new ApiError('VIN already exists', 400);
++      assert.equal(isApiError(apiErr), true);
++      assert.equal(isApiError({ statusCode: 409, message: 'Conflict' }), true);
++      assert.equal(isApiError(new Error('Network error')), false);
++      assert.equal(isApiError(null), false);
++    });
++  });
++
++  describe('7. Vehicle API Client Integration & Offline Fallback', () => {
++    it('fetchBrandsApi and fetchModelsApi return seed brands and cascade models', async () => {
++      const brands = await fetchBrandsApi();
++      assert.equal(brands.length >= 4, true);
++      assert.equal(brands.some((b) => b.name === '比亚迪'), true);
++      assert.equal(brands.some((b) => b.name === '特斯拉'), true);
++
++      const bydModels = await fetchModelsApi('brand-byd');
++      assert.equal(bydModels.length >= 1, true);
++      assert.equal(bydModels.every((m) => m.brandId === 'brand-byd'), true);
++      assert.equal(bydModels[0].name, '汉 EV');
++    });
++
++    it('fetchVehiclesApi returns vehicle records and filters', async () => {
++      const list = await fetchVehiclesApi();
++      assert.equal(list.length >= 10, true);
++
++      const filtered = await fetchVehiclesApi({ keyword: '汉 EV' });
++      assert.equal(filtered.length >= 1, true);
++    });
++
++    it('createVehicleApi creates a vehicle and adds to in-memory state pool', async () => {
++      const newVin = generateSampleVin();
++      const input: CreateVehicleInput = {
++        vin: newVin,
++        plateNumber: '粤B·99999',
++        projectId: 'proj-sz-01',
++        brandId: 'brand-byd',
++        modelId: 'model-byd-han',
++        ownerName: '测试车主',
++        ownerPhone: '13811112222',
++      };
++
++      const created = await createVehicleApi(input);
++      assert.equal(created.vin, newVin);
++      assert.equal(created.plateNumber, '粤B·99999');
++      assert.equal(created.brandName, '比亚迪');
++      assert.equal(created.status, 'NORMAL');
++
++      // Verify it's queryable
++      const detail = await fetchVehicleDetailApi(created.id);
++      assert.equal(detail.id, created.id);
++      assert.equal(detail.vin, newVin);
++    });
++
++    it('updateVehicleStatusApi updates vehicle lifecycle status with guard', async () => {
++      const vehicles = await fetchVehiclesApi();
++      const target = vehicles.find((v) => v.status === 'NORMAL')!;
++
++      const updated = await updateVehicleStatusApi(target.id, 'MAINTENANCE');
++      assert.equal(updated.status, 'MAINTENANCE');
++
++      // Update to SCRAPPED
++      const scrapped = await updateVehicleStatusApi(target.id, 'SCRAPPED');
++      assert.equal(scrapped.status, 'SCRAPPED');
++
++      // Updating SCRAPPED back to NORMAL must reject
++      await assert.rejects(
++        async () => {
++          await updateVehicleStatusApi(target.id, 'NORMAL');
++        },
++        {
++          message: /终态|报废|不可逆/i,
++        }
++      );
++    });
++  });
++});
+diff --git a/apps/web/src/views/vehicle/VehicleListView.tsx b/apps/web/src/views/vehicle/VehicleListView.tsx
+new file mode 100644
+index 0000000..0133c1f
+--- /dev/null
++++ b/apps/web/src/views/vehicle/VehicleListView.tsx
+@@ -0,0 +1,1058 @@
++import React, { useState, useEffect, useMemo, useCallback } from 'react';
++import {
++  Card,
++  Row,
++  Col,
++  Statistic,
++  Table,
++  Button,
++  Input,
++  Select,
++  Tag,
++  Badge,
++  Space,
++  Modal,
++  Form,
++  message,
++  Typography,
++  Tooltip,
++  Alert,
++  Descriptions,
++  Divider,
++} from 'antd';
++import type { TableProps } from 'antd';
++import {
++  CarOutlined,
++  CheckCircleOutlined,
++  AlertOutlined,
++  LinkOutlined,
++  SearchOutlined,
++  ReloadOutlined,
++  PlusOutlined,
++  ThunderboltOutlined,
++  LockOutlined,
++  ToolOutlined,
++  SafetyCertificateOutlined,
++  InfoCircleOutlined,
++} from '@ant-design/icons';
++import {
++  type VehicleDto,
++  type VehicleQueryParams,
++  type VehicleStatus,
++  type BrandDto,
++  type ModelDto,
++  calculateVehicleStats,
++  filterVehicles,
++  getVehicleStatusMeta,
++  validateVin,
++  validatePlateNumber,
++  generateSampleVin,
++  maskPhone,
++  formatVoltage,
++  isValidVehicleStatusTransition,
++  isApiError,
++  SEED_BRANDS,
++  SEED_MODELS,
++} from './vehicle-core.ts';
++import {
++  fetchVehiclesApi,
++  createVehicleApi,
++  updateVehicleStatusApi,
++  fetchBrandsApi,
++  fetchModelsApi,
++  type CreateVehicleInput,
++} from '../../api/vehicle.ts';
++import { fetchProjectsApi, fetchDevicesApi, type ProjectDto, type DeviceDto } from '../../api/device.ts';
++import { SEED_PROJECTS } from '../device/device-core.ts';
++import { useTenantStore } from '../../store/useTenantStore.ts';
++
++const { Text } = Typography;
++
++export const VehicleListView: React.FC = () => {
++  const [loading, setLoading] = useState(false);
++  const [submitting, setSubmitting] = useState(false);
++  const [vehicles, setVehicles] = useState<VehicleDto[]>([]);
++  const [projects, setProjects] = useState<ProjectDto[]>(SEED_PROJECTS);
++  const [brands, setBrands] = useState<BrandDto[]>(SEED_BRANDS);
++  const [models, setModels] = useState<ModelDto[]>(SEED_MODELS);
++  const [availableDevices, setAvailableDevices] = useState<DeviceDto[]>([]);
++
++  // 筛选器状态
++  const [keyword, setKeyword] = useState('');
++  const [projectFilter, setProjectFilter] = useState<string>('ALL');
++  const [brandFilter, setBrandFilter] = useState<string>('ALL');
++  const [modelFilter, setModelFilter] = useState<string>('ALL');
++  const [statusFilter, setStatusFilter] = useState<string>('ALL');
++  const [bindStatusFilter, setBindStatusFilter] = useState<string>('ALL');
++  const [onlineStatusFilter, setOnlineStatusFilter] = useState<string>('ALL');
++
++  // 模态框状态
++  const [createModalOpen, setCreateModalOpen] = useState(false);
++  const [detailModalOpen, setDetailModalOpen] = useState(false);
++  const [statusModalOpen, setStatusModalOpen] = useState(false);
++  const [selectedVehicle, setSelectedVehicle] = useState<VehicleDto | null>(null);
++  const [targetStatus, setTargetStatus] = useState<VehicleStatus>('NORMAL');
++
++  const [createForm] = Form.useForm();
++  const selectedBrandInForm = Form.useWatch('brandId', createForm);
++
++  // 租户与配额数据
++  const currentTenantId = useTenantStore((s) => s.currentTenantId);
++  const tenantList = useTenantStore((s) => s.tenantList);
++
++  const tenantQuota = useMemo(() => {
++    const activeTenant = tenantList.find((t) => t.id === currentTenantId);
++    return activeTenant?.quotaVehicleCount || activeTenant?.quotaDeviceCount || 1000;
++  }, [tenantList, currentTenantId]);
++
++  // 加载数据
++  const loadData = useCallback(async () => {
++    setLoading(true);
++    try {
++      const [vehicleList, projectList, brandList, modelList, deviceList] = await Promise.allSettled([
++        fetchVehiclesApi(),
++        fetchProjectsApi(),
++        fetchBrandsApi(),
++        fetchModelsApi(),
++        fetchDevicesApi(),
++      ]);
++
++      if (vehicleList.status === 'fulfilled') {
++        setVehicles(vehicleList.value);
++      } else if (isApiError(vehicleList.reason)) {
++        message.error(`拉取车辆列表异常: ${vehicleList.reason.message}`);
++      }
++
++      if (projectList.status === 'fulfilled') {
++        setProjects(projectList.value);
++      }
++      if (brandList.status === 'fulfilled') {
++        setBrands(brandList.value);
++      }
++      if (modelList.status === 'fulfilled') {
++        setModels(modelList.value);
++      }
++      if (deviceList.status === 'fulfilled') {
++        setAvailableDevices(deviceList.value.filter((d) => !d.boundVin && !d.boundVehiclePlate));
++      }
++    } catch (err) {
++      if (isApiError(err)) {
++        message.error(`网络通讯异常: ${err.message}`);
++      }
++    } finally {
++      setLoading(false);
++    }
++  }, []);
++
++  useEffect(() => {
++    loadData();
++  }, [loadData]);
++
++  // 根据选择的品牌动态过滤当前可用车型（在筛选器中）
++  const filteredModelsForFilter = useMemo(() => {
++    if (brandFilter === 'ALL') return models;
++    return models.filter((m) => m.brandId === brandFilter);
++  }, [models, brandFilter]);
++
++  // 根据表单选择的品牌动态过滤当前可用车型（在建档表单中）
++  const formAvailableModels = useMemo(() => {
++    if (!selectedBrandInForm) return [];
++    return models.filter((m) => m.brandId === selectedBrandInForm);
++  }, [models, selectedBrandInForm]);
++
++  // 本地过滤数据
++  const displayVehicles = useMemo(() => {
++    const query: VehicleQueryParams = {
++      keyword,
++      projectId: projectFilter,
++      brandId: brandFilter,
++      modelId: modelFilter,
++      status: statusFilter,
++      bindStatus: bindStatusFilter,
++      onlineStatus: onlineStatusFilter,
++    };
++    return filterVehicles(vehicles, query);
++  }, [
++    vehicles,
++    keyword,
++    projectFilter,
++    brandFilter,
++    modelFilter,
++    statusFilter,
++    bindStatusFilter,
++    onlineStatusFilter,
++  ]);
++
++  // 顶部汇总统计指标
++  const stats = useMemo(() => {
++    return calculateVehicleStats(vehicles, tenantQuota);
++  }, [vehicles, tenantQuota]);
++
++  // 重置筛选器
++  const handleResetFilters = () => {
++    setKeyword('');
++    setProjectFilter('ALL');
++    setBrandFilter('ALL');
++    setModelFilter('ALL');
++    setStatusFilter('ALL');
++    setBindStatusFilter('ALL');
++    setOnlineStatusFilter('ALL');
++  };
++
++  // 打开建档模态框
++  const handleOpenCreateModal = () => {
++    createForm.resetFields();
++    if (projects.length > 0) {
++      createForm.setFieldValue('projectId', projects[0].id);
++    }
++    if (brands.length > 0) {
++      createForm.setFieldValue('brandId', brands[0].id);
++    }
++    setCreateModalOpen(true);
++  };
++
++  // 提交建档表单
++  const handleCreateSubmit = async () => {
++    try {
++      const values = await createForm.validateFields();
++      setSubmitting(true);
++
++      const input: CreateVehicleInput = {
++        vin: values.vin,
++        plateNumber: values.plateNumber,
++        projectId: values.projectId,
++        brandId: values.brandId,
++        modelId: values.modelId,
++        deviceId: values.deviceId || null,
++        ownerName: values.ownerName,
++        ownerPhone: values.ownerPhone,
++      };
++
++      const created = await createVehicleApi(input);
++      message.success(`车辆【${created.plateNumber}】建档成功！`);
++      setCreateModalOpen(false);
++      loadData();
++    } catch (err) {
++      if (isApiError(err)) {
++        message.error(`建档失败: ${err.message}`);
++      }
++    } finally {
++      setSubmitting(false);
++    }
++  };
++
++  // 打开车况详情弹窗
++  const handleViewDetail = (vehicle: VehicleDto) => {
++    setSelectedVehicle(vehicle);
++    setDetailModalOpen(true);
++  };
++
++  // 打开状态变更弹窗
++  const handleOpenStatusModal = (vehicle: VehicleDto) => {
++    setSelectedVehicle(vehicle);
++    setTargetStatus(vehicle.status);
++    setStatusModalOpen(true);
++  };
++
++  // 提交状态变更
++  const handleStatusChangeSubmit = async () => {
++    if (!selectedVehicle) return;
++    if (!isValidVehicleStatusTransition(selectedVehicle.status, targetStatus)) {
++      message.error('已报废车辆为物理终态，不可逆向流转为其他运营状态');
++      return;
++    }
++
++    try {
++      setSubmitting(true);
++      await updateVehicleStatusApi(selectedVehicle.id, targetStatus);
++      message.success(`车辆【${selectedVehicle.plateNumber}】运营状态已变更为：${getVehicleStatusMeta(targetStatus).label}`);
++      setStatusModalOpen(false);
++      loadData();
++    } catch (err) {
++      if (isApiError(err)) {
++        message.error(`状态变更失败: ${err.message}`);
++      } else if (err instanceof Error) {
++        message.error(err.message);
++      }
++    } finally {
++      setSubmitting(false);
++    }
++  };
++
++  // 表格列配置
++  const columns: TableProps<VehicleDto>['columns'] = [
++    {
++      title: '车牌号码',
++      dataIndex: 'plateNumber',
++      key: 'plateNumber',
++      width: 130,
++      render: (plate: string, record) => (
++        <Tooltip title="点击查看车况遥测概览">
++          <Tag
++            color="blue"
++            style={{ fontWeight: 600, cursor: 'pointer', fontSize: 13, padding: '2px 8px' }}
++            onClick={() => handleViewDetail(record)}
++          >
++            {plate}
++          </Tag>
++        </Tooltip>
++      ),
++    },
++    {
++      title: '车架号 (VIN)',
++      dataIndex: 'vin',
++      key: 'vin',
++      width: 190,
++      render: (vin: string) => (
++        <Text
++          copyable={{ text: vin }}
++          code
++          style={{ fontFamily: 'SFMono-Regular, Consolas, Courier, monospace', fontSize: 13 }}
++        >
++          {vin}
++        </Text>
++      ),
++    },
++    {
++      title: '品牌与车型',
++      key: 'model',
++      width: 170,
++      render: (_, record) => (
++        <Space size={6}>
++          <Tag color="geekblue">{record.brandName ?? '未知品牌'}</Tag>
++          <Text strong style={{ fontSize: 13 }}>
++            {record.modelName ?? '未知车型'}
++          </Text>
++        </Space>
++      ),
++    },
++    {
++      title: '绑定车载终端',
++      key: 'device',
++      width: 190,
++      render: (_, record) => {
++        if (!record.deviceNo) {
++          return <Tag color="default">未绑定</Tag>;
++        }
++        const isOnline = record.deviceOnlineStatus === 'ONLINE';
++        return (
++          <Space size={6}>
++            <Text
++              copyable={{ text: record.deviceNo }}
++              code
++              style={{ fontFamily: 'SFMono-Regular, Consolas, Courier, monospace', fontSize: 12 }}
++            >
++              {record.deviceNo}
++            </Text>
++            <Badge
++              status={isOnline ? 'success' : 'default'}
++              text={
++                <span style={{ fontSize: 12, color: isOnline ? '#52c41a' : '#8c8c8c' }}>
++                  {isOnline ? '在线' : '离线'}
++                </span>
++              }
++            />
++          </Space>
++        );
++      },
++    },
++    {
++      title: '实时车况指标',
++      key: 'telemetry',
++      width: 220,
++      render: (_, record) => {
++        const tel = record.telemetry;
++        if (!tel) {
++          return <Text type="secondary" style={{ fontSize: 12 }}>暂无遥测</Text>;
++        }
++        const vMeta = formatVoltage(tel.batteryVoltage);
++
++        return (
++          <Space size={8}>
++            {/* 门锁 */}
++            <Tooltip title={tel.doorLocked ? '车门已上锁' : '车门未锁'}>
++              <Tag color={tel.doorLocked ? 'success' : 'warning'} style={{ margin: 0, padding: '0 6px' }}>
++                {tel.doorLocked ? '🔒 锁' : '🔓 开'}
++              </Tag>
++            </Tooltip>
++
++            {/* 引擎/点火 */}
++            <Tooltip title={tel.engineStarted ? '发动机点火运行中' : '发动机熄火静止'}>
++              <Badge
++                status={tel.engineStarted ? 'processing' : 'default'}
++                color={tel.engineStarted ? '#52c41a' : '#8c8c8c'}
++                text={
++                  <span style={{ fontSize: 12, color: tel.engineStarted ? '#52c41a' : '#8c8c8c' }}>
++                    {tel.engineStarted ? '点火' : '熄火'}
++                  </span>
++                }
++              />
++            </Tooltip>
++
++            {/* 电瓶电压 */}
++            <Tooltip title={`小电瓶电压: ${vMeta.text} (${vMeta.isWarning ? '低电平告警' : '正常'})`}>
++              <span
++                style={{
++                  color: vMeta.color,
++                  fontFamily: 'SFMono-Regular, Consolas, Courier, monospace',
++                  fontWeight: 600,
++                  fontSize: 12,
++                }}
++              >
++                {vMeta.text}
++              </span>
++            </Tooltip>
++          </Space>
++        );
++      },
++    },
++    {
++      title: '运营状态',
++      dataIndex: 'status',
++      key: 'status',
++      width: 110,
++      render: (status: VehicleStatus) => {
++        const meta = getVehicleStatusMeta(status);
++        return <Tag color={meta.tagColor}>{meta.label}</Tag>;
++      },
++    },
++    {
++      title: '归属项目与车主',
++      key: 'owner',
++      width: 180,
++      render: (_, record) => (
++        <div>
++          <div>
++            <Text type="secondary" style={{ fontSize: 12 }}>
++              {record.projectName ?? '默认车队'}
++            </Text>
++          </div>
++          <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.85)' }}>
++            {record.ownerName ?? '-'} ({maskPhone(record.ownerPhone)})
++          </div>
++        </div>
++      ),
++    },
++    {
++      title: '创建时间',
++      dataIndex: 'createdAt',
++      key: 'createdAt',
++      width: 160,
++      render: (val: string) => (
++        <Text type="secondary" style={{ fontSize: 12, fontFamily: 'monospace' }}>
++          {val ?? '-'}
++        </Text>
++      ),
++    },
++    {
++      title: '操作',
++      key: 'action',
++      fixed: 'right',
++      width: 200,
++      render: (_, record) => {
++        const isScrapped = record.status === 'SCRAPPED';
++
++        return (
++          <Space size={4}>
++            <Button
++              type="link"
++              size="small"
++              icon={<InfoCircleOutlined />}
++              onClick={() => handleViewDetail(record)}
++            >
++              车况
++            </Button>
++
++            {isScrapped ? (
++              <Tooltip title="已报废车辆为物理终态，不可逆向变更状态">
++                <Button type="link" size="small" disabled>
++                  变更
++                </Button>
++              </Tooltip>
++            ) : (
++              <Button
++                type="link"
++                size="small"
++                onClick={() => handleOpenStatusModal(record)}
++              >
++                变更
++              </Button>
++            )}
++
++            <Button
++              type="link"
++              size="small"
++              onClick={() => {
++                message.info(
++                  `车辆【${record.plateNumber}】软硬件绑定管理将在后续硬件绑定中心 (Task 5) 提供联动！`
++                );
++              }}
++            >
++              {record.deviceId ? '换绑' : '绑定'}
++            </Button>
++          </Space>
++        );
++      },
++    },
++  ];
++
++  return (
++    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
++      {/* 配额超限预警 Banner (>= 90% 触发) */}
++      {stats.isQuotaWarning && (
++        <Alert
++          type="warning"
++          showIcon
++          closable
++          message="租户车辆配额即将达到上限"
++          description={`租户车辆配额已占用 ${stats.quotaUsed}/${stats.quotaTotal} (${stats.quotaUsage}%)，即将达到租户许可上限，请及时联系商务人员进行配额扩容！`}
++          style={{ borderRadius: 8, boxShadow: '0 2px 6px rgba(250, 173, 20, 0.15)' }}
++        />
++      )}
++
++      {/* 顶部指标统计卡片 (4 卡布局) */}
++      <Row gutter={[16, 16]}>
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{ borderRadius: 8, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
++          >
++            <Statistic
++              title="车辆总数"
++              value={stats.totalCount}
++              prefix={<CarOutlined style={{ color: '#1677ff' }} />}
++              suffix={<Text type="secondary" style={{ fontSize: 12 }}>辆</Text>}
++            />
++            <div style={{ marginTop: 4 }}>
++              <Text type="secondary" style={{ fontSize: 12 }}>
++                配额已用 {stats.quotaUsage}%
++              </Text>
++            </div>
++          </Card>
++        </Col>
++
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{ borderRadius: 8, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
++          >
++            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
++              <Statistic
++                title="正常运营中"
++                value={stats.normalCount}
++                prefix={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
++                valueStyle={{ color: '#52c41a' }}
++                suffix={<Text type="secondary" style={{ fontSize: 12 }}>辆</Text>}
++              />
++              <Tag color="success" style={{ fontWeight: 600 }}>
++                在线率 {stats.onlineRate}%
++              </Tag>
++            </div>
++            <div style={{ marginTop: 4 }}>
++              <Text type="secondary" style={{ fontSize: 12 }}>
++                实时在线 {stats.onlineCount} 辆
++              </Text>
++            </div>
++          </Card>
++        </Col>
++
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{ borderRadius: 8, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
++          >
++            <Statistic
++              title="维保与风控"
++              value={stats.maintenanceCount + stats.lockedCount}
++              prefix={<AlertOutlined style={{ color: '#fa8c16' }} />}
++              valueStyle={{ color: '#fa8c16' }}
++              suffix={<Text type="secondary" style={{ fontSize: 12 }}>辆</Text>}
++            />
++            <div style={{ marginTop: 4 }}>
++              <Text type="secondary" style={{ fontSize: 12 }}>
++                维保 {stats.maintenanceCount} | 风控锁死 {stats.lockedCount}
++              </Text>
++            </div>
++          </Card>
++        </Col>
++
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{ borderRadius: 8, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
++          >
++            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
++              <Statistic
++                title="终端设备绑定率"
++                value={stats.boundRate}
++                prefix={<LinkOutlined style={{ color: '#1677ff' }} />}
++                valueStyle={{ color: '#1677ff' }}
++                suffix="%"
++              />
++              <Tag color="processing">
++                {stats.boundCount}/{stats.totalCount}
++              </Tag>
++            </div>
++            <div style={{ marginTop: 4 }}>
++              <Text type="secondary" style={{ fontSize: 12 }}>
++                已绑定 {stats.boundCount} 辆 / 未绑定 {stats.totalCount - stats.boundCount} 辆
++              </Text>
++            </div>
++          </Card>
++        </Col>
++      </Row>
++
++      {/* 筛选与操作工具栏 */}
++      <Card
++        bordered={false}
++        style={{ borderRadius: 8, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
++      >
++        <Row gutter={[16, 16]} justify="space-between" align="middle">
++          <Col xs={24} xl={18}>
++            <Space wrap size="middle">
++              <Input
++                placeholder="搜索车牌 / VIN / 设备号 / 车主 / 品牌..."
++                prefix={<SearchOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />}
++                value={keyword}
++                onChange={(e) => setKeyword(e.target.value)}
++                style={{ width: 260 }}
++                allowClear
++              />
++
++              <Select
++                value={projectFilter}
++                onChange={setProjectFilter}
++                style={{ width: 170 }}
++                options={[
++                  { label: '全部项目', value: 'ALL' },
++                  ...projects.map((p) => ({ label: p.name, value: p.id })),
++                ]}
++              />
++
++              <Select
++                value={brandFilter}
++                onChange={(val) => {
++                  setBrandFilter(val);
++                  setModelFilter('ALL');
++                }}
++                style={{ width: 130 }}
++                options={[
++                  { label: '全部品牌', value: 'ALL' },
++                  ...brands.map((b) => ({ label: b.name, value: b.id })),
++                ]}
++              />
++
++              <Select
++                value={modelFilter}
++                onChange={setModelFilter}
++                style={{ width: 130 }}
++                options={[
++                  { label: '全部车型', value: 'ALL' },
++                  ...filteredModelsForFilter.map((m) => ({ label: m.name, value: m.id })),
++                ]}
++              />
++
++              <Select
++                value={statusFilter}
++                onChange={setStatusFilter}
++                style={{ width: 130 }}
++                options={[
++                  { label: '全部状态', value: 'ALL' },
++                  { label: '正常运营', value: 'NORMAL' },
++                  { label: '维保检修', value: 'MAINTENANCE' },
++                  { label: '风控锁死', value: 'LOCKED' },
++                  { label: '已报废', value: 'SCRAPPED' },
++                ]}
++              />
++
++              <Select
++                value={bindStatusFilter}
++                onChange={setBindStatusFilter}
++                style={{ width: 130 }}
++                options={[
++                  { label: '全部绑定', value: 'ALL' },
++                  { label: '已绑定设备', value: 'BOUND' },
++                  { label: '未绑定设备', value: 'UNBOUND' },
++                ]}
++              />
++
++              <Button icon={<ReloadOutlined />} onClick={loadData}>
++                刷新
++              </Button>
++
++              <Button onClick={handleResetFilters}>重置</Button>
++            </Space>
++          </Col>
++
++          <Col xs={24} xl={6} style={{ textAlign: 'right' }}>
++            <Button
++              type="primary"
++              icon={<PlusOutlined />}
++              onClick={handleOpenCreateModal}
++            >
++              + 录入车辆
++            </Button>
++          </Col>
++        </Row>
++      </Card>
++
++      {/* 车辆列表表格 */}
++      <Card
++        bordered={false}
++        style={{ borderRadius: 8, boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)' }}
++      >
++        <Table<VehicleDto>
++          rowKey="id"
++          columns={columns}
++          dataSource={displayVehicles}
++          loading={loading}
++          pagination={{
++            defaultPageSize: 10,
++            showSizeChanger: true,
++            showQuickJumper: true,
++            showTotal: (total) => `共 ${total} 辆车辆`,
++          }}
++          scroll={{ x: 1400 }}
++        />
++      </Card>
++
++      {/* 单个车辆录入模态框 */}
++      <Modal
++        title={
++          <Space>
++            <CarOutlined style={{ color: '#1677ff' }} />
++            <span>新增车辆台账建档</span>
++          </Space>
++        }
++        open={createModalOpen}
++        onOk={handleCreateSubmit}
++        onCancel={() => setCreateModalOpen(false)}
++        confirmLoading={submitting}
++        destroyOnClose
++        width={580}
++      >
++        <Form form={createForm} layout="vertical" style={{ marginTop: 16 }}>
++          <Form.Item
++            label="车架号 (VIN 码，17位)"
++            name="vin"
++            rules={[
++              { required: true, message: '请输入17位车辆车架号 (VIN)' },
++              {
++                validator: async (_, value) => {
++                  if (value && !validateVin(value)) {
++                    throw new Error('VIN 格式错误，必须为 17 位大写字母与数字（严禁包含 I, O, Q）');
++                  }
++                },
++              },
++            ]}
++            extra="依据 ISO 3779 国际标准校验，自动转大写并排除 I/O/Q"
++          >
++            <Input
++              placeholder="例如: LFPH2E023N1000001"
++              maxLength={17}
++              addonAfter={
++                <Button
++                  type="link"
++                  size="small"
++                  icon={<ThunderboltOutlined />}
++                  onClick={() => createForm.setFieldValue('vin', generateSampleVin())}
++                  style={{ padding: 0 }}
++                >
++                  生成示例 VIN
++                </Button>
++              }
++            />
++          </Form.Item>
++
++          <Form.Item
++            label="车牌号码 (支持新能源绿牌)"
++            name="plateNumber"
++            rules={[
++              { required: true, message: '请输入车牌号码' },
++              {
++                validator: async (_, value) => {
++                  if (value && !validatePlateNumber(value)) {
++                    throw new Error(
++                      '车牌格式不正确，请输入中国大陆标准车牌(如 粤B·88888 或新能源 粤B·D12345)'
++                    );
++                  }
++                },
++              },
++            ]}
++          >
++            <Input placeholder="例如: 粤B·88888 或 粤B·D12345" />
++          </Form.Item>
++
++          <Row gutter={16}>
++            <Col span={12}>
++              <Form.Item
++                label="品牌"
++                name="brandId"
++                rules={[{ required: true, message: '请选择车辆品牌' }]}
++              >
++                <Select
++                  options={brands.map((b) => ({ label: b.name, value: b.id }))}
++                  onChange={() => createForm.setFieldValue('modelId', undefined)}
++                  placeholder="选择品牌"
++                />
++              </Form.Item>
++            </Col>
++            <Col span={12}>
++              <Form.Item
++                label="车型"
++                name="modelId"
++                rules={[{ required: true, message: '请选择车型' }]}
++              >
++                <Select
++                  options={formAvailableModels.map((m) => ({ label: m.name, value: m.id }))}
++                  placeholder="选择对应车型"
++                />
++              </Form.Item>
++            </Col>
++          </Row>
++
++          <Form.Item
++            label="归属项目"
++            name="projectId"
++            rules={[{ required: true, message: '请选择归属车队项目' }]}
++          >
++            <Select
++              options={projects.map((p) => ({
++                label: `${p.name} (${p.code})`,
++                value: p.id,
++              }))}
++            />
++          </Form.Item>
++
++          <Row gutter={16}>
++            <Col span={12}>
++              <Form.Item label="车主姓名 (选填)" name="ownerName">
++                <Input placeholder="例如: 张三" />
++              </Form.Item>
++            </Col>
++            <Col span={12}>
++              <Form.Item
++                label="联系电话 (选填)"
++                name="ownerPhone"
++                rules={[
++                  {
++                    validator: async (_, value) => {
++                      if (value && !/^1[3-9]\d{9}$/.test(value.trim())) {
++                        throw new Error('请输入合法的大陆 11 位手机号码');
++                      }
++                    },
++                  },
++                ]}
++              >
++                <Input placeholder="例如: 13800138888" maxLength={11} />
++              </Form.Item>
++            </Col>
++          </Row>
++
++          <Form.Item
++            label="绑定车载终端设备 (选填)"
++            name="deviceId"
++            extra="可下拉绑定当前处于未绑定状态的空闲车载设备"
++          >
++            <Select
++              allowClear
++              placeholder="暂不绑定（后续可在台账中绑定）"
++              options={availableDevices.map((d) => ({
++                label: `${d.deviceNo} (${d.productName ?? 'T-Box'})`,
++                value: d.id,
++              }))}
++            />
++          </Form.Item>
++        </Form>
++      </Modal>
++
++      {/* 车辆详情与车况遥测概览模态框 */}
++      <Modal
++        title={
++          <Space>
++            <CarOutlined style={{ color: '#1677ff' }} />
++            <span>车辆档案与实时遥测概览 - {selectedVehicle?.plateNumber}</span>
++          </Space>
++        }
++        open={detailModalOpen}
++        onCancel={() => setDetailModalOpen(false)}
++        footer={[
++          <Button key="close" onClick={() => setDetailModalOpen(false)}>
++            关闭
++          </Button>,
++        ]}
++        width={680}
++      >
++        {selectedVehicle && (
++          <div style={{ marginTop: 16 }}>
++            <Descriptions title="基本档案信息" bordered size="small" column={2}>
++              <Descriptions.Item label="车牌号码">
++                <Tag color="blue" style={{ fontWeight: 600 }}>
++                  {selectedVehicle.plateNumber}
++                </Tag>
++              </Descriptions.Item>
++              <Descriptions.Item label="车架号 (VIN)">
++                <Text code copyable={{ text: selectedVehicle.vin }}>
++                  {selectedVehicle.vin}
++                </Text>
++              </Descriptions.Item>
++              <Descriptions.Item label="品牌与车型">
++                {selectedVehicle.brandName} - {selectedVehicle.modelName}
++              </Descriptions.Item>
++              <Descriptions.Item label="运营状态">
++                {(() => {
++                  const meta = getVehicleStatusMeta(selectedVehicle.status);
++                  return <Tag color={meta.tagColor}>{meta.label}</Tag>;
++                })()}
++              </Descriptions.Item>
++              <Descriptions.Item label="归属项目">
++                {selectedVehicle.projectName ?? '默认车队'}
++              </Descriptions.Item>
++              <Descriptions.Item label="车主信息">
++                {selectedVehicle.ownerName ?? '-'} ({maskPhone(selectedVehicle.ownerPhone)})
++              </Descriptions.Item>
++              <Descriptions.Item label="建档时间" span={2}>
++                {selectedVehicle.createdAt}
++              </Descriptions.Item>
++            </Descriptions>
++
++            <Divider style={{ margin: '16px 0' }} />
++
++            <Descriptions title="车载设备与遥测数据" bordered size="small" column={2}>
++              <Descriptions.Item label="关联设备">
++                {selectedVehicle.deviceNo ? (
++                  <Space>
++                    <Text code copyable={{ text: selectedVehicle.deviceNo }}>
++                      {selectedVehicle.deviceNo}
++                    </Text>
++                    <Badge
++                      status={selectedVehicle.deviceOnlineStatus === 'ONLINE' ? 'success' : 'default'}
++                      text={selectedVehicle.deviceOnlineStatus === 'ONLINE' ? '在线' : '离线'}
++                    />
++                  </Space>
++                ) : (
++                  <Tag color="default">未绑定</Tag>
++                )}
++              </Descriptions.Item>
++              <Descriptions.Item label="电瓶电压">
++                {(() => {
++                  const v = formatVoltage(selectedVehicle.telemetry?.batteryVoltage);
++                  return (
++                    <span style={{ color: v.color, fontWeight: 600 }}>
++                      {v.text} {v.isWarning && '(低电平告警)'}
++                    </span>
++                  );
++                })()}
++              </Descriptions.Item>
++              <Descriptions.Item label="车门锁态">
++                {selectedVehicle.telemetry?.doorLocked ? (
++                  <Tag color="success">🔒 已闭锁</Tag>
++                ) : (
++                  <Tag color="warning">🔓 未闭锁</Tag>
++                )}
++              </Descriptions.Item>
++              <Descriptions.Item label="行李箱尾门">
++                {selectedVehicle.telemetry?.trunkLocked ? (
++                  <Tag color="success">🔒 已关闭锁止</Tag>
++                ) : (
++                  <Tag color="warning">🔓 开启中</Tag>
++                )}
++              </Descriptions.Item>
++              <Descriptions.Item label="发动机动力">
++                {selectedVehicle.telemetry?.engineStarted ? (
++                  <Tag color="processing">🟢 点火运行中</Tag>
++                ) : (
++                  <Tag color="default">⚪ 熄火静止</Tag>
++                )}
++              </Descriptions.Item>
++              <Descriptions.Item label="剩余电量/油量">
++                {selectedVehicle.telemetry?.fuelOrBatteryLevel !== undefined
++                  ? `${selectedVehicle.telemetry.fuelOrBatteryLevel}%`
++                  : '-'}
++              </Descriptions.Item>
++              <Descriptions.Item label="累计行驶里程">
++                {selectedVehicle.telemetry?.mileage !== undefined
++                  ? `${selectedVehicle.telemetry.mileage.toLocaleString()} km`
++                  : '-'}
++              </Descriptions.Item>
++              <Descriptions.Item label="当前瞬时车速">
++                {selectedVehicle.telemetry?.speed !== undefined
++                  ? `${selectedVehicle.telemetry.speed} km/h`
++                  : '-'}
++              </Descriptions.Item>
++              <Descriptions.Item label="最新定位位置" span={2}>
++                {selectedVehicle.telemetry?.location ?? '整车交付中心'}
++              </Descriptions.Item>
++              <Descriptions.Item label="最新报文时间" span={2}>
++                {selectedVehicle.telemetry?.lastReportedAt ?? '-'}
++              </Descriptions.Item>
++            </Descriptions>
++          </div>
++        )}
++      </Modal>
++
++      {/* 车辆状态变更确认模态框 */}
++      <Modal
++        title={
++          <Space>
++            <SafetyCertificateOutlined style={{ color: '#fa8c16' }} />
++            <span>变更车辆运营状态 - {selectedVehicle?.plateNumber}</span>
++          </Space>
++        }
++        open={statusModalOpen}
++        onOk={handleStatusChangeSubmit}
++        onCancel={() => setStatusModalOpen(false)}
++        confirmLoading={submitting}
++        width={480}
++      >
++        <div style={{ marginTop: 16 }}>
++          <Descriptions size="small" column={1} bordered style={{ marginBottom: 16 }}>
++            <Descriptions.Item label="当前运营状态">
++              {selectedVehicle && (
++                <Tag color={getVehicleStatusMeta(selectedVehicle.status).tagColor}>
++                  {getVehicleStatusMeta(selectedVehicle.status).label}
++                </Tag>
++              )}
++            </Descriptions.Item>
++          </Descriptions>
++
++          <Form.Item label="目标状态" required style={{ marginBottom: 12 }}>
++            <Select
++              value={targetStatus}
++              onChange={setTargetStatus}
++              style={{ width: '100%' }}
++              options={[
++                { label: '正常运营 (NORMAL)', value: 'NORMAL' },
++                { label: '维保检修 (MAINTENANCE)', value: 'MAINTENANCE' },
++                { label: '风控锁死 (LOCKED)', value: 'LOCKED' },
++                { label: '已报废 (SCRAPPED)', value: 'SCRAPPED' },
++              ]}
++            />
++          </Form.Item>
++
++          {targetStatus === 'SCRAPPED' && (
++            <Alert
++              type="error"
++              showIcon
++              message="高危不可逆操作警示"
++              description="报废为物理终态。一旦标记为【已报废】，车辆将永久归档注销，严禁逆向恢复为正常、维保或风控状态！"
++              style={{ marginTop: 8 }}
++            />
++          )}
++
++          {targetStatus === 'LOCKED' && (
++            <Alert
++              type="warning"
++              showIcon
++              message="风控锁死提醒"
++              description="设置为风控锁死后，平台将限制针对该车辆的非必要远程控车指令下发。"
++              style={{ marginTop: 8 }}
++            />
++          )}
++        </div>
++      </Modal>
++    </div>
++  );
++};
++
++export default VehicleListView;
+diff --git a/apps/web/src/views/vehicle/index.ts b/apps/web/src/views/vehicle/index.ts
+new file mode 100644
+index 0000000..c1e3a15
+--- /dev/null
++++ b/apps/web/src/views/vehicle/index.ts
+@@ -0,0 +1,2 @@
++export { VehicleListView } from './VehicleListView.tsx';
++export * from './vehicle-core.ts';
+diff --git a/apps/web/src/views/vehicle/vehicle-core.ts b/apps/web/src/views/vehicle/vehicle-core.ts
+new file mode 100644
+index 0000000..d802c9d
+--- /dev/null
++++ b/apps/web/src/views/vehicle/vehicle-core.ts
+@@ -0,0 +1,718 @@
++import { ApiError } from '../../api/client.ts';
++
++/**
++ * ISO 3779 17位车架号 (VIN) 正则表达式 (严格排除英文字母 I, O, Q)
++ */
++export const VIN_REGEX = /^[A-HJ-NPR-Z0-9]{17}$/;
++
++/**
++ * 大陆标准车牌正则表达式 (支持燃油车7位与新能源8位绿牌，兼容中点符)
++ */
++export const PLATE_REGEX =
++  /^[京津沪渝冀豫云辽黑湘皖鲁新苏浙赣鄂桂甘晋蒙陕吉闽贵粤青藏川宁琼使领][A-Z][·.]?[A-HJ-NP-Z0-9]{4,5}[A-HJ-NP-Z0-9挂学警港澳]$/;
++
++/**
++ * 校验 17 位标准车架号 (VIN)
++ * 自动转大写并去除首尾空格，依据 ISO 3779 排除 I/O/Q
++ */
++export function validateVin(vin: string): boolean {
++  if (!vin || typeof vin !== 'string') return false;
++  const normalized = vin.trim().toUpperCase();
++  return VIN_REGEX.test(normalized);
++}
++
++/**
++ * 校验中国大陆车牌号码 (燃油车7位 / 新能源8位绿牌)
++ */
++export function validatePlateNumber(plate: string): boolean {
++  if (!plate || typeof plate !== 'string') return false;
++  const normalized = plate.trim().toUpperCase();
++  return PLATE_REGEX.test(normalized);
++}
++
++/**
++ * 快速生成符合 ISO 3779 标准的 17 位示例 VIN (用于录入模态框示例填充)
++ */
++export function generateSampleVin(prefix = 'LFPH2E'): string {
++  const allowedChars = '0123456789ABCDEFGHJKLMNPRSTUVWXYZ';
++  let randomSuffix = '';
++  for (let i = 0; i < 11; i++) {
++    randomSuffix += allowedChars.charAt(Math.floor(Math.random() * allowedChars.length));
++  }
++  return `${prefix}${randomSuffix}`;
++}
++
++/**
++ * 掩码脱敏大陆手机号码 (保留前3后4，中间4位为 ****)
++ */
++export function maskPhone(phone?: string): string {
++  if (!phone || typeof phone !== 'string') return '-';
++  const trimmed = phone.trim();
++  if (/^1[3-9]\d{9}$/.test(trimmed)) {
++    return `${trimmed.slice(0, 3)}****${trimmed.slice(7)}`;
++  }
++  return trimmed || '-';
++}
++
++export type VoltageHealth = 'NORMAL' | 'LOW' | 'OVERVOLTAGE' | 'UNKNOWN';
++
++export interface VoltageMeta {
++  text: string;
++  color: string;
++  isWarning: boolean;
++  status: VoltageHealth;
++}
++
++/**
++ * 格式化电瓶电压并进行色彩告警标注 (<11.5V 低压预警，>14.8V 过压预警)
++ */
++export function formatVoltage(voltage?: number): VoltageMeta {
++  if (voltage === undefined || voltage === null || Number.isNaN(voltage)) {
++    return { text: '-', color: '#8c8c8c', isWarning: false, status: 'UNKNOWN' };
++  }
++  if (voltage < 11.5) {
++    return {
++      text: `${voltage.toFixed(1)}V`,
++      color: '#fa8c16',
++      isWarning: true,
++      status: 'LOW',
++    };
++  }
++  if (voltage > 14.8) {
++    return {
++      text: `${voltage.toFixed(1)}V`,
++      color: '#ff4d4f',
++      isWarning: true,
++      status: 'OVERVOLTAGE',
++    };
++  }
++  return {
++    text: `${voltage.toFixed(1)}V`,
++    color: '#52c41a',
++    isWarning: false,
++    status: 'NORMAL',
++  };
++}
++
++export type VehicleStatus = 'NORMAL' | 'MAINTENANCE' | 'LOCKED' | 'SCRAPPED';
++
++export interface VehicleTelemetryDto {
++  doorLocked?: boolean;
++  trunkLocked?: boolean;
++  engineStarted?: boolean;
++  batteryVoltage?: number;
++  mileage?: number;
++  speed?: number;
++  fuelOrBatteryLevel?: number;
++  location?: string;
++  lastReportedAt?: string;
++}
++
++export interface VehicleDto {
++  id: string;
++  vin: string;
++  plateNumber: string;
++  tenantId?: string;
++  projectId: string;
++  projectName?: string;
++  brandId: string;
++  brandName?: string;
++  modelId: string;
++  modelName?: string;
++  deviceId?: string | null;
++  deviceNo?: string | null;
++  deviceOnlineStatus?: 'ONLINE' | 'OFFLINE' | 'ALARMING' | 'UPGRADING' | 'UNACTIVATED';
++  status: VehicleStatus;
++  telemetry?: VehicleTelemetryDto;
++  ownerName?: string;
++  ownerPhone?: string;
++  createdAt?: string;
++  updatedAt?: string;
++}
++
++export interface BrandDto {
++  id: string;
++  name: string;
++  code: string;
++  logoUrl?: string;
++}
++
++export interface ModelDto {
++  id: string;
++  brandId: string;
++  name: string;
++  code: string;
++  template?: Record<string, unknown>;
++}
++
++export interface VehicleQueryParams {
++  keyword?: string;
++  projectId?: string;
++  brandId?: string;
++  modelId?: string;
++  status?: string;
++  bindStatus?: string;
++  onlineStatus?: string;
++  page?: number;
++  pageSize?: number;
++}
++
++export interface VehicleStatsDto {
++  total: number;
++  totalCount: number;
++  normalCount: number;
++  maintenanceCount: number;
++  lockedCount: number;
++  scrappedCount: number;
++  boundCount: number;
++  boundRate: number;
++  onlineCount: number;
++  onlineRate: number;
++  quotaTotal: number;
++  quotaUsed: number;
++  quotaUsage: number;
++  isQuotaWarning: boolean;
++}
++
++/**
++ * 计算车辆档案关键统计指标 (总数、状态细分、设备绑定率%、在线率%、配额占用比与预警标志)
++ */
++export function calculateVehicleStats(vehicles: VehicleDto[], quotaTotal = 1000): VehicleStatsDto {
++  const total = vehicles.length;
++  const normalCount = vehicles.filter((v) => v.status === 'NORMAL').length;
++  const maintenanceCount = vehicles.filter((v) => v.status === 'MAINTENANCE').length;
++  const lockedCount = vehicles.filter((v) => v.status === 'LOCKED').length;
++  const scrappedCount = vehicles.filter((v) => v.status === 'SCRAPPED').length;
++
++  const boundCount = vehicles.filter((v) => Boolean(v.deviceId || v.deviceNo)).length;
++  const onlineCount = vehicles.filter(
++    (v) => Boolean(v.deviceId || v.deviceNo) && v.deviceOnlineStatus === 'ONLINE'
++  ).length;
++
++  const boundRate = total === 0 ? 0 : Number(((boundCount / total) * 100).toFixed(1));
++  const onlineRate = total === 0 ? 0 : Number(((onlineCount / total) * 100).toFixed(1));
++  const quotaUsage = quotaTotal > 0 ? Number(((total / quotaTotal) * 100).toFixed(1)) : 0;
++  const isQuotaWarning = quotaUsage >= 90;
++
++  return {
++    total,
++    totalCount: total,
++    normalCount,
++    maintenanceCount,
++    lockedCount,
++    scrappedCount,
++    boundCount,
++    boundRate,
++    onlineCount,
++    onlineRate,
++    quotaTotal,
++    quotaUsed: total,
++    quotaUsage,
++    isQuotaWarning,
++  };
++}
++
++/**
++ * 纯函数：多维组合过滤车辆列表
++ */
++export function filterVehicles(vehicles: VehicleDto[], query?: VehicleQueryParams): VehicleDto[] {
++  if (!query) return vehicles;
++  const {
++    keyword,
++    projectId,
++    brandId,
++    modelId,
++    status,
++    bindStatus,
++    onlineStatus,
++  } = query;
++
++  return vehicles.filter((v) => {
++    // 关键字搜索 (车牌号 / VIN / 车载设备号 / 车主姓名 / 车主电话 / 品牌 / 车型)
++    if (keyword && keyword.trim()) {
++      const kw = keyword.trim().toLowerCase();
++      const matchesPlate = v.plateNumber?.toLowerCase().includes(kw);
++      const matchesVin = v.vin?.toLowerCase().includes(kw);
++      const matchesDevice = v.deviceNo?.toLowerCase().includes(kw);
++      const matchesOwner = v.ownerName?.toLowerCase().includes(kw);
++      const matchesPhone = v.ownerPhone?.toLowerCase().includes(kw);
++      const matchesBrand = v.brandName?.toLowerCase().includes(kw);
++      const matchesModel = v.modelName?.toLowerCase().includes(kw);
++      if (
++        !matchesPlate &&
++        !matchesVin &&
++        !matchesDevice &&
++        !matchesOwner &&
++        !matchesPhone &&
++        !matchesBrand &&
++        !matchesModel
++      ) {
++        return false;
++      }
++    }
++
++    // 项目过滤
++    if (projectId && projectId !== 'ALL' && v.projectId !== projectId) {
++      return false;
++    }
++
++    // 品牌过滤
++    if (brandId && brandId !== 'ALL' && v.brandId !== brandId) {
++      return false;
++    }
++
++    // 车型过滤
++    if (modelId && modelId !== 'ALL' && v.modelId !== modelId) {
++      return false;
++    }
++
++    // 状态过滤
++    if (status && status !== 'ALL' && v.status !== status) {
++      return false;
++    }
++
++    // 绑定状态过滤
++    if (bindStatus && bindStatus !== 'ALL') {
++      const isBound = Boolean(v.deviceId || v.deviceNo);
++      if (bindStatus === 'BOUND' && !isBound) return false;
++      if (bindStatus === 'UNBOUND' && isBound) return false;
++    }
++
++    // 在线状态过滤
++    if (onlineStatus && onlineStatus !== 'ALL') {
++      const isOnline = v.deviceOnlineStatus === 'ONLINE';
++      if (onlineStatus === 'ONLINE' && !isOnline) return false;
++      if (onlineStatus === 'OFFLINE' && isOnline) return false;
++    }
++
++    return true;
++  });
++}
++
++/**
++ * 获取车辆生命周期状态元信息与规范配色
++ */
++export function getVehicleStatusMeta(status: VehicleStatus): {
++  label: string;
++  color: string;
++  tagColor: string;
++} {
++  switch (status) {
++    case 'NORMAL':
++      return { label: '正常运营', color: '#52c41a', tagColor: 'success' };
++    case 'MAINTENANCE':
++      return { label: '维保检修', color: '#fa8c16', tagColor: 'warning' };
++    case 'LOCKED':
++      return { label: '风控锁死', color: '#722ed1', tagColor: 'purple' };
++    case 'SCRAPPED':
++      return { label: '已报废', color: '#8c8c8c', tagColor: 'default' };
++    default:
++      return { label: status, color: '#8c8c8c', tagColor: 'default' };
++  }
++}
++
++/**
++ * 校验车辆生命周期状态转换合法性
++ * - SCRAPPED (已报废) 为物理终态，不可逆向流转回 NORMAL/MAINTENANCE/LOCKED
++ * - 其余各状态之间允许合理流转
++ */
++export function isValidVehicleStatusTransition(from: VehicleStatus, to: VehicleStatus): boolean {
++  if (from === to) return true;
++  if (from === 'SCRAPPED') {
++    return false;
++  }
++  return true;
++}
++
++/**
++ * 判断捕获的异常是否为带有 HTTP 状态码的后端业务 ApiError
++ */
++export function isApiError(err: unknown): err is ApiError {
++  if (err instanceof ApiError) return true;
++  if (typeof err === 'object' && err !== null) {
++    const candidate = err as Record<string, unknown>;
++    return typeof candidate.statusCode === 'number' && typeof candidate.message === 'string';
++  }
++  return false;
++}
++
++// ---------------- 种子基础数据 ----------------
++
++export const SEED_BRANDS: BrandDto[] = [
++  { id: 'brand-byd', name: '比亚迪', code: 'BYD' },
++  { id: 'brand-tesla', name: '特斯拉', code: 'Tesla' },
++  { id: 'brand-aion', name: '广汽埃安', code: 'AION' },
++  { id: 'brand-zeekr', name: '吉利极氪', code: 'ZEEKR' },
++];
++
++export const SEED_MODELS: ModelDto[] = [
++  { id: 'model-byd-han', brandId: 'brand-byd', name: '汉 EV', code: '0x0101' },
++  { id: 'model-tesla-modely', brandId: 'brand-tesla', name: 'Model Y', code: '0x0201' },
++  { id: 'model-aion-s', brandId: 'brand-aion', name: 'AION S', code: '0x0301' },
++  { id: 'model-zeekr-001', brandId: 'brand-zeekr', name: '极氪 001', code: '0x0401' },
++];
++
++export const SEED_VEHICLES: VehicleDto[] = [
++  {
++    id: 'veh-001',
++    vin: 'LFPH2E023N1000001',
++    plateNumber: '粤B·88888',
++    tenantId: 'tenant-001',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    brandId: 'brand-byd',
++    brandName: '比亚迪',
++    modelId: 'model-byd-han',
++    modelName: '汉 EV',
++    deviceId: 'dev-001',
++    deviceNo: 'DEV_1001',
++    deviceOnlineStatus: 'ONLINE',
++    status: 'NORMAL',
++    telemetry: {
++      doorLocked: true,
++      trunkLocked: true,
++      engineStarted: false,
++      batteryVoltage: 12.6,
++      mileage: 15200,
++      speed: 0,
++      fuelOrBatteryLevel: 85,
++      location: '深圳市南山区科技园南区',
++      lastReportedAt: '2026-10-12 10:00:00',
++    },
++    ownerName: '张伟',
++    ownerPhone: '13800138888',
++    createdAt: '2026-03-01 10:00:00',
++    updatedAt: '2026-10-12 10:00:00',
++  },
++  {
++    id: 'veh-002',
++    vin: 'LFPH2E023N1000002',
++    plateNumber: '粤B·D12345',
++    tenantId: 'tenant-001',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    brandId: 'brand-tesla',
++    brandName: '特斯拉',
++    modelId: 'model-tesla-modely',
++    modelName: 'Model Y',
++    deviceId: 'dev-002',
++    deviceNo: 'DEV_1002',
++    deviceOnlineStatus: 'ONLINE',
++    status: 'NORMAL',
++    telemetry: {
++      doorLocked: true,
++      trunkLocked: true,
++      engineStarted: true,
++      batteryVoltage: 13.8,
++      mileage: 8920,
++      speed: 45,
++      fuelOrBatteryLevel: 72,
++      location: '深圳市福田区深南大道',
++      lastReportedAt: '2026-10-12 10:02:00',
++    },
++    ownerName: '李敏',
++    ownerPhone: '13912345678',
++    createdAt: '2026-03-02 11:00:00',
++    updatedAt: '2026-10-12 10:02:00',
++  },
++  {
++    id: 'veh-003',
++    vin: 'LFPH2E023N1000003',
++    plateNumber: '粤A·99887',
++    tenantId: 'tenant-001',
++    projectId: 'proj-gz-02',
++    projectName: '广州网约出行运营二期',
++    brandId: 'brand-aion',
++    brandName: '广汽埃安',
++    modelId: 'model-aion-s',
++    modelName: 'AION S',
++    deviceId: 'dev-003',
++    deviceNo: 'DEV_1003',
++    deviceOnlineStatus: 'OFFLINE',
++    status: 'MAINTENANCE',
++    telemetry: {
++      doorLocked: false,
++      trunkLocked: true,
++      engineStarted: false,
++      batteryVoltage: 11.2,
++      mileage: 42100,
++      speed: 0,
++      fuelOrBatteryLevel: 30,
++      location: '广州市天河区车陂检修厂',
++      lastReportedAt: '2026-10-11 18:30:00',
++    },
++    ownerName: '王强',
++    ownerPhone: '13788889988',
++    createdAt: '2026-03-05 14:00:00',
++    updatedAt: '2026-10-11 18:30:00',
++  },
++  {
++    id: 'veh-004',
++    vin: 'LFPH2E023N1000004',
++    plateNumber: '京A·F66666',
++    tenantId: 'tenant-001',
++    projectId: 'proj-bj-04',
++    projectName: '北京高端政企车队',
++    brandId: 'brand-zeekr',
++    brandName: '吉利极氪',
++    modelId: 'model-zeekr-001',
++    modelName: '极氪 001',
++    deviceId: 'dev-004',
++    deviceNo: 'DEV_1004',
++    deviceOnlineStatus: 'ONLINE',
++    status: 'NORMAL',
++    telemetry: {
++      doorLocked: true,
++      trunkLocked: true,
++      engineStarted: false,
++      batteryVoltage: 12.8,
++      mileage: 5600,
++      speed: 0,
++      fuelOrBatteryLevel: 92,
++      location: '北京市朝阳区建国门外大街',
++      lastReportedAt: '2026-10-12 09:58:00',
++    },
++    ownerName: '刘洋',
++    ownerPhone: '13666666666',
++    createdAt: '2026-03-08 09:00:00',
++    updatedAt: '2026-10-12 09:58:00',
++  },
++  {
++    id: 'veh-005',
++    vin: 'LFPH2E023N1000005',
++    plateNumber: '沪A·12345',
++    tenantId: 'tenant-001',
++    projectId: 'proj-sh-03',
++    projectName: '华东城际物流专线',
++    brandId: 'brand-byd',
++    brandName: '比亚迪',
++    modelId: 'model-byd-han',
++    modelName: '汉 EV',
++    deviceId: 'dev-005',
++    deviceNo: 'DEV_1005',
++    deviceOnlineStatus: 'ONLINE',
++    status: 'LOCKED',
++    telemetry: {
++      doorLocked: true,
++      trunkLocked: true,
++      engineStarted: false,
++      batteryVoltage: 12.4,
++      mileage: 31200,
++      speed: 0,
++      fuelOrBatteryLevel: 45,
++      location: '上海市浦东新区张江高科园区',
++      lastReportedAt: '2026-10-12 09:50:00',
++    },
++    ownerName: '陈晨',
++    ownerPhone: '13500004321',
++    createdAt: '2026-03-10 09:00:00',
++    updatedAt: '2026-10-12 09:50:00',
++  },
++  {
++    id: 'veh-006',
++    vin: 'LFPH2E023N1000006',
++    plateNumber: '粤B·77665',
++    tenantId: 'tenant-001',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    brandId: 'brand-aion',
++    brandName: '广汽埃安',
++    modelId: 'model-aion-s',
++    modelName: 'AION S',
++    deviceId: 'dev-006',
++    deviceNo: 'DEV_1006',
++    deviceOnlineStatus: 'ONLINE',
++    status: 'NORMAL',
++    telemetry: {
++      doorLocked: false,
++      trunkLocked: true,
++      engineStarted: true,
++      batteryVoltage: 14.1,
++      mileage: 19800,
++      speed: 62,
++      fuelOrBatteryLevel: 68,
++      location: '深圳市宝安区宝安大道',
++      lastReportedAt: '2026-10-12 10:04:00',
++    },
++    ownerName: '赵敏',
++    ownerPhone: '13888887766',
++    createdAt: '2026-03-15 11:30:00',
++    updatedAt: '2026-10-12 10:04:00',
++  },
++  {
++    id: 'veh-007',
++    vin: 'LFPH2E023N1000007',
++    plateNumber: '京A·88990',
++    tenantId: 'tenant-001',
++    projectId: 'proj-bj-04',
++    projectName: '北京高端政企车队',
++    brandId: 'brand-tesla',
++    brandName: '特斯拉',
++    modelId: 'model-tesla-modely',
++    modelName: 'Model Y',
++    deviceId: null,
++    deviceNo: null,
++    deviceOnlineStatus: undefined,
++    status: 'SCRAPPED',
++    telemetry: undefined,
++    ownerName: '孙权',
++    ownerPhone: '13900008890',
++    createdAt: '2026-01-15 10:00:00',
++    updatedAt: '2026-09-01 10:00:00',
++  },
++  {
++    id: 'veh-008',
++    vin: 'LFPH2E023N1000008',
++    plateNumber: '粤B·55443',
++    tenantId: 'tenant-001',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    brandId: 'brand-zeekr',
++    brandName: '吉利极氪',
++    modelId: 'model-zeekr-001',
++    modelName: '极氪 001',
++    deviceId: null,
++    deviceNo: null,
++    deviceOnlineStatus: undefined,
++    status: 'NORMAL',
++    telemetry: {
++      doorLocked: true,
++      trunkLocked: true,
++      engineStarted: false,
++      batteryVoltage: 12.5,
++      mileage: 1200,
++      speed: 0,
++      fuelOrBatteryLevel: 90,
++      location: '深圳市龙华区清湖整车仓储',
++      lastReportedAt: '2026-10-12 08:00:00',
++    },
++    ownerName: '周杰',
++    ownerPhone: '13700005544',
++    createdAt: '2026-04-01 15:00:00',
++    updatedAt: '2026-10-12 08:00:00',
++  },
++  {
++    id: 'veh-009',
++    vin: 'LFPH2E023N1000009',
++    plateNumber: '沪A·99001',
++    tenantId: 'tenant-001',
++    projectId: 'proj-sh-03',
++    projectName: '华东城际物流专线',
++    brandId: 'brand-byd',
++    brandName: '比亚迪',
++    modelId: 'model-byd-han',
++    modelName: '汉 EV',
++    deviceId: 'dev-007',
++    deviceNo: 'DEV_1007',
++    deviceOnlineStatus: 'ONLINE',
++    status: 'NORMAL',
++    telemetry: {
++      doorLocked: true,
++      trunkLocked: true,
++      engineStarted: false,
++      batteryVoltage: 12.7,
++      mileage: 16500,
++      speed: 0,
++      fuelOrBatteryLevel: 78,
++      location: '上海市虹桥商务区',
++      lastReportedAt: '2026-10-12 09:30:00',
++    },
++    ownerName: '吴磊',
++    ownerPhone: '13600009901',
++    createdAt: '2026-04-10 10:20:00',
++    updatedAt: '2026-10-12 09:30:00',
++  },
++  {
++    id: 'veh-010',
++    vin: 'LFPH2E023N1000010',
++    plateNumber: '粤A·66778',
++    tenantId: 'tenant-001',
++    projectId: 'proj-gz-02',
++    projectName: '广州网约出行运营二期',
++    brandId: 'brand-aion',
++    brandName: '广汽埃安',
++    modelId: 'model-aion-s',
++    modelName: 'AION S',
++    deviceId: null,
++    deviceNo: null,
++    deviceOnlineStatus: undefined,
++    status: 'NORMAL',
++    telemetry: {
++      doorLocked: false,
++      trunkLocked: false,
++      engineStarted: false,
++      batteryVoltage: 12.3,
++      mileage: 28400,
++      speed: 0,
++      fuelOrBatteryLevel: 55,
++      location: '广州市海珠区新港中路',
++      lastReportedAt: '2026-10-12 07:15:00',
++    },
++    ownerName: '郑恺',
++    ownerPhone: '13500006677',
++    createdAt: '2026-04-15 16:40:00',
++    updatedAt: '2026-10-12 07:15:00',
++  },
++  {
++    id: 'veh-011',
++    vin: 'LFPH2E023N1000011',
++    plateNumber: '京A·33221',
++    tenantId: 'tenant-001',
++    projectId: 'proj-bj-04',
++    projectName: '北京高端政企车队',
++    brandId: 'brand-tesla',
++    brandName: '特斯拉',
++    modelId: 'model-tesla-modely',
++    modelName: 'Model Y',
++    deviceId: 'dev-008',
++    deviceNo: 'DEV_1008',
++    deviceOnlineStatus: 'OFFLINE',
++    status: 'MAINTENANCE',
++    telemetry: {
++      doorLocked: true,
++      trunkLocked: true,
++      engineStarted: false,
++      batteryVoltage: 11.4,
++      mileage: 51200,
++      speed: 0,
++      fuelOrBatteryLevel: 22,
++      location: '北京市大兴区亦庄开发区',
++      lastReportedAt: '2026-10-11 21:00:00',
++    },
++    ownerName: '冯绍',
++    ownerPhone: '13800003322',
++    createdAt: '2026-04-20 13:10:00',
++    updatedAt: '2026-10-11 21:00:00',
++  },
++  {
++    id: 'veh-012',
++    vin: 'LFPH2E023N1000012',
++    plateNumber: '粤B·11223',
++    tenantId: 'tenant-001',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    brandId: 'brand-zeekr',
++    brandName: '吉利极氪',
++    modelId: 'model-zeekr-001',
++    modelName: '极氪 001',
++    deviceId: 'dev-009',
++    deviceNo: 'DEV_1009',
++    deviceOnlineStatus: 'ONLINE',
++    status: 'NORMAL',
++    telemetry: {
++      doorLocked: true,
++      trunkLocked: true,
++      engineStarted: true,
++      batteryVoltage: 13.9,
++      mileage: 7300,
++      speed: 38,
++      fuelOrBatteryLevel: 88,
++      location: '深圳市南山区后海滨路',
++      lastReportedAt: '2026-10-12 10:05:00',
++    },
++    ownerName: '韩雪',
++    ownerPhone: '13900001122',
++    createdAt: '2026-05-01 09:30:00',
++    updatedAt: '2026-10-12 10:05:00',
++  },
++];

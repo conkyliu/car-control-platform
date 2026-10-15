@@ -1,0 +1,2300 @@
+diff --git a/apps/web/src/api/command-dictionary.ts b/apps/web/src/api/command-dictionary.ts
+new file mode 100644
+index 0000000..c3592ab
+--- /dev/null
++++ b/apps/web/src/api/command-dictionary.ts
+@@ -0,0 +1,122 @@
++import { CommandCode } from '@car-control/contracts';
++import { http, ApiError } from './client.ts';
++import {
++  type CommandDictionaryItem,
++  SEED_COMMAND_DICTIONARY,
++} from '../views/command/command-dictionary-core.ts';
++import { isApiError } from '../views/command/command-core.ts';
++
++// 内存中可变字典状态池 (用于离线与仿真降级)
++let inMemoryDictionary: CommandDictionaryItem[] = JSON.parse(
++  JSON.stringify(SEED_COMMAND_DICTIONARY)
++);
++
++/**
++ * 获取当前内存中的指令字典列表 (主要用于测试和状态查看)
++ */
++export function getInMemoryDictionary(): CommandDictionaryItem[] {
++  return inMemoryDictionary;
++}
++
++/**
++ * 重置内存中的指令字典为初始种子数据 (用于测试隔离)
++ */
++export function resetInMemoryDictionary(): void {
++  inMemoryDictionary = JSON.parse(JSON.stringify(SEED_COMMAND_DICTIONARY));
++}
++
++/**
++ * 获取全量指令字典与协议参数列表
++ */
++export async function fetchCommandDictionaryApi(): Promise<CommandDictionaryItem[]> {
++  try {
++    const list = await http.get<CommandDictionaryItem[]>('/command-dictionary');
++    return list;
++  } catch (err: unknown) {
++    if (
++      isApiError(err) &&
++      err.statusCode !== 404 &&
++      err.statusCode !== 500 &&
++      err.statusCode !== 502
++    ) {
++      throw err;
++    }
++    // 离线降级：返回内存字典池
++    return JSON.parse(JSON.stringify(inMemoryDictionary));
++  }
++}
++
++/**
++ * 根据指令代码获取单条指令字典与协议详情
++ */
++export async function fetchCommandDictionaryItemApi(
++  code: CommandCode
++): Promise<CommandDictionaryItem> {
++  try {
++    const item = await http.get<CommandDictionaryItem>(`/command-dictionary/${code}`);
++    return item;
++  } catch (err: unknown) {
++    if (
++      isApiError(err) &&
++      err.statusCode !== 404 &&
++      err.statusCode !== 500 &&
++      err.statusCode !== 502
++    ) {
++      throw err;
++    }
++    // 离线降级
++    const target = inMemoryDictionary.find((item) => item.code === code);
++    if (!target) {
++      throw new ApiError(`未找到指令代码【${code}】对应的字典项`, 404, 'NotFound');
++    }
++    return JSON.parse(JSON.stringify(target));
++  }
++}
++
++/**
++ * 修改单条指令字典元数据（如默认超时、频控冷却限制、描述及安全提示）
++ */
++export async function updateCommandDictionaryItemApi(
++  code: CommandCode,
++  data: Partial<CommandDictionaryItem>
++): Promise<CommandDictionaryItem> {
++  try {
++    const updated = await http.patch<CommandDictionaryItem>(`/command-dictionary/${code}`, data);
++    return updated;
++  } catch (err: unknown) {
++    if (
++      isApiError(err) &&
++      err.statusCode !== 404 &&
++      err.statusCode !== 500 &&
++      err.statusCode !== 502
++    ) {
++      throw err;
++    }
++    // 离线降级：修改内存池
++    const index = inMemoryDictionary.findIndex((item) => item.code === code);
++    if (index === -1) {
++      throw new ApiError(`未找到指令代码【${code}】对应的字典项`, 404, 'NotFound');
++    }
++
++    const current = inMemoryDictionary[index]!;
++    const nextItem: CommandDictionaryItem = {
++      ...current,
++      ...data,
++      code: current.code, // 确保 code 不可篡改
++      category: data.category ?? current.category,
++      downlinkOpcode: data.downlinkOpcode ?? current.downlinkOpcode,
++      canSignalName: data.canSignalName ?? current.canSignalName,
++      defaultSecurityLevel: data.defaultSecurityLevel ?? current.defaultSecurityLevel,
++      defaultTimeoutMs: data.defaultTimeoutMs ?? current.defaultTimeoutMs,
++      defaultFrequencyLimitSeconds:
++        data.defaultFrequencyLimitSeconds ?? current.defaultFrequencyLimitSeconds,
++      description: data.description ?? current.description,
++      safetyWarning: data.safetyWarning !== undefined ? data.safetyWarning : current.safetyWarning,
++      payloadSchema: data.payloadSchema ?? current.payloadSchema,
++      samplePayload: data.samplePayload ?? current.samplePayload,
++    };
++
++    inMemoryDictionary[index] = nextItem;
++    return JSON.parse(JSON.stringify(nextItem));
++  }
++}
+diff --git a/apps/web/src/layouts/AdminLayout.tsx b/apps/web/src/layouts/AdminLayout.tsx
+index 774fd14..18d9746 100644
+--- a/apps/web/src/layouts/AdminLayout.tsx
++++ b/apps/web/src/layouts/AdminLayout.tsx
+@@ -28,6 +28,7 @@ import {
+   CloudUploadOutlined,
+   FileTextOutlined,
+   LineChartOutlined,
++  BookOutlined,
+ } from '@ant-design/icons';
+ import { useAuthStore } from '../store/useAuthStore.ts';
+ import { useNavTabsStore } from '../store/useNavTabsStore.ts';
+@@ -41,7 +42,12 @@ import { TenantSelector } from './TenantSelector.tsx';
+ import { AlarmNotificationBell } from './AlarmNotificationBell.tsx';
+ import { HeaderUserMenu } from './HeaderUserMenu.tsx';
+ import { NavTabs } from './NavTabs.tsx';
+-import { CarControlWorkbench, CapabilityTemplateView, DigitalKeyManageView } from '../views/command/index.ts';
++import {
++  CarControlWorkbench,
++  CapabilityTemplateView,
++  DigitalKeyManageView,
++  CommandDictionaryView,
++} from '../views/command/index.ts';
+ import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
+ import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
+ import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
+@@ -65,6 +71,7 @@ const ROUTE_ICON_MAP: Record<string, React.ReactNode> = {
+   CloudUploadOutlined: <CloudUploadOutlined />,
+   FileTextOutlined: <FileTextOutlined />,
+   LineChartOutlined: <LineChartOutlined />,
++  BookOutlined: <BookOutlined />,
+ };
+ 
+ export const AdminLayout: React.FC = () => {
+@@ -168,6 +175,10 @@ export const AdminLayout: React.FC = () => {
+       return <DigitalKeyManageView />;
+     }
+ 
++    if (activeKey === RoutePath.COMMAND_DICTIONARY) {
++      return <CommandDictionaryView />;
++    }
++
+     return (
+       <Card
+         style={{
+diff --git a/apps/web/src/router/routes.ts b/apps/web/src/router/routes.ts
+index 963cd6b..80478e9 100644
+--- a/apps/web/src/router/routes.ts
++++ b/apps/web/src/router/routes.ts
+@@ -18,6 +18,7 @@ export const RoutePath = {
+   PROJECTS: '/projects',
+   CAPABILITIES: '/capabilities',
+   DIGITAL_KEYS: '/digital-keys',
++  COMMAND_DICTIONARY: '/command-dictionary',
+ } as const;
+ 
+ export type RoutePathType = (typeof RoutePath)[keyof typeof RoutePath];
+@@ -236,6 +237,15 @@ export const routes: RouteMeta[] = [
+     hideInMenu: true,
+     description: '数字钥匙授权分发、BLE/云端/NFC介质管控与安全吊销中心',
+   },
++  {
++    path: RoutePath.COMMAND_DICTIONARY,
++    title: '指令字典与协议参数',
++    icon: 'BookOutlined',
++    category: RouteCategory.VEHICLE_CONTROL,
++    permission: 'vehicle:control',
++    hideInMenu: true,
++    description: '13类远程车控指令字典、下行Payload Schema与CAN总线信号映射中心',
++  },
+ ];
+ 
+ /**
+diff --git a/apps/web/src/test/command-dictionary.test.ts b/apps/web/src/test/command-dictionary.test.ts
+new file mode 100644
+index 0000000..ca71ab8
+--- /dev/null
++++ b/apps/web/src/test/command-dictionary.test.ts
+@@ -0,0 +1,341 @@
++import { describe, it, beforeEach } from 'node:test';
++import assert from 'node:assert/strict';
++import { CommandCode, SecurityLevel } from '@car-control/contracts';
++import {
++  type ProtocolParamSchema,
++  type CommandDictionaryItem,
++  type DictionaryStats,
++  CommandCategory,
++  SEED_COMMAND_DICTIONARY,
++  calculateDictionaryStats,
++  filterDictionaryItems,
++  generateDictionaryMarkdown,
++  generateDictionaryCsv,
++  sanitizeCsvCell,
++  validatePayloadAgainstSchema,
++} from '../views/command/command-dictionary-core.ts';
++import {
++  fetchCommandDictionaryApi,
++  fetchCommandDictionaryItemApi,
++  updateCommandDictionaryItemApi,
++  getInMemoryDictionary,
++  resetInMemoryDictionary,
++} from '../api/command-dictionary.ts';
++import { ApiError } from '../api/client.ts';
++
++describe('Command Dictionary & Protocol Parameter Management Test Suite (TDD)', () => {
++  beforeEach(() => {
++    resetInMemoryDictionary();
++  });
++
++  describe('1. Production Seed Dictionary Completeness & Integrity', () => {
++    it('contains all 13 standard command codes defined in contracts', () => {
++      const expectedCodes = Object.values(CommandCode);
++      assert.equal(expectedCodes.length, 13);
++      assert.equal(SEED_COMMAND_DICTIONARY.length, 13);
++
++      const seedCodes = SEED_COMMAND_DICTIONARY.map((item) => item.code);
++      for (const code of expectedCodes) {
++        assert.ok(seedCodes.includes(code), `Missing command code in seed dictionary: ${code}`);
++      }
++    });
++
++    it('ensures each command dictionary item possesses complete schema and metadata', () => {
++      const opcodePattern = /^0x02_[0-9A-Fa-f]{2}$/;
++      const canSignalPattern = /^CAN_[A-Z]{3,4}_[A-Za-z0-9_]+$/;
++
++      for (const item of SEED_COMMAND_DICTIONARY) {
++        assert.ok(item.code, 'Command code must be present');
++        assert.ok(item.name && item.name.trim().length > 0, `Name must not be empty for ${item.code}`);
++        assert.ok(Object.values(CommandCategory).includes(item.category), `Invalid category for ${item.code}`);
++        assert.ok(Object.values(SecurityLevel).includes(item.defaultSecurityLevel), `Invalid securityLevel for ${item.code}`);
++        assert.ok(item.defaultTimeoutMs >= 3000 && item.defaultTimeoutMs <= 60000, `Timeout out of bounds: ${item.defaultTimeoutMs}`);
++        assert.ok(item.defaultFrequencyLimitSeconds >= 0 && item.defaultFrequencyLimitSeconds <= 300, `Frequency limit out of bounds: ${item.defaultFrequencyLimitSeconds}`);
++        assert.match(item.downlinkOpcode, opcodePattern, `Invalid downlinkOpcode format for ${item.code}: ${item.downlinkOpcode}`);
++        assert.match(item.canSignalName, canSignalPattern, `Invalid CAN signal name for ${item.code}: ${item.canSignalName}`);
++        assert.ok(typeof item.payloadSchema === 'object' && item.payloadSchema !== null, `payloadSchema must be object for ${item.code}`);
++        assert.ok(typeof item.samplePayload === 'object' && item.samplePayload !== null, `samplePayload must be object for ${item.code}`);
++        assert.ok(item.description && item.description.length > 5, `Description too short for ${item.code}`);
++      }
++    });
++
++    it('enforces L2 high-risk commands to possess safety warnings and elevated timeouts', () => {
++      const l2Items = SEED_COMMAND_DICTIONARY.filter(
++        (item) => item.defaultSecurityLevel === SecurityLevel.L2
++      );
++      assert.equal(l2Items.length, 2);
++
++      const l2Codes = l2Items.map((item) => item.code);
++      assert.ok(l2Codes.includes(CommandCode.CMD_ENGINE_START));
++      assert.ok(l2Codes.includes(CommandCode.CMD_ENGINE_STOP));
++
++      for (const item of l2Items) {
++        assert.ok(item.safetyWarning && item.safetyWarning.length > 10, `L2 command must have detailed safetyWarning: ${item.code}`);
++        assert.ok(item.defaultTimeoutMs >= 15000, `L2 command timeout should be >= 15000ms: ${item.code}`);
++      }
++    });
++
++    it('validates protocol parameter schemas for parametric commands', () => {
++      const acStart = SEED_COMMAND_DICTIONARY.find((item) => item.code === CommandCode.CMD_AC_START);
++      assert.ok(acStart);
++      assert.ok(acStart.payloadSchema.temperature);
++      assert.equal(acStart.payloadSchema.temperature.type, 'number');
++      assert.equal(acStart.payloadSchema.temperature.unit, '℃');
++      assert.equal(acStart.payloadSchema.temperature.required, true);
++
++      const seatHeat = SEED_COMMAND_DICTIONARY.find((item) => item.code === CommandCode.CMD_SEAT_HEAT);
++      assert.ok(seatHeat);
++      assert.ok(seatHeat.payloadSchema.position);
++      assert.equal(seatHeat.payloadSchema.position.type, 'enum');
++      assert.deepEqual(seatHeat.payloadSchema.position.allowedValues, ['DRIVER', 'PASSENGER']);
++    });
++  });
++
++  describe('2. Dictionary Statistics Calculation (calculateDictionaryStats)', () => {
++    it('calculates comprehensive metrics across categories, security levels and parameters', () => {
++      const stats = calculateDictionaryStats(SEED_COMMAND_DICTIONARY);
++      assert.equal(stats.total, 13);
++      assert.equal(stats.l0Count, 3); // CMD_LOCK, CMD_FIND_VEHICLE, CMD_AC_STOP
++      assert.equal(stats.l1Count, 8); // CMD_UNLOCK, CMD_TRUNK_OPEN, CMD_TRUNK_CLOSE, CMD_AC_START, CMD_SEAT_HEAT, CMD_WINDOW_OPEN, CMD_WINDOW_CLOSE, CMD_SUNROOF_CONTROL
++      assert.equal(stats.l2Count, 2); // CMD_ENGINE_START, CMD_ENGINE_STOP
++      assert.equal(stats.categoryCounts[CommandCategory.DOOR_BODY], 4);
++      assert.equal(stats.categoryCounts[CommandCategory.POWER_FIND], 3);
++      assert.equal(stats.categoryCounts[CommandCategory.CABIN_CLIMATE], 3);
++      assert.equal(stats.categoryCounts[CommandCategory.WINDOW_ROOF], 3);
++      assert.ok(stats.parametricCount >= 6); // commands with params: FIND, ENGINE_START, AC_START, SEAT_HEAT, WINDOW_OPEN, SUNROOF_CONTROL
++      assert.ok(stats.averageTimeoutMs >= 10000 && stats.averageTimeoutMs <= 20000);
++      assert.ok(stats.averageFrequencyLimitSeconds >= 5);
++    });
++
++    it('safely handles empty array input', () => {
++      const emptyStats = calculateDictionaryStats([]);
++      assert.equal(emptyStats.total, 0);
++      assert.equal(emptyStats.l0Count, 0);
++      assert.equal(emptyStats.l1Count, 0);
++      assert.equal(emptyStats.l2Count, 0);
++      assert.equal(emptyStats.parametricCount, 0);
++      assert.equal(emptyStats.averageTimeoutMs, 0);
++      assert.equal(emptyStats.averageFrequencyLimitSeconds, 0);
++      assert.equal(emptyStats.categoryCounts[CommandCategory.DOOR_BODY], 0);
++    });
++  });
++
++  describe('3. Multi-dimensional Dictionary Filtering (filterDictionaryItems)', () => {
++    it('filters items by keyword matching code, name, opcode, or CAN signal', () => {
++      const resCode = filterDictionaryItems(SEED_COMMAND_DICTIONARY, { keyword: 'LOCK' });
++      assert.ok(resCode.some((item) => item.code === CommandCode.CMD_LOCK));
++      assert.ok(resCode.some((item) => item.code === CommandCode.CMD_UNLOCK));
++
++      const resName = filterDictionaryItems(SEED_COMMAND_DICTIONARY, { keyword: '空调' });
++      assert.equal(resName.length, 2);
++      assert.ok(resName.some((item) => item.code === CommandCode.CMD_AC_START));
++      assert.ok(resName.some((item) => item.code === CommandCode.CMD_AC_STOP));
++
++      const resOpcode = filterDictionaryItems(SEED_COMMAND_DICTIONARY, { keyword: '0x02_08' });
++      assert.equal(resOpcode.length, 1);
++      assert.equal(resOpcode[0]?.code, CommandCode.CMD_AC_START);
++
++      const resCan = filterDictionaryItems(SEED_COMMAND_DICTIONARY, { keyword: 'CAN_VCU' });
++      assert.equal(resCan.length, 2);
++    });
++
++    it('filters items by business category', () => {
++      const doorItems = filterDictionaryItems(SEED_COMMAND_DICTIONARY, {
++        category: CommandCategory.DOOR_BODY,
++      });
++      assert.equal(doorItems.length, 4);
++      for (const item of doorItems) {
++        assert.equal(item.category, CommandCategory.DOOR_BODY);
++      }
++
++      const allItems = filterDictionaryItems(SEED_COMMAND_DICTIONARY, { category: 'ALL' });
++      assert.equal(allItems.length, 13);
++    });
++
++    it('filters items by security level', () => {
++      const l2Items = filterDictionaryItems(SEED_COMMAND_DICTIONARY, {
++        securityLevel: SecurityLevel.L2,
++      });
++      assert.equal(l2Items.length, 2);
++      for (const item of l2Items) {
++        assert.equal(item.defaultSecurityLevel, SecurityLevel.L2);
++      }
++    });
++
++    it('combines keyword, category, and security level filters simultaneously', () => {
++      const combined = filterDictionaryItems(SEED_COMMAND_DICTIONARY, {
++        category: CommandCategory.POWER_FIND,
++        securityLevel: SecurityLevel.L2,
++        keyword: '点火',
++      });
++      assert.equal(combined.length, 1);
++      assert.equal(combined[0]?.code, CommandCode.CMD_ENGINE_START);
++    });
++  });
++
++  describe('4. Markdown Protocol Manual Generation (generateDictionaryMarkdown)', () => {
++    it('generates well-formatted Markdown documentation containing all commands and schemas', () => {
++      const md = generateDictionaryMarkdown(SEED_COMMAND_DICTIONARY);
++      assert.ok(md.includes('# 控车协议参数与指令字典手册'));
++      assert.ok(md.includes('0x02_01'));
++      assert.ok(md.includes('CAN_BCM_DoorLockCmd'));
++      assert.ok(md.includes('CAN_HVAC_TargetTemp'));
++      assert.ok(md.includes('CMD_ENGINE_START'));
++      assert.ok(md.includes('安全提示'));
++      assert.ok(md.includes('JSON 示例'));
++
++      for (const item of SEED_COMMAND_DICTIONARY) {
++        assert.ok(md.includes(item.code), `Markdown missing code ${item.code}`);
++        assert.ok(md.includes(item.name), `Markdown missing name ${item.name}`);
++      }
++    });
++  });
++
++  describe('5. CSV Export and CWE-1236 Formula Injection Defense', () => {
++    it('prepends UTF-8 BOM byte sequence at the start of CSV', () => {
++      const csv = generateDictionaryCsv(SEED_COMMAND_DICTIONARY);
++      assert.ok(csv.startsWith('\uFEFF'), 'CSV must start with UTF-8 BOM');
++    });
++
++    it('includes RFC 4180 standard headers and 13 rows', () => {
++      const csv = generateDictionaryCsv(SEED_COMMAND_DICTIONARY);
++      const lines = csv.replace('\uFEFF', '').trim().split('\n');
++      assert.equal(lines.length, 14); // 1 header + 13 data rows
++      assert.ok(lines[0]?.includes('指令代码,指令名称,业务集群,下行Opcode,安全等级'));
++    });
++
++    it('sanitizes formula-triggering characters (=, +, -, @, \\t, \\r) against CWE-1236', () => {
++      assert.equal(sanitizeCsvCell('=SUM(A1:A10)'), "'=SUM(A1:A10)");
++      assert.equal(sanitizeCsvCell('+12345'), "'+12345");
++      assert.equal(sanitizeCsvCell('-cmd|/C calc!A0'), "'-cmd|/C calc!A0");
++      assert.equal(sanitizeCsvCell('@evil.com'), "'@evil.com");
++      assert.equal(sanitizeCsvCell('  =1+1'), "'=1+1");
++      assert.equal(sanitizeCsvCell('Normal Text'), 'Normal Text');
++    });
++
++    it('properly quotes and escapes commas, double quotes, and newlines', () => {
++      const maliciousItems: CommandDictionaryItem[] = [
++        {
++          code: CommandCode.CMD_LOCK,
++          name: '测试=CMD',
++          category: CommandCategory.DOOR_BODY,
++          defaultSecurityLevel: SecurityLevel.L0,
++          defaultTimeoutMs: 10000,
++          defaultFrequencyLimitSeconds: 5,
++          canSignalName: 'CAN_TEST',
++          downlinkOpcode: '0x02_01',
++          payloadSchema: {},
++          samplePayload: {},
++          description: '带有,逗号和"引号"\n换行',
++          safetyWarning: '=cmd|"/C calc"!A0',
++        },
++      ];
++
++      const csv = generateDictionaryCsv(maliciousItems);
++      assert.ok(csv.includes("'\t") || csv.includes("''") || csv.includes("'+") || csv.includes("'-") || csv.includes("'="));
++      assert.ok(csv.includes('""引号""'));
++      assert.ok(!csv.includes('\n=cmd'));
++    });
++  });
++
++  describe('6. Payload Schema Validation (validatePayloadAgainstSchema)', () => {
++    const acStart = SEED_COMMAND_DICTIONARY.find((item) => item.code === CommandCode.CMD_AC_START)!;
++
++    it('accepts valid payload matching schema requirements', () => {
++      const valid = validatePayloadAgainstSchema(acStart.payloadSchema, {
++        temperature: 22,
++        fanSpeed: 4,
++        mode: 'COOL',
++      });
++      assert.equal(valid.valid, true);
++      assert.equal(valid.errors.length, 0);
++    });
++
++    it('rejects payload missing required fields', () => {
++      const invalid = validatePayloadAgainstSchema(acStart.payloadSchema, {
++        fanSpeed: 3,
++      });
++      assert.equal(invalid.valid, false);
++      assert.ok(invalid.errors.some((err) => err.includes('temperature')));
++    });
++
++    it('rejects payload with invalid types or values out of bounds', () => {
++      const invalid = validatePayloadAgainstSchema(acStart.payloadSchema, {
++        temperature: 35, // max is 30
++        fanSpeed: 10,   // max is 7
++        mode: 'INVALID_MODE',
++      });
++      assert.equal(invalid.valid, false);
++      assert.ok(invalid.errors.length >= 3);
++    });
++  });
++
++  describe('7. API Client Methods & Offline Fallback (api/command-dictionary.ts)', () => {
++    it('fetchCommandDictionaryApi returns complete seed dictionary in offline mode', async () => {
++      const data = await fetchCommandDictionaryApi();
++      assert.equal(data.length, 13);
++      assert.ok(data.some((item) => item.code === CommandCode.CMD_LOCK));
++    });
++
++    it('fetchCommandDictionaryItemApi retrieves single command item', async () => {
++      const item = await fetchCommandDictionaryItemApi(CommandCode.CMD_ENGINE_START);
++      assert.equal(item.code, CommandCode.CMD_ENGINE_START);
++      assert.equal(item.defaultSecurityLevel, SecurityLevel.L2);
++    });
++
++    it('fetchCommandDictionaryItemApi throws 404 for non-existent command', async () => {
++      await assert.rejects(
++        async () => {
++          await fetchCommandDictionaryItemApi('UNKNOWN_CMD' as CommandCode);
++        },
++        (err: unknown) => {
++          assert.ok(err instanceof ApiError);
++          assert.equal((err as ApiError).statusCode, 404);
++          return true;
++        }
++      );
++    });
++
++    it('updateCommandDictionaryItemApi modifies item in memory state and returns updated', async () => {
++      const updated = await updateCommandDictionaryItemApi(CommandCode.CMD_LOCK, {
++        defaultTimeoutMs: 12000,
++        defaultFrequencyLimitSeconds: 8,
++        description: '修改后的闭锁描述',
++      });
++
++      assert.equal(updated.code, CommandCode.CMD_LOCK);
++      assert.equal(updated.defaultTimeoutMs, 12000);
++      assert.equal(updated.defaultFrequencyLimitSeconds, 8);
++      assert.equal(updated.description, '修改后的闭锁描述');
++
++      const refetched = await fetchCommandDictionaryItemApi(CommandCode.CMD_LOCK);
++      assert.equal(refetched.defaultTimeoutMs, 12000);
++    });
++
++    it('updateCommandDictionaryItemApi throws 404 if updating non-existent command', async () => {
++      await assert.rejects(
++        async () => {
++          await updateCommandDictionaryItemApi('NON_EXISTENT' as CommandCode, {
++            defaultTimeoutMs: 5000,
++          });
++        },
++        (err: unknown) => {
++          assert.ok(err instanceof ApiError);
++          assert.equal((err as ApiError).statusCode, 404);
++          return true;
++        }
++      );
++    });
++
++    it('resetInMemoryDictionary restores initial seed state', async () => {
++      await updateCommandDictionaryItemApi(CommandCode.CMD_LOCK, {
++        defaultTimeoutMs: 9999,
++      });
++
++      resetInMemoryDictionary();
++
++      const item = await fetchCommandDictionaryItemApi(CommandCode.CMD_LOCK);
++      assert.equal(item.defaultTimeoutMs, 10000);
++    });
++  });
++});
+diff --git a/apps/web/src/views/command/CapabilityTemplateView.tsx b/apps/web/src/views/command/CapabilityTemplateView.tsx
+index 8f2a3ee..00c0ed5 100644
+--- a/apps/web/src/views/command/CapabilityTemplateView.tsx
++++ b/apps/web/src/views/command/CapabilityTemplateView.tsx
+@@ -52,8 +52,10 @@ import {
+   ExclamationCircleOutlined,
+   AppstoreOutlined,
+   SlidersOutlined,
++  BookOutlined,
+ } from '@ant-design/icons';
+ import { CommandCode, SecurityLevel } from '@car-control/contracts';
++import { CommandDictionaryModal } from './CommandDictionaryModal.tsx';
+ import {
+   CommandCategory,
+   COMMAND_CATEGORY_MAP,
+@@ -140,6 +142,7 @@ export const CapabilityTemplateView: React.FC = () => {
+   const [cloneModalVisible, setCloneModalVisible] = useState<boolean>(false);
+   const [paramModalVisible, setParamModalVisible] = useState<boolean>(false);
+   const [diffModalVisible, setDiffModalVisible] = useState<boolean>(false);
++  const [dictionaryModalVisible, setDictionaryModalVisible] = useState<boolean>(false);
+ 
+   // 当前正在配置参数约束的指令代码
+   const [paramEditingCode, setParamEditingCode] = useState<CommandCode | null>(null);
+@@ -772,6 +775,12 @@ export const CapabilityTemplateView: React.FC = () => {
+                   </Space>
+ 
+                   <Space size={8}>
++                    <Button
++                      icon={<BookOutlined />}
++                      onClick={() => setDictionaryModalVisible(true)}
++                    >
++                      指令字典与协议参数
++                    </Button>
+                     <Button
+                       icon={<CopyOutlined />}
+                       onClick={() => {
+@@ -1274,6 +1283,12 @@ export const CapabilityTemplateView: React.FC = () => {
+           </div>
+         )}
+       </Modal>
++
++      {/* ---------------- 960px 全局指令字典与协议参数规范弹窗 ---------------- */}
++      <CommandDictionaryModal
++        open={dictionaryModalVisible}
++        onClose={() => setDictionaryModalVisible(false)}
++      />
+     </div>
+   );
+ };
+diff --git a/apps/web/src/views/command/CarControlWorkbench.tsx b/apps/web/src/views/command/CarControlWorkbench.tsx
+index 6f7c28b..4e6951f 100644
+--- a/apps/web/src/views/command/CarControlWorkbench.tsx
++++ b/apps/web/src/views/command/CarControlWorkbench.tsx
+@@ -50,6 +50,7 @@ import {
+   ControlOutlined,
+   SlidersOutlined,
+   KeyOutlined,
++  BookOutlined,
+ } from '@ant-design/icons';
+ import {
+   CommandCode,
+@@ -79,6 +80,7 @@ import { useNavTabsStore } from '../../store/useNavTabsStore.ts';
+ import { RoutePath } from '../../router/routes.ts';
+ import { CommandStreamDrawer } from './CommandStreamDrawer.tsx';
+ import { VehicleOverrideDrawer } from './VehicleOverrideDrawer.tsx';
++import { CommandDictionaryModal } from './CommandDictionaryModal.tsx';
+ 
+ const { Title, Text } = Typography;
+ 
+@@ -146,6 +148,9 @@ export const CarControlWorkbench: React.FC = () => {
+   // 单车专属可控范围能力覆盖抽屉
+   const [overrideDrawerOpen, setOverrideDrawerOpen] = useState(false);
+ 
++  // 指令字典与协议参数规范弹窗
++  const [dictionaryModalOpen, setDictionaryModalOpen] = useState(false);
++
+   const handleOpenTraceDrawer = (cmdId?: string) => {
+     setSelectedCommandId(cmdId || commandLogs[0]?.id || 'cmd-seed-01');
+     setDrawerOpen(true);
+@@ -582,6 +587,12 @@ export const CarControlWorkbench: React.FC = () => {
+                   unCheckedChildren="离线"
+                 />
+               </Space>
++              <Button
++                icon={<BookOutlined />}
++                onClick={() => setDictionaryModalOpen(true)}
++              >
++                指令字典
++              </Button>
+               <Button
+                 icon={<KeyOutlined />}
+                 onClick={() => {
+@@ -1352,6 +1363,12 @@ export const CarControlWorkbench: React.FC = () => {
+         onSaved={() => loadVehicleContext(selectedVehicleId)}
+         onReset={() => loadVehicleContext(selectedVehicleId)}
+       />
++
++      {/* ---------------- 960px 全局指令字典与协议参数规范弹窗 ---------------- */}
++      <CommandDictionaryModal
++        open={dictionaryModalOpen}
++        onClose={() => setDictionaryModalOpen(false)}
++      />
+     </div>
+   );
+ };
+diff --git a/apps/web/src/views/command/CommandDictionaryModal.tsx b/apps/web/src/views/command/CommandDictionaryModal.tsx
+new file mode 100644
+index 0000000..9157b51
+--- /dev/null
++++ b/apps/web/src/views/command/CommandDictionaryModal.tsx
+@@ -0,0 +1,42 @@
++import React from 'react';
++import { Modal, Space } from 'antd';
++import { BookOutlined } from '@ant-design/icons';
++import { CommandCode } from './command-dictionary-core.ts';
++import { CommandDictionaryView } from './CommandDictionaryView.tsx';
++
++export interface CommandDictionaryModalProps {
++  open: boolean;
++  onClose: () => void;
++  initialCommandCode?: CommandCode;
++}
++
++export const CommandDictionaryModal: React.FC<CommandDictionaryModalProps> = ({
++  open,
++  onClose,
++  initialCommandCode,
++}) => {
++  return (
++    <Modal
++      title={
++        <Space align="center" size={8}>
++          <BookOutlined style={{ color: '#1677ff' }} />
++          <span>全局指令字典与协议参数规范</span>
++        </Space>
++      }
++      open={open}
++      onCancel={onClose}
++      footer={null}
++      width={960}
++      destroyOnClose
++      styles={{
++        body: {
++          maxHeight: '78vh',
++          overflowY: 'auto',
++          padding: '16px 20px',
++        },
++      }}
++    >
++      <CommandDictionaryView isModal={true} initialCommandCode={initialCommandCode} />
++    </Modal>
++  );
++};
+diff --git a/apps/web/src/views/command/CommandDictionaryView.tsx b/apps/web/src/views/command/CommandDictionaryView.tsx
+new file mode 100644
+index 0000000..49a1bbd
+--- /dev/null
++++ b/apps/web/src/views/command/CommandDictionaryView.tsx
+@@ -0,0 +1,907 @@
++import React, { useState, useEffect, useMemo, useCallback } from 'react';
++import {
++  Card,
++  Row,
++  Col,
++  Table,
++  Button,
++  Input,
++  Select,
++  Tag,
++  Space,
++  Badge,
++  Typography,
++  Tooltip,
++  Drawer,
++  Modal,
++  Form,
++  InputNumber,
++  Descriptions,
++  Alert,
++  message,
++} from 'antd';
++import type { TableProps } from 'antd';
++import {
++  LockOutlined,
++  UnlockOutlined,
++  InboxOutlined,
++  CarOutlined,
++  BellOutlined,
++  ThunderboltOutlined,
++  PoweroffOutlined,
++  FireOutlined,
++  PauseCircleOutlined,
++  HeatMapOutlined,
++  DownSquareOutlined,
++  UpSquareOutlined,
++  BorderOutlined,
++  SearchOutlined,
++  DownloadOutlined,
++  ReloadOutlined,
++  EditOutlined,
++  FileTextOutlined,
++  CopyOutlined,
++  InfoCircleOutlined,
++  CodeOutlined,
++  BookOutlined,
++} from '@ant-design/icons';
++import {
++  CommandCode,
++  SecurityLevel,
++  CommandCategory,
++  type CommandDictionaryItem,
++  type ProtocolParamSchema,
++  calculateDictionaryStats,
++  filterDictionaryItems,
++  generateDictionaryMarkdown,
++  generateDictionaryCsv,
++} from './command-dictionary-core.ts';
++import { COMMAND_CATEGORY_MAP } from './capability-core.ts';
++import {
++  fetchCommandDictionaryApi,
++  updateCommandDictionaryItemApi,
++} from '../../api/command-dictionary.ts';
++
++const { Title, Text, Paragraph } = Typography;
++
++// 指令图标映射
++const COMMAND_ICON_MAP: Record<CommandCode, React.ReactNode> = {
++  [CommandCode.CMD_LOCK]: <LockOutlined />,
++  [CommandCode.CMD_UNLOCK]: <UnlockOutlined />,
++  [CommandCode.CMD_TRUNK_OPEN]: <InboxOutlined />,
++  [CommandCode.CMD_TRUNK_CLOSE]: <CarOutlined />,
++  [CommandCode.CMD_FIND_VEHICLE]: <BellOutlined />,
++  [CommandCode.CMD_ENGINE_START]: <ThunderboltOutlined />,
++  [CommandCode.CMD_ENGINE_STOP]: <PoweroffOutlined />,
++  [CommandCode.CMD_AC_START]: <FireOutlined />,
++  [CommandCode.CMD_AC_STOP]: <PauseCircleOutlined />,
++  [CommandCode.CMD_SEAT_HEAT]: <HeatMapOutlined />,
++  [CommandCode.CMD_WINDOW_OPEN]: <DownSquareOutlined />,
++  [CommandCode.CMD_WINDOW_CLOSE]: <UpSquareOutlined />,
++  [CommandCode.CMD_SUNROOF_CONTROL]: <BorderOutlined />,
++};
++
++// 安全等级色彩与标签定义
++const SECURITY_LEVEL_TAG_MAP: Record<
++  SecurityLevel,
++  { label: string; color: string; desc: string }
++> = {
++  [SecurityLevel.L0]: { label: 'L0 无感直发', color: 'default', desc: '无需二次验证，常规读取/控车' },
++  [SecurityLevel.L1]: { label: 'L1 二次确认', color: 'blue', desc: '弹窗二次确认，中风险开关' },
++  [SecurityLevel.L2]: { label: 'L2 强安全码', color: 'red', desc: '强制校验6位安全码，高风险动力' },
++};
++
++// 文件下载辅助函数
++function downloadBlob(content: string, filename: string, mimeType: string) {
++  if (typeof window === 'undefined') return;
++  const blob = new Blob([content], { type: mimeType });
++  const url = URL.createObjectURL(blob);
++  const a = document.createElement('a');
++  a.href = url;
++  a.download = filename;
++  document.body.appendChild(a);
++  a.click();
++  document.body.removeChild(a);
++  URL.revokeObjectURL(url);
++}
++
++export interface CommandDictionaryViewProps {
++  isModal?: boolean;
++  initialCommandCode?: CommandCode;
++}
++
++export const CommandDictionaryView: React.FC<CommandDictionaryViewProps> = ({
++  isModal = false,
++  initialCommandCode,
++}) => {
++  // 数据池与加载态
++  const [items, setItems] = useState<CommandDictionaryItem[]>([]);
++  const [loading, setLoading] = useState<boolean>(false);
++  const [updating, setUpdating] = useState<boolean>(false);
++
++  // 筛选状态
++  const [searchKeyword, setSearchKeyword] = useState<string>('');
++  const [selectedCategory, setSelectedCategory] = useState<CommandCategory | 'ALL'>('ALL');
++  const [selectedSecurityLevel, setSelectedSecurityLevel] = useState<SecurityLevel | 'ALL'>('ALL');
++
++  // Drawer 与 编辑弹窗
++  const [detailDrawerOpen, setDetailDrawerOpen] = useState<boolean>(false);
++  const [activeItem, setActiveItem] = useState<CommandDictionaryItem | null>(null);
++  const [editModalOpen, setEditModalOpen] = useState<boolean>(false);
++  const [editingItem, setEditingItem] = useState<CommandDictionaryItem | null>(null);
++
++  const [editForm] = Form.useForm();
++
++  // 加载字典数据
++  const loadDictionary = useCallback(async () => {
++    setLoading(true);
++    try {
++      const data = await fetchCommandDictionaryApi();
++      setItems(data);
++      if (initialCommandCode) {
++        const found = data.find((i) => i.code === initialCommandCode);
++        if (found) {
++          setActiveItem(found);
++          setDetailDrawerOpen(true);
++        }
++      }
++    } catch (err: any) {
++      message.error(err?.message || '加载指令字典失败');
++    } finally {
++      setLoading(false);
++    }
++  }, [initialCommandCode]);
++
++  useEffect(() => {
++    loadDictionary();
++  }, [loadDictionary]);
++
++  // 过滤后的列表
++  const filteredItems = useMemo(() => {
++    return filterDictionaryItems(items, {
++      keyword: searchKeyword,
++      category: selectedCategory,
++      securityLevel: selectedSecurityLevel,
++    });
++  }, [items, searchKeyword, selectedCategory, selectedSecurityLevel]);
++
++  // 统计指标
++  const stats = useMemo(() => {
++    return calculateDictionaryStats(items);
++  }, [items]);
++
++  // 导出 Markdown 手册
++  const handleExportMarkdown = () => {
++    const md = generateDictionaryMarkdown(filteredItems);
++    const dateStr = new Date().toISOString().slice(0, 10);
++    downloadBlob(md, `车控平台指令协议手册_${dateStr}.md`, 'text/markdown;charset=utf-8');
++    message.success('已成功生成并导出 Markdown 协议手册！');
++  };
++
++  // 导出 CSV 字典
++  const handleExportCsv = () => {
++    const csv = generateDictionaryCsv(filteredItems);
++    const dateStr = new Date().toISOString().slice(0, 10);
++    downloadBlob(csv, `车控平台指令字典_${dateStr}.csv`, 'text/csv;charset=utf-8');
++    message.success('已成功生成并导出 CSV 指令字典！');
++  };
++
++  // 打开协议详情抽屉
++  const handleOpenDetail = (item: CommandDictionaryItem) => {
++    setActiveItem(item);
++    setDetailDrawerOpen(true);
++  };
++
++  // 打开编辑弹窗
++  const handleOpenEdit = (item: CommandDictionaryItem) => {
++    setEditingItem(item);
++    editForm.setFieldsValue({
++      code: item.code,
++      name: item.name,
++      downlinkOpcode: item.downlinkOpcode,
++      canSignalName: item.canSignalName,
++      defaultSecurityLevel: item.defaultSecurityLevel,
++      defaultTimeoutMs: item.defaultTimeoutMs,
++      defaultFrequencyLimitSeconds: item.defaultFrequencyLimitSeconds,
++      description: item.description,
++      safetyWarning: item.safetyWarning || '',
++    });
++    setEditModalOpen(true);
++  };
++
++  // 保存字典修改
++  const handleSaveEdit = async () => {
++    if (!editingItem) return;
++    try {
++      const values = await editForm.validateFields();
++      setUpdating(true);
++      const updated = await updateCommandDictionaryItemApi(editingItem.code, {
++        defaultTimeoutMs: values.defaultTimeoutMs,
++        defaultFrequencyLimitSeconds: values.defaultFrequencyLimitSeconds,
++        description: values.description,
++        safetyWarning: values.safetyWarning ? values.safetyWarning.trim() : undefined,
++      });
++
++      message.success(`指令【${updated.name}】字典元数据已更新！`);
++      setItems((prev) => prev.map((item) => (item.code === updated.code ? updated : item)));
++      if (activeItem?.code === updated.code) {
++        setActiveItem(updated);
++      }
++      setEditModalOpen(false);
++    } catch (err: any) {
++      if (err?.errorFields) return;
++      message.error(err?.message || '保存指令字典失败');
++    } finally {
++      setUpdating(false);
++    }
++  };
++
++  // 复制文本辅助函数
++  const handleCopyText = (text: string, label = '内容') => {
++    if (typeof navigator !== 'undefined' && navigator.clipboard) {
++      navigator.clipboard.writeText(text);
++      message.success(`已复制 ${label} 到剪贴板`);
++    }
++  };
++
++  // 主表格列定义
++  const columns: TableProps<CommandDictionaryItem>['columns'] = [
++    {
++      title: '指令名称与图标',
++      dataIndex: 'name',
++      key: 'name',
++      width: 220,
++      render: (_, record) => {
++        const icon = COMMAND_ICON_MAP[record.code] || <CarOutlined />;
++        const catMeta = COMMAND_CATEGORY_MAP[record.category];
++        return (
++          <Space align="center" size={10}>
++            <span style={{ fontSize: 18, color: catMeta?.color || '#1677ff' }}>{icon}</span>
++            <div>
++              <Tooltip title={record.description}>
++                <Text strong style={{ fontSize: 14, cursor: 'help' }}>
++                  {record.name}
++                </Text>
++              </Tooltip>
++              <div style={{ fontSize: 12, color: 'rgba(0,0,0,0.45)', marginTop: 2 }}>
++                {record.code}
++              </div>
++            </div>
++          </Space>
++        );
++      },
++    },
++    {
++      title: '下行控制字 (Opcode)',
++      dataIndex: 'downlinkOpcode',
++      key: 'downlinkOpcode',
++      width: 140,
++      render: (opcode: string) => (
++        <Tooltip title="点击复制下行控制字 Hex">
++          <Tag
++            color="geekblue"
++            style={{
++              fontFamily: 'monospace',
++              cursor: 'pointer',
++              fontSize: 13,
++              padding: '2px 8px',
++            }}
++            onClick={() => handleCopyText(opcode, 'Opcode')}
++          >
++            {opcode}
++          </Tag>
++        </Tooltip>
++      ),
++    },
++    {
++      title: '业务集群',
++      dataIndex: 'category',
++      key: 'category',
++      width: 130,
++      render: (cat: CommandCategory) => {
++        const catMeta = COMMAND_CATEGORY_MAP[cat];
++        return <Tag color={catMeta?.tagColor || 'blue'}>{catMeta?.label || cat}</Tag>;
++      },
++    },
++    {
++      title: '默认安全等级',
++      dataIndex: 'defaultSecurityLevel',
++      key: 'defaultSecurityLevel',
++      width: 130,
++      render: (sec: SecurityLevel) => {
++        const secMeta = SECURITY_LEVEL_TAG_MAP[sec];
++        return (
++          <Tooltip title={secMeta?.desc}>
++            <Tag color={secMeta?.color} style={{ cursor: 'help' }}>
++              {secMeta?.label || sec}
++            </Tag>
++          </Tooltip>
++        );
++      },
++    },
++    {
++      title: '默认超时 / 冷却',
++      key: 'timeoutAndFreq',
++      width: 160,
++      render: (_, record) => (
++        <div>
++          <Text style={{ fontSize: 13 }}>{record.defaultTimeoutMs / 1000}s</Text>
++          <span style={{ color: 'rgba(0,0,0,0.45)', margin: '0 4px' }}>/</span>
++          <Text type="secondary" style={{ fontSize: 12 }}>
++            频控 {record.defaultFrequencyLimitSeconds}s
++          </Text>
++        </div>
++      ),
++    },
++    {
++      title: '参数 Schema / CAN 映射',
++      key: 'paramsAndCan',
++      width: 220,
++      render: (_, record) => {
++        const paramCount = Object.keys(record.payloadSchema || {}).length;
++        return (
++          <Space direction="vertical" size={2}>
++            <Space align="center" size={6}>
++              <Badge
++                count={paramCount}
++                style={{
++                  backgroundColor: paramCount > 0 ? '#1677ff' : '#d9d9d9',
++                }}
++              />
++              <Text style={{ fontSize: 12 }}>
++                {paramCount > 0 ? '项下行约束参数' : '标准固定帧'}
++              </Text>
++            </Space>
++            <Tooltip title="点击复制 CAN 映射信号名称">
++              <Text
++                code
++                style={{
++                  fontSize: 11,
++                  fontFamily: 'monospace',
++                  cursor: 'pointer',
++                  maxWidth: 190,
++                  overflow: 'hidden',
++                  textOverflow: 'ellipsis',
++                  display: 'inline-block',
++                  whiteSpace: 'nowrap',
++                }}
++                onClick={() => handleCopyText(record.canSignalName, 'CAN 信号')}
++              >
++                {record.canSignalName}
++              </Text>
++            </Tooltip>
++          </Space>
++        );
++      },
++    },
++    {
++      title: '操作',
++      key: 'action',
++      width: 180,
++      fixed: 'right',
++      render: (_, record) => (
++        <Space size={8}>
++          <Button
++            type="link"
++            size="small"
++            icon={<FileTextOutlined />}
++            onClick={() => handleOpenDetail(record)}
++          >
++            协议报文
++          </Button>
++          <Button
++            type="link"
++            size="small"
++            icon={<EditOutlined />}
++            onClick={() => handleOpenEdit(record)}
++          >
++            编辑
++          </Button>
++        </Space>
++      ),
++    },
++  ];
++
++  return (
++    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
++      {/* 4 大核心统计 KPI 看板卡片 */}
++      <Row gutter={[16, 16]}>
++        <Col xs={24} sm={12} lg={6}>
++          <Card styles={{ body: { padding: '16px 20px' } }} style={{ borderRadius: 8 }}>
++            <Text type="secondary" style={{ fontSize: 13 }}>
++              标准控车指令总数
++            </Text>
++            <div style={{ fontSize: 28, fontWeight: 700, color: '#1677ff', marginTop: 4 }}>
++              {stats.total}{' '}
++              <span style={{ fontSize: 14, fontWeight: 'normal', color: 'rgba(0,0,0,0.45)' }}>
++                类
++              </span>
++            </div>
++            <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.65)' }}>
++              覆盖 4 大业务功能集群协议标准
++            </div>
++          </Card>
++        </Col>
++
++        <Col xs={24} sm={12} lg={6}>
++          <Card styles={{ body: { padding: '16px 20px' } }} style={{ borderRadius: 8 }}>
++            <Text type="secondary" style={{ fontSize: 13 }}>
++              L2 强安全高危门禁指令
++            </Text>
++            <div style={{ fontSize: 28, fontWeight: 700, color: '#cf1322', marginTop: 4 }}>
++              {stats.l2Count}{' '}
++              <span style={{ fontSize: 14, fontWeight: 'normal', color: 'rgba(0,0,0,0.45)' }}>
++                项
++              </span>
++            </div>
++            <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.65)' }}>
++              远程点火/熄火强制校验 6 位安全码
++            </div>
++          </Card>
++        </Col>
++
++        <Col xs={24} sm={12} lg={6}>
++          <Card styles={{ body: { padding: '16px 20px' } }} style={{ borderRadius: 8 }}>
++            <Text type="secondary" style={{ fontSize: 13 }}>
++              4 大业务功能分类分布
++            </Text>
++            <div style={{ fontSize: 20, fontWeight: 700, color: '#52c41a', marginTop: 8 }}>
++              {stats.categoryCounts[CommandCategory.DOOR_BODY]}
++              <span style={{ fontSize: 12, fontWeight: 'normal', color: 'rgba(0,0,0,0.45)' }}> 门锁 </span>·{' '}
++              {stats.categoryCounts[CommandCategory.POWER_FIND]}
++              <span style={{ fontSize: 12, fontWeight: 'normal', color: 'rgba(0,0,0,0.45)' }}> 动力 </span>·{' '}
++              {stats.categoryCounts[CommandCategory.CABIN_CLIMATE]}
++              <span style={{ fontSize: 12, fontWeight: 'normal', color: 'rgba(0,0,0,0.45)' }}> 座舱 </span>·{' '}
++              {stats.categoryCounts[CommandCategory.WINDOW_ROOF]}
++              <span style={{ fontSize: 12, fontWeight: 'normal', color: 'rgba(0,0,0,0.45)' }}> 车窗</span>
++            </div>
++            <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.65)' }}>
++              L0: {stats.l0Count} 项 · L1: {stats.l1Count} 项 · L2: {stats.l2Count} 项
++            </div>
++          </Card>
++        </Col>
++
++        <Col xs={24} sm={12} lg={6}>
++          <Card styles={{ body: { padding: '16px 20px' } }} style={{ borderRadius: 8 }}>
++            <Text type="secondary" style={{ fontSize: 13 }}>
++              支持下行动态参数指令
++            </Text>
++            <div style={{ fontSize: 28, fontWeight: 700, color: '#722ed1', marginTop: 4 }}>
++              {stats.parametricCount}{' '}
++              <span style={{ fontSize: 14, fontWeight: 'normal', color: 'rgba(0,0,0,0.45)' }}>
++                项
++              </span>
++            </div>
++            <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.65)' }}>
++              具备温度、风速、时长等 Schema 约束
++            </div>
++          </Card>
++        </Col>
++      </Row>
++
++      {/* 搜索与筛选工具栏 */}
++      <Card styles={{ body: { padding: '16px 20px' } }} style={{ borderRadius: 8 }}>
++        <Row gutter={[16, 12]} align="middle" justify="space-between">
++          <Col xs={24} md={16} lg={14}>
++            <Space wrap size={12}>
++              <Input
++                prefix={<SearchOutlined style={{ color: 'rgba(0,0,0,0.35)' }} />}
++                placeholder="搜索指令代码、名称、Opcode、CAN信号或描述..."
++                allowClear
++                value={searchKeyword}
++                onChange={(e) => setSearchKeyword(e.target.value)}
++                style={{ width: 260 }}
++              />
++
++              <Select
++                value={selectedCategory}
++                onChange={(val) => setSelectedCategory(val)}
++                style={{ width: 140 }}
++                options={[
++                  { label: '全部集群 (13)', value: 'ALL' },
++                  { label: '车门与车身 (4)', value: CommandCategory.DOOR_BODY },
++                  { label: '动力与寻车 (3)', value: CommandCategory.POWER_FIND },
++                  { label: '座舱温控 (3)', value: CommandCategory.CABIN_CLIMATE },
++                  { label: '车窗天窗 (3)', value: CommandCategory.WINDOW_ROOF },
++                ]}
++              />
++
++              <Select
++                value={selectedSecurityLevel}
++                onChange={(val) => setSelectedSecurityLevel(val)}
++                style={{ width: 140 }}
++                options={[
++                  { label: '全部安全等级', value: 'ALL' },
++                  { label: 'L0 无感直发', value: SecurityLevel.L0 },
++                  { label: 'L1 二次确认', value: SecurityLevel.L1 },
++                  { label: 'L2 强安全码', value: SecurityLevel.L2 },
++                ]}
++              />
++            </Space>
++          </Col>
++
++          <Col xs={24} md={8} lg={10} style={{ textAlign: 'right' }}>
++            <Space wrap size={8}>
++              <Button
++                icon={<FileTextOutlined />}
++                onClick={handleExportMarkdown}
++                title="导出标准 Markdown 协议手册"
++              >
++                导出 Markdown 手册
++              </Button>
++              <Button
++                icon={<DownloadOutlined />}
++                onClick={handleExportCsv}
++                title="导出 RFC 4180 CSV 字典"
++              >
++                导出 CSV 字典
++              </Button>
++              <Button icon={<ReloadOutlined />} onClick={loadDictionary} loading={loading}>
++                刷新
++              </Button>
++            </Space>
++          </Col>
++        </Row>
++      </Card>
++
++      {/* 核心 Table 列表 */}
++      <Card styles={{ body: { padding: 0 } }} style={{ borderRadius: 8, overflow: 'hidden' }}>
++        <Table<CommandDictionaryItem>
++          columns={columns}
++          dataSource={filteredItems}
++          rowKey="code"
++          loading={loading}
++          pagination={{
++            pageSize: 13,
++            showTotal: (total) => `共 ${total} 条标准指令`,
++            hideOnSinglePage: true,
++          }}
++          scroll={{ x: 1000 }}
++        />
++      </Card>
++
++      {/* 协议报文详情抽屉 (ProtocolDetailDrawer - 600px) */}
++      <Drawer
++        title={
++          <Space align="center" size={8}>
++            <CodeOutlined style={{ color: '#1677ff' }} />
++            <span>
++              {activeItem?.name} ({activeItem?.code}) 协议报文规范
++            </span>
++          </Space>
++        }
++        placement="right"
++        width={600}
++        open={detailDrawerOpen}
++        onClose={() => setDetailDrawerOpen(false)}
++        extra={
++          <Button
++            type="primary"
++            size="small"
++            icon={<EditOutlined />}
++            onClick={() => {
++              if (activeItem) {
++                handleOpenEdit(activeItem);
++              }
++            }}
++          >
++            编辑元数据
++          </Button>
++        }
++      >
++        {activeItem && (
++          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
++            {/* 安全警示通告 */}
++            {activeItem.safetyWarning && (
++              <Alert
++                message="高危操作人机交互安全提示"
++                description={activeItem.safetyWarning}
++                type="warning"
++                showIcon
++              />
++            )}
++
++            {/* 基础通信与安全属性 */}
++            <Descriptions
++              title="1. 基础通信与安全属性"
++              bordered
++              size="small"
++              column={1}
++              styles={{ label: { width: 140, fontWeight: 500 } }}
++            >
++              <Descriptions.Item label="指令代号 (Code)">
++                <Text code copyable>
++                  {activeItem.code}
++                </Text>
++              </Descriptions.Item>
++              <Descriptions.Item label="下行控制字 (Opcode)">
++                <Tag color="geekblue" style={{ fontFamily: 'monospace', fontSize: 13 }}>
++                  {activeItem.downlinkOpcode}
++                </Tag>
++              </Descriptions.Item>
++              <Descriptions.Item label="业务功能集群">
++                <Tag color={COMMAND_CATEGORY_MAP[activeItem.category]?.tagColor || 'blue'}>
++                  {COMMAND_CATEGORY_MAP[activeItem.category]?.label || activeItem.category}
++                </Tag>
++              </Descriptions.Item>
++              <Descriptions.Item label="默认安全等级">
++                <Tag color={SECURITY_LEVEL_TAG_MAP[activeItem.defaultSecurityLevel]?.color}>
++                  {SECURITY_LEVEL_TAG_MAP[activeItem.defaultSecurityLevel]?.label}
++                </Tag>
++              </Descriptions.Item>
++              <Descriptions.Item label="默认超时时间">
++                {activeItem.defaultTimeoutMs} ms ({activeItem.defaultTimeoutMs / 1000} 秒)
++              </Descriptions.Item>
++              <Descriptions.Item label="频控冷却限制">
++                {activeItem.defaultFrequencyLimitSeconds} 秒
++              </Descriptions.Item>
++              <Descriptions.Item label="CAN 总线信号映射">
++                <Text code copyable style={{ fontFamily: 'monospace' }}>
++                  {activeItem.canSignalName}
++                </Text>
++              </Descriptions.Item>
++              <Descriptions.Item label="功能描述">
++                {activeItem.description}
++              </Descriptions.Item>
++            </Descriptions>
++
++            {/* 下行 Payload Schema 约束表格 */}
++            <div>
++              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
++                <Text strong style={{ fontSize: 15 }}>
++                  2. 下行 JSON Payload Schema 约束
++                </Text>
++                <Badge
++                  count={Object.keys(activeItem.payloadSchema || {}).length}
++                  style={{ backgroundColor: '#1677ff' }}
++                />
++              </div>
++
++              {Object.keys(activeItem.payloadSchema || {}).length > 0 ? (
++                <Table
++                  dataSource={Object.values(activeItem.payloadSchema)}
++                  rowKey="paramName"
++                  pagination={false}
++                  size="small"
++                  columns={[
++                    {
++                      title: '参数名',
++                      dataIndex: 'paramName',
++                      key: 'paramName',
++                      width: 130,
++                      render: (text: string) => <Text code>{text}</Text>,
++                    },
++                    {
++                      title: '类型',
++                      dataIndex: 'type',
++                      key: 'type',
++                      width: 80,
++                      render: (type: string) => <Tag color="cyan">{type}</Tag>,
++                    },
++                    {
++                      title: '必填',
++                      dataIndex: 'required',
++                      key: 'required',
++                      width: 65,
++                      render: (req: boolean) => (
++                        <Tag color={req ? 'red' : 'default'}>{req ? '必填' : '选填'}</Tag>
++                      ),
++                    },
++                    {
++                      title: '约束范围 / 允许值',
++                      key: 'constraint',
++                      render: (_, p: ProtocolParamSchema) => {
++                        if (p.allowedValues) {
++                          return (
++                            <Text style={{ fontSize: 12 }}>
++                              [{p.allowedValues.join(', ')}]
++                            </Text>
++                          );
++                        }
++                        if (p.minimum !== undefined || p.maximum !== undefined) {
++                          return (
++                            <Text style={{ fontSize: 12 }}>
++                              {p.minimum ?? '-'} ~ {p.maximum ?? '-'} {p.unit || ''}
++                              {p.step ? ` (步长 ${p.step})` : ''}
++                            </Text>
++                          );
++                        }
++                        return <Text type="secondary">-</Text>;
++                      },
++                    },
++                    {
++                      title: '说明',
++                      dataIndex: 'description',
++                      key: 'description',
++                      render: (desc: string) => (
++                        <Text style={{ fontSize: 12 }}>{desc}</Text>
++                      ),
++                    },
++                  ]}
++                />
++              ) : (
++                <Alert
++                  type="info"
++                  showIcon
++                  message="标准固定控制帧"
++                  description="该指令为无参数控制指令，下行帧采用固定 Payload 结构，无需下发动态约束参数。"
++                />
++              )}
++            </div>
++
++            {/* 示例报文与一键复制 */}
++            <div>
++              <div
++                style={{
++                  display: 'flex',
++                  alignItems: 'center',
++                  justifyContent: 'space-between',
++                  marginBottom: 8,
++                }}
++              >
++                <Text strong style={{ fontSize: 15 }}>
++                  3. 下行 JSON 示例报文与终端应答协议
++                </Text>
++                <Button
++                  size="small"
++                  icon={<CopyOutlined />}
++                  onClick={() =>
++                    handleCopyText(
++                      JSON.stringify(activeItem.samplePayload, null, 2),
++                      'JSON 示例报文'
++                    )
++                  }
++                >
++                  复制 JSON
++                </Button>
++              </div>
++
++              <div
++                style={{
++                  backgroundColor: '#f5f7fa',
++                  border: '1px solid #d9d9d9',
++                  borderRadius: 6,
++                  padding: '12px 16px',
++                  fontFamily: 'monospace',
++                  fontSize: 13,
++                  whiteSpace: 'pre-wrap',
++                }}
++              >
++                {JSON.stringify(activeItem.samplePayload, null, 2)}
++              </div>
++
++              <div style={{ marginTop: 12 }}>
++                <Alert
++                  type="success"
++                  showIcon
++                  message="终端 ACK 应答规范"
++                  description={
++                    <div style={{ fontSize: 12, lineHeight: '20px' }}>
++                      <div>• 应答超时：车载 T-Box 须在 {activeItem.defaultTimeoutMs}ms 内回传执行状态</div>
++                      <div>• 成功响应：<code>{`{ "ackCode": 0, "status": "SUCCESS" }`}</code></div>
++                      <div>• 异常拦截：若遭遇设防或车速不为0将返回 <code>400 BUSINESS_REJECTED</code></div>
++                    </div>
++                  }
++                />
++              </div>
++            </div>
++          </div>
++        )}
++      </Drawer>
++
++      {/* 编辑字典项元数据 Modal */}
++      <Modal
++        title={`编辑指令字典元数据 - ${editingItem?.name}`}
++        open={editModalOpen}
++        onCancel={() => setEditModalOpen(false)}
++        onOk={handleSaveEdit}
++        confirmLoading={updating}
++        destroyOnClose
++        width={560}
++      >
++        <Form form={editForm} layout="vertical" style={{ marginTop: 16 }}>
++          <Row gutter={16}>
++            <Col span={12}>
++              <Form.Item label="指令代号 (Code)" name="code">
++                <Input disabled style={{ fontFamily: 'monospace' }} />
++              </Form.Item>
++            </Col>
++            <Col span={12}>
++              <Form.Item label="下行控制字 (Opcode)" name="downlinkOpcode">
++                <Input disabled style={{ fontFamily: 'monospace' }} />
++              </Form.Item>
++            </Col>
++          </Row>
++
++          <Row gutter={16}>
++            <Col span={12}>
++              <Form.Item label="CAN 信号名称" name="canSignalName">
++                <Input disabled style={{ fontFamily: 'monospace' }} />
++              </Form.Item>
++            </Col>
++            <Col span={12}>
++              <Form.Item label="默认安全等级" name="defaultSecurityLevel">
++                <Select
++                  disabled
++                  options={[
++                    { label: 'L0 无感直发', value: SecurityLevel.L0 },
++                    { label: 'L1 二次确认', value: SecurityLevel.L1 },
++                    { label: 'L2 强安全码', value: SecurityLevel.L2 },
++                  ]}
++                />
++              </Form.Item>
++            </Col>
++          </Row>
++
++          <Row gutter={16}>
++            <Col span={12}>
++              <Form.Item
++                label="默认超时时间 (ms)"
++                name="defaultTimeoutMs"
++                rules={[
++                  { required: true, message: '请输入默认超时时间' },
++                  {
++                    type: 'number',
++                    min: 3000,
++                    max: 60000,
++                    message: '超时时间须介于 3,000 ~ 60,000 ms',
++                  },
++                ]}
++              >
++                <InputNumber
++                  step={1000}
++                  addonAfter="ms"
++                  style={{ width: '100%' }}
++                />
++              </Form.Item>
++            </Col>
++            <Col span={12}>
++              <Form.Item
++                label="频控冷却限制 (秒)"
++                name="defaultFrequencyLimitSeconds"
++                rules={[
++                  { required: true, message: '请输入冷却时间' },
++                  {
++                    type: 'number',
++                    min: 0,
++                    max: 300,
++                    message: '冷却时间须介于 0 ~ 300 秒',
++                  },
++                ]}
++              >
++                <InputNumber
++                  min={0}
++                  max={300}
++                  step={1}
++                  addonAfter="s"
++                  style={{ width: '100%' }}
++                />
++              </Form.Item>
++            </Col>
++          </Row>
++
++          <Form.Item
++            label="业务功能说明"
++            name="description"
++            rules={[
++              { required: true, message: '请输入功能说明' },
++              { min: 5, message: '功能说明不得少于 5 个字符' },
++            ]}
++          >
++            <Input.TextArea rows={2} placeholder="简述该指令的业务控制作用" />
++          </Form.Item>
++
++          <Form.Item
++            label="人机交互安全警示提示文案 (可选)"
++            name="safetyWarning"
++          >
++            <Input.TextArea
++              rows={2}
++              placeholder="用于在下发高风险指令前弹窗二次警示车主/操作员（如防夹手、行车防盗等）"
++            />
++          </Form.Item>
++        </Form>
++      </Modal>
++    </div>
++  );
++};
+diff --git a/apps/web/src/views/command/command-dictionary-core.ts b/apps/web/src/views/command/command-dictionary-core.ts
+new file mode 100644
+index 0000000..0f8e602
+--- /dev/null
++++ b/apps/web/src/views/command/command-dictionary-core.ts
+@@ -0,0 +1,663 @@
++import { CommandCode, SecurityLevel } from '@car-control/contracts';
++import { CommandCategory, COMMAND_CATEGORY_MAP } from './capability-core.ts';
++
++export { CommandCode, SecurityLevel, CommandCategory };
++
++/**
++ * 协议参数数据类型
++ */
++export type ProtocolParamType = 'string' | 'number' | 'boolean' | 'enum' | 'object';
++
++/**
++ * 协议下行参数详细 Schema 约束
++ */
++export interface ProtocolParamSchema {
++  paramName: string;
++  type: ProtocolParamType;
++  required: boolean;
++  description: string;
++  defaultValue?: unknown;
++  unit?: string;
++  canSignal?: string;
++  allowedValues?: (string | number)[];
++  minimum?: number;
++  maximum?: number;
++  step?: number;
++}
++
++/**
++ * 指令字典项领域模型
++ */
++export interface CommandDictionaryItem {
++  code: CommandCode;
++  name: string;
++  category: CommandCategory;
++  defaultSecurityLevel: SecurityLevel;
++  defaultTimeoutMs: number;
++  defaultFrequencyLimitSeconds: number;
++  canSignalName: string;
++  downlinkOpcode: string; // 格式如 0x02_01
++  payloadSchema: Record<string, ProtocolParamSchema>;
++  samplePayload: Record<string, unknown>;
++  description: string;
++  safetyWarning?: string;
++}
++
++/**
++ * 字典统计 KPI 概览模型
++ */
++export interface DictionaryStats {
++  total: number;
++  l0Count: number;
++  l1Count: number;
++  l2Count: number;
++  parametricCount: number;
++  averageTimeoutMs: number;
++  averageFrequencyLimitSeconds: number;
++  categoryCounts: Record<CommandCategory, number>;
++}
++
++/**
++ * 多维检索过滤条件
++ */
++export interface DictionaryFilterQuery {
++  keyword?: string;
++  category?: CommandCategory | 'ALL';
++  securityLevel?: SecurityLevel | 'ALL';
++}
++
++/**
++ * Payload Schema 校验结果
++ */
++export interface PayloadValidationResult {
++  valid: boolean;
++  errors: string[];
++}
++
++/**
++ * 全量 13 类标准生产环境控车指令字典种子定义
++ */
++export const SEED_COMMAND_DICTIONARY: CommandDictionaryItem[] = [
++  {
++    code: CommandCode.CMD_LOCK,
++    name: '车辆上锁',
++    category: CommandCategory.DOOR_BODY,
++    defaultSecurityLevel: SecurityLevel.L0,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 5,
++    canSignalName: 'CAN_BCM_DoorLockCmd',
++    downlinkOpcode: '0x02_01',
++    payloadSchema: {},
++    samplePayload: { action: 'LOCK' },
++    description: '闭锁全车四门与后备箱门锁，自动进入设防警戒状态',
++  },
++  {
++    code: CommandCode.CMD_UNLOCK,
++    name: '车辆解锁',
++    category: CommandCategory.DOOR_BODY,
++    defaultSecurityLevel: SecurityLevel.L1,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 5,
++    canSignalName: 'CAN_BCM_DoorUnlockCmd',
++    downlinkOpcode: '0x02_02',
++    payloadSchema: {},
++    samplePayload: { action: 'UNLOCK' },
++    description: '解除全车门锁设防状态，允许拉开车门进入座舱',
++    safetyWarning: '确认解锁车辆门锁吗？解锁后若无人上车，可能存在财产被盗风险',
++  },
++  {
++    code: CommandCode.CMD_TRUNK_OPEN,
++    name: '开启后备箱',
++    category: CommandCategory.DOOR_BODY,
++    defaultSecurityLevel: SecurityLevel.L1,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 5,
++    canSignalName: 'CAN_PLGM_TrunkOpenCmd',
++    downlinkOpcode: '0x02_03',
++    payloadSchema: {},
++    samplePayload: { action: 'OPEN' },
++    description: '电动弹开并举升车辆电动后备箱尾门',
++    safetyWarning: '后备箱开启后若无人关闭可能存在财产风险，确认开启吗？',
++  },
++  {
++    code: CommandCode.CMD_TRUNK_CLOSE,
++    name: '关闭后备箱',
++    category: CommandCategory.DOOR_BODY,
++    defaultSecurityLevel: SecurityLevel.L1,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 5,
++    canSignalName: 'CAN_PLGM_TrunkCloseCmd',
++    downlinkOpcode: '0x02_04',
++    payloadSchema: {},
++    samplePayload: { action: 'CLOSE' },
++    description: '电动关闭并电吸锁止车辆后备箱尾门',
++    safetyWarning: '关闭后备箱前请确认尾箱周边无人及障碍物，确认关闭吗？',
++  },
++  {
++    code: CommandCode.CMD_FIND_VEHICLE,
++    name: '鸣笛寻车',
++    category: CommandCategory.POWER_FIND,
++    defaultSecurityLevel: SecurityLevel.L0,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 10,
++    canSignalName: 'CAN_BCM_HornFlashCmd',
++    downlinkOpcode: '0x02_05',
++    payloadSchema: {
++      durationSeconds: {
++        paramName: 'durationSeconds',
++        type: 'number',
++        required: false,
++        description: '寻车鸣笛双闪持续时长 (5~60秒)',
++        defaultValue: 30,
++        unit: 's',
++        canSignal: 'CAN_BCM_HornFlashDuration',
++        minimum: 5,
++        maximum: 60,
++        step: 5,
++      },
++    },
++    samplePayload: { durationSeconds: 30 },
++    description: '控制车身双闪灯间歇闪烁并鸣响喇叭协助车主快速辨识方位',
++  },
++  {
++    code: CommandCode.CMD_ENGINE_START,
++    name: '远程点火启动',
++    category: CommandCategory.POWER_FIND,
++    defaultSecurityLevel: SecurityLevel.L2,
++    defaultTimeoutMs: 15000,
++    defaultFrequencyLimitSeconds: 60,
++    canSignalName: 'CAN_VCU_RemoteEngineStartCmd',
++    downlinkOpcode: '0x02_06',
++    payloadSchema: {
++      durationMinutes: {
++        paramName: 'durationMinutes',
++        type: 'number',
++        required: true,
++        description: '点火怠速运行时间 (5~45分钟)',
++        defaultValue: 15,
++        unit: 'min',
++        canSignal: 'CAN_VCU_EngineIdleTime',
++        minimum: 5,
++        maximum: 45,
++        step: 5,
++      },
++    },
++    samplePayload: { durationMinutes: 15 },
++    description: '远程点火起动动力系统，可设定运行时间 (5~45分钟)',
++    safetyWarning: '远程启动发动机具有高安全风险，运行到期后自动熄火，强制校验 6 位安全码',
++  },
++  {
++    code: CommandCode.CMD_ENGINE_STOP,
++    name: '远程熄火',
++    category: CommandCategory.POWER_FIND,
++    defaultSecurityLevel: SecurityLevel.L2,
++    defaultTimeoutMs: 15000,
++    defaultFrequencyLimitSeconds: 60,
++    canSignalName: 'CAN_VCU_RemoteEngineStopCmd',
++    downlinkOpcode: '0x02_07',
++    payloadSchema: {},
++    samplePayload: { action: 'STOP' },
++    description: '远程切断高压或发动机动力，使车辆进入熄火驻车状态',
++    safetyWarning: '远程熄火前系统严格校验当前车速为 0 且处于 P 档，强制校验 6 位安全码',
++  },
++  {
++    code: CommandCode.CMD_AC_START,
++    name: '开启空调',
++    category: CommandCategory.CABIN_CLIMATE,
++    defaultSecurityLevel: SecurityLevel.L1,
++    defaultTimeoutMs: 15000,
++    defaultFrequencyLimitSeconds: 15,
++    canSignalName: 'CAN_HVAC_AcStartCmd',
++    downlinkOpcode: '0x02_08',
++    payloadSchema: {
++      temperature: {
++        paramName: 'temperature',
++        type: 'number',
++        required: true,
++        description: '目标座舱设定温度 (16~30℃)',
++        defaultValue: 24,
++        unit: '℃',
++        canSignal: 'CAN_HVAC_TargetTemp',
++        minimum: 16,
++        maximum: 30,
++        step: 0.5,
++      },
++      fanSpeed: {
++        paramName: 'fanSpeed',
++        type: 'number',
++        required: false,
++        description: '空调出风风速 (1~7档)',
++        defaultValue: 3,
++        unit: '档',
++        canSignal: 'CAN_HVAC_FanSpeed',
++        minimum: 1,
++        maximum: 7,
++        step: 1,
++      },
++      mode: {
++        paramName: 'mode',
++        type: 'enum',
++        required: false,
++        description: '循环风向模式 (AUTO/COOL/HEAT/DEFROST)',
++        defaultValue: 'AUTO',
++        canSignal: 'CAN_HVAC_AirMode',
++        allowedValues: ['AUTO', 'COOL', 'HEAT', 'DEFROST'],
++      },
++    },
++    samplePayload: { temperature: 24, fanSpeed: 3, mode: 'AUTO' },
++    description: '开启座舱空调系统并配置温度、风速与循环模式',
++    safetyWarning: '远程开启空调将持续消耗电池电量或燃油，确认下发设定吗？',
++  },
++  {
++    code: CommandCode.CMD_AC_STOP,
++    name: '关闭空调',
++    category: CommandCategory.CABIN_CLIMATE,
++    defaultSecurityLevel: SecurityLevel.L0,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 10,
++    canSignalName: 'CAN_HVAC_AcStopCmd',
++    downlinkOpcode: '0x02_09',
++    payloadSchema: {},
++    samplePayload: { action: 'STOP' },
++    description: '一键停止车载空调运行并关闭风门',
++  },
++  {
++    code: CommandCode.CMD_SEAT_HEAT,
++    name: '座椅加热',
++    category: CommandCategory.CABIN_CLIMATE,
++    defaultSecurityLevel: SecurityLevel.L1,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 10,
++    canSignalName: 'CAN_SCM_SeatHeatingCmd',
++    downlinkOpcode: '0x02_0A',
++    payloadSchema: {
++      position: {
++        paramName: 'position',
++        type: 'enum',
++        required: true,
++        description: '加热座椅位置 (DRIVER=主驾驶, PASSENGER=副驾驶)',
++        defaultValue: 'DRIVER',
++        canSignal: 'CAN_SCM_SeatPosition',
++        allowedValues: ['DRIVER', 'PASSENGER'],
++      },
++      level: {
++        paramName: 'level',
++        type: 'number',
++        required: true,
++        description: '加热档位 (0=关闭, 1=弱, 2=中, 3=强)',
++        defaultValue: 2,
++        unit: '档',
++        canSignal: 'CAN_SCM_HeatLevel',
++        minimum: 0,
++        maximum: 3,
++        step: 1,
++      },
++    },
++    samplePayload: { position: 'DRIVER', level: 2 },
++    description: '调节主驾驶或副驾驶座椅电加热档位 (1~3档)',
++    safetyWarning: '开启座椅加热将持续消耗电能，确认加热档位设置吗？',
++  },
++  {
++    code: CommandCode.CMD_WINDOW_OPEN,
++    name: '一键降窗',
++    category: CommandCategory.WINDOW_ROOF,
++    defaultSecurityLevel: SecurityLevel.L1,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 10,
++    canSignalName: 'CAN_BCM_WindowDownCmd',
++    downlinkOpcode: '0x02_0B',
++    payloadSchema: {
++      percentage: {
++        paramName: 'percentage',
++        type: 'number',
++        required: false,
++        description: '车窗降下开度百分比 (100% 为全开)',
++        defaultValue: 100,
++        unit: '%',
++        canSignal: 'CAN_BCM_WindowOpenPercent',
++        minimum: 10,
++        maximum: 100,
++        step: 10,
++      },
++    },
++    samplePayload: { percentage: 100 },
++    description: '下发四门车窗一键开启降下指令',
++    safetyWarning: '一键开启车窗通风，离开车辆前请确认财产防盗与天气情况',
++  },
++  {
++    code: CommandCode.CMD_WINDOW_CLOSE,
++    name: '一键升窗',
++    category: CommandCategory.WINDOW_ROOF,
++    defaultSecurityLevel: SecurityLevel.L1,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 10,
++    canSignalName: 'CAN_BCM_WindowUpCmd',
++    downlinkOpcode: '0x02_0C',
++    payloadSchema: {},
++    samplePayload: { action: 'CLOSE' },
++    description: '下发四门车窗一键闭合升起指令',
++    safetyWarning: '一键升窗过程中请特别注意车门旁乘客防夹手安全，确认升起车窗吗？',
++  },
++  {
++    code: CommandCode.CMD_SUNROOF_CONTROL,
++    name: '开启/关闭天窗',
++    category: CommandCategory.WINDOW_ROOF,
++    defaultSecurityLevel: SecurityLevel.L1,
++    defaultTimeoutMs: 10000,
++    defaultFrequencyLimitSeconds: 10,
++    canSignalName: 'CAN_SRM_SunroofControlCmd',
++    downlinkOpcode: '0x02_0D',
++    payloadSchema: {
++      action: {
++        paramName: 'action',
++        type: 'enum',
++        required: true,
++        description: '天窗动作类型 (OPEN=全开, CLOSE=关闭, TILT=起翘通风)',
++        defaultValue: 'OPEN',
++        canSignal: 'CAN_SRM_SunroofAction',
++        allowedValues: ['OPEN', 'CLOSE', 'TILT'],
++      },
++    },
++    samplePayload: { action: 'OPEN' },
++    description: '控制车顶全景天窗遮阳帘与玻璃开启或关闭',
++    safetyWarning: '操作全景天窗开闭前请确认车顶无异物遮挡及未处于下雨天气',
++  },
++];
++
++/**
++ * 计算指令字典整体统计指标
++ */
++export function calculateDictionaryStats(items: CommandDictionaryItem[]): DictionaryStats {
++  const initialCategoryCounts: Record<CommandCategory, number> = {
++    [CommandCategory.DOOR_BODY]: 0,
++    [CommandCategory.POWER_FIND]: 0,
++    [CommandCategory.CABIN_CLIMATE]: 0,
++    [CommandCategory.WINDOW_ROOF]: 0,
++  };
++
++  if (!items || items.length === 0) {
++    return {
++      total: 0,
++      l0Count: 0,
++      l1Count: 0,
++      l2Count: 0,
++      parametricCount: 0,
++      averageTimeoutMs: 0,
++      averageFrequencyLimitSeconds: 0,
++      categoryCounts: initialCategoryCounts,
++    };
++  }
++
++  let l0Count = 0;
++  let l1Count = 0;
++  let l2Count = 0;
++  let parametricCount = 0;
++  let totalTimeout = 0;
++  let totalFreqLimit = 0;
++  const categoryCounts = { ...initialCategoryCounts };
++
++  for (const item of items) {
++    if (item.defaultSecurityLevel === SecurityLevel.L0) l0Count++;
++    else if (item.defaultSecurityLevel === SecurityLevel.L1) l1Count++;
++    else if (item.defaultSecurityLevel === SecurityLevel.L2) l2Count++;
++
++    if (item.payloadSchema && Object.keys(item.payloadSchema).length > 0) {
++      parametricCount++;
++    }
++
++    totalTimeout += item.defaultTimeoutMs;
++    totalFreqLimit += item.defaultFrequencyLimitSeconds;
++
++    if (categoryCounts[item.category] !== undefined) {
++      categoryCounts[item.category]++;
++    }
++  }
++
++  const count = items.length;
++
++  return {
++    total: count,
++    l0Count,
++    l1Count,
++    l2Count,
++    parametricCount,
++    averageTimeoutMs: Math.round(totalTimeout / count),
++    averageFrequencyLimitSeconds: Math.round((totalFreqLimit / count) * 10) / 10,
++    categoryCounts,
++  };
++}
++
++/**
++ * 依据检索条件过滤指令字典列表
++ */
++export function filterDictionaryItems(
++  items: CommandDictionaryItem[],
++  query?: DictionaryFilterQuery
++): CommandDictionaryItem[] {
++  if (!items) return [];
++  if (!query) return items;
++
++  const kw = query.keyword ? query.keyword.trim().toLowerCase() : '';
++  const cat = query.category;
++  const sec = query.securityLevel;
++
++  return items.filter((item) => {
++    // 关键字检索
++    if (kw) {
++      const matchCode = item.code.toLowerCase().includes(kw);
++      const matchName = item.name.toLowerCase().includes(kw);
++      const matchOpcode = item.downlinkOpcode.toLowerCase().includes(kw);
++      const matchCan = item.canSignalName.toLowerCase().includes(kw);
++      const matchDesc = item.description.toLowerCase().includes(kw);
++      if (!matchCode && !matchName && !matchOpcode && !matchCan && !matchDesc) {
++        return false;
++      }
++    }
++
++    // 分类筛选
++    if (cat && cat !== 'ALL') {
++      if (item.category !== cat) return false;
++    }
++
++    // 安全等级筛选
++    if (sec && sec !== 'ALL') {
++      if (item.defaultSecurityLevel !== sec) return false;
++    }
++
++    return true;
++  });
++}
++
++/**
++ * 校验下行 payload 是否符合指令参数 Schema
++ */
++export function validatePayloadAgainstSchema(
++  schema: Record<string, ProtocolParamSchema>,
++  payload: Record<string, unknown>
++): PayloadValidationResult {
++  const errors: string[] = [];
++
++  for (const [key, paramSchema] of Object.entries(schema)) {
++    const val = payload[key];
++
++    // 必填项检查
++    if (paramSchema.required) {
++      if (val === undefined || val === null || val === '') {
++        errors.push(`参数【${paramSchema.paramName}】为必填项`);
++        continue;
++      }
++    }
++
++    if (val === undefined || val === null) {
++      continue;
++    }
++
++    // 类型检查
++    if (paramSchema.type === 'number') {
++      if (typeof val !== 'number' || Number.isNaN(val)) {
++        errors.push(`参数【${paramSchema.paramName}】必须为数值类型`);
++      } else {
++        if (paramSchema.minimum !== undefined && val < paramSchema.minimum) {
++          errors.push(`参数【${paramSchema.paramName}】不能小于最小值 ${paramSchema.minimum}`);
++        }
++        if (paramSchema.maximum !== undefined && val > paramSchema.maximum) {
++          errors.push(`参数【${paramSchema.paramName}】不能大于最大值 ${paramSchema.maximum}`);
++        }
++      }
++    } else if (paramSchema.type === 'enum') {
++      if (paramSchema.allowedValues && !paramSchema.allowedValues.includes(val as string | number)) {
++        errors.push(`参数【${paramSchema.paramName}】取值不在允许的枚举集合 [${paramSchema.allowedValues.join(', ')}] 内`);
++      }
++    } else if (paramSchema.type === 'string') {
++      if (typeof val !== 'string') {
++        errors.push(`参数【${paramSchema.paramName}】必须为字符串`);
++      }
++    } else if (paramSchema.type === 'boolean') {
++      if (typeof val !== 'boolean') {
++        errors.push(`参数【${paramSchema.paramName}】必须为布尔值`);
++      }
++    }
++  }
++
++  return {
++    valid: errors.length === 0,
++    errors,
++  };
++}
++
++/**
++ * 生成 Markdown 格式的标准控车协议与字典手册
++ */
++export function generateDictionaryMarkdown(items: CommandDictionaryItem[]): string {
++  const stats = calculateDictionaryStats(items);
++  const now = new Date().toISOString().replace('T', ' ').substring(0, 19);
++
++  let md = `# 控车协议参数与指令字典手册\n\n`;
++  md += `> **生成时间**：${now}  \n`;
++  md += `> **指令总数**：${stats.total} 类标准指令 | **L2 强门禁高危**：${stats.l2Count} 项 | **支持动态参数**：${stats.parametricCount} 项\n\n`;
++
++  md += `## 1. 控车指令总览矩阵\n\n`;
++  md += `| 指令代码 | 指令名称 | 业务集群 | 下行 Opcode | 默认安全等级 | 默认超时 | 冷却限制 | CAN 信号代号 |\n`;
++  md += `|---|---|---|---|---|---|---|---|\n`;
++
++  for (const item of items) {
++    const catLabel = COMMAND_CATEGORY_MAP[item.category]?.label || item.category;
++    md += `| \`${item.code}\` | ${item.name} | ${catLabel} | \`${item.downlinkOpcode}\` | ${item.defaultSecurityLevel} | ${item.defaultTimeoutMs}ms | ${item.defaultFrequencyLimitSeconds}s | \`${item.canSignalName}\` |\n`;
++  }
++
++  md += `\n---\n\n`;
++  md += `## 2. 协议详细报文与下行 Payload 规范\n\n`;
++
++  items.forEach((item, idx) => {
++    const catLabel = COMMAND_CATEGORY_MAP[item.category]?.label || item.category;
++    md += `### ${idx + 1}. ${item.name} (\`${item.code}\`)\n\n`;
++    md += `- **指令代码 (Code)**: \`${item.code}\`\n`;
++    md += `- **下行控制字 (Opcode)**: \`${item.downlinkOpcode}\`\n`;
++    md += `- **业务功能分类**: ${catLabel}\n`;
++    md += `- **默认安全等级**: ${item.defaultSecurityLevel}\n`;
++    md += `- **默认超时时间**: ${item.defaultTimeoutMs}ms\n`;
++    md += `- **默认冷却频控**: ${item.defaultFrequencyLimitSeconds}s\n`;
++    md += `- **CAN 总线信号映射**: \`${item.canSignalName}\`\n`;
++    md += `- **功能说明**: ${item.description}\n`;
++
++    if (item.safetyWarning) {
++      md += `- **安全提示**: ⚠️ ${item.safetyWarning}\n`;
++    }
++
++    const paramEntries = Object.entries(item.payloadSchema || {});
++    if (paramEntries.length > 0) {
++      md += `\n#### 下行 Payload Schema 约束\n\n`;
++      md += `| 参数名 | 类型 | 必填 | 单位 | 默认值 | 允许取值 / 范围 | 说明 | CAN 信号 |\n`;
++      md += `|---|---|---|---|---|---|---|---|\n`;
++      for (const [key, p] of paramEntries) {
++        let rangeStr = '-';
++        if (p.allowedValues) {
++          rangeStr = `[${p.allowedValues.join(', ')}]`;
++        } else if (p.minimum !== undefined || p.maximum !== undefined) {
++          rangeStr = `${p.minimum ?? '-'} ~ ${p.maximum ?? '-'}`;
++          if (p.step) rangeStr += ` (步长 ${p.step})`;
++        }
++        md += `| \`${key}\` | \`${p.type}\` | ${p.required ? '**是**' : '否'} | ${p.unit || '-'} | ${p.defaultValue !== undefined ? `\`${p.defaultValue}\`` : '-'} | ${rangeStr} | ${p.description} | \`${p.canSignal || '-'}\` |\n`;
++      }
++    } else {
++      md += `\n*注：该指令为标准固定下行帧，无动态下行参数配置项。*\n`;
++    }
++
++    md += `\n#### JSON 示例报文\n\n`;
++    md += '```json\n';
++    md += JSON.stringify(item.samplePayload, null, 2);
++    md += '\n```\n\n';
++  });
++
++  return md;
++}
++
++/**
++ * 单元格防公式注入清洗函数 (CWE-1236 Defense)
++ * 若字段以 =, +, -, @, \t, \r 开头，则追加单引号前缀阻断 Excel/Calc 公式执行
++ */
++export function sanitizeCsvCell(rawVal: unknown): string {
++  if (rawVal === null || rawVal === undefined) {
++    return '';
++  }
++
++  let text = String(rawVal);
++  const trimmed = text.trimStart();
++
++  // CWE-1236 Formula Injection 防御
++  if (/^[=+\-@\t\r]/.test(trimmed)) {
++    text = `'${trimmed}`;
++  }
++
++  // RFC 4180 转义：含有逗号、双引号、换行符的字段需加双引号，内部双引号写成两个双引号
++  if (/[",\n\r]/.test(text)) {
++    return `"${text.replace(/"/g, '""')}"`;
++  }
++
++  return text;
++}
++
++/**
++ * 生成 RFC 4180 标准且具备 UTF-8 BOM 和 CWE-1236 防御的 CSV 字典文档
++ */
++export function generateDictionaryCsv(items: CommandDictionaryItem[]): string {
++  const headers = [
++    '指令代码',
++    '指令名称',
++    '业务集群',
++    '下行Opcode',
++    '安全等级',
++    '默认超时(ms)',
++    '频控冷却(s)',
++    'CAN信号',
++    '参数数量',
++    '功能描述',
++    '安全提示',
++  ];
++
++  const rows: string[] = [headers.join(',')];
++
++  for (const item of items) {
++    const catLabel = COMMAND_CATEGORY_MAP[item.category]?.label || item.category;
++    const paramCount = Object.keys(item.payloadSchema || {}).length;
++
++    const rowCells = [
++      sanitizeCsvCell(item.code),
++      sanitizeCsvCell(item.name),
++      sanitizeCsvCell(catLabel),
++      sanitizeCsvCell(item.downlinkOpcode),
++      sanitizeCsvCell(item.defaultSecurityLevel),
++      sanitizeCsvCell(item.defaultTimeoutMs),
++      sanitizeCsvCell(item.defaultFrequencyLimitSeconds),
++      sanitizeCsvCell(item.canSignalName),
++      sanitizeCsvCell(paramCount),
++      sanitizeCsvCell(item.description),
++      sanitizeCsvCell(item.safetyWarning || ''),
++    ];
++
++    rows.push(rowCells.join(','));
++  }
++
++  // 写入 UTF-8 BOM 标识 \uFEFF，防止中文在 Windows Excel 下出现乱码
++  return `\uFEFF${rows.join('\n')}\n`;
++}
+diff --git a/apps/web/src/views/command/index.ts b/apps/web/src/views/command/index.ts
+index ce0f42d..011bb5d 100644
+--- a/apps/web/src/views/command/index.ts
++++ b/apps/web/src/views/command/index.ts
+@@ -3,9 +3,12 @@ export { CommandStreamDrawer, type CommandStreamDrawerProps } from './CommandStr
+ export { CapabilityTemplateView } from './CapabilityTemplateView.tsx';
+ export { VehicleOverrideDrawer, type VehicleOverrideDrawerProps } from './VehicleOverrideDrawer.tsx';
+ export { DigitalKeyManageView } from './DigitalKeyManageView.tsx';
++export { CommandDictionaryModal, type CommandDictionaryModalProps } from './CommandDictionaryModal.tsx';
++export { CommandDictionaryView, type CommandDictionaryViewProps } from './CommandDictionaryView.tsx';
+ export * from './command-core.ts';
+ export * from './command-stream-core.ts';
+ export * from './capability-core.ts';
+ export * from './vehicle-override-core.ts';
+ export * from './digital-key-core.ts';
++export * from './command-dictionary-core.ts';
+ 

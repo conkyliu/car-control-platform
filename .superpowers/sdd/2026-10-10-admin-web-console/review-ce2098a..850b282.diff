@@ -1,0 +1,1761 @@
+diff --git a/apps/web/src/api/vehicle-override.ts b/apps/web/src/api/vehicle-override.ts
+new file mode 100644
+index 0000000..052bc49
+--- /dev/null
++++ b/apps/web/src/api/vehicle-override.ts
+@@ -0,0 +1,131 @@
++import { http, ApiError } from './client.ts';
++import { CommandCode } from '@car-control/contracts';
++import { type CapabilityRule } from '../views/command/capability-core.ts';
++import {
++  type VehicleCapabilityOverrideDto,
++  SEED_VEHICLE_OVERRIDES,
++} from '../views/command/vehicle-override-core.ts';
++import { isApiError } from '../views/command/command-core.ts';
++import { SEED_VEHICLES } from '../views/vehicle/vehicle-core.ts';
++
++// 导出类型
++export type { VehicleCapabilityOverrideDto };
++
++// 本地内存覆盖池 (用于离线降级与前端状态留存)
++let inMemoryVehicleOverrides: VehicleCapabilityOverrideDto[] = JSON.parse(
++  JSON.stringify(SEED_VEHICLE_OVERRIDES)
++);
++
++export function getInMemoryVehicleOverrides(): VehicleCapabilityOverrideDto[] {
++  return inMemoryVehicleOverrides;
++}
++
++export function setInMemoryVehicleOverrides(list: VehicleCapabilityOverrideDto[]): void {
++  inMemoryVehicleOverrides = list;
++}
++
++export function resetInMemoryVehicleOverrides(): void {
++  inMemoryVehicleOverrides = JSON.parse(JSON.stringify(SEED_VEHICLE_OVERRIDES));
++}
++
++/**
++ * 获取单车专属能力覆盖配置
++ * 若车辆未配置任何专属覆盖，返回 null (完全继承车型默认模板)
++ */
++export async function fetchVehicleOverrideApi(
++  vehicleId: string
++): Promise<VehicleCapabilityOverrideDto | null> {
++  try {
++    const res = await http.get<VehicleCapabilityOverrideDto>(
++      `/capabilities/vehicles/${encodeURIComponent(vehicleId)}/override`
++    );
++    if (res && res.id) {
++      return res;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      if (err.statusCode === 404) {
++        return null;
++      }
++      throw err;
++    }
++  }
++
++  // 离线降级匹配
++  const found = inMemoryVehicleOverrides.find((o) => o.vehicleId === vehicleId);
++  return found ? JSON.parse(JSON.stringify(found)) : null;
++}
++
++/**
++ * 保存或更新单车专属能力覆盖配置
++ */
++export async function saveVehicleOverrideApi(
++  vehicleId: string,
++  overrides: Partial<Record<CommandCode, CapabilityRule>>,
++  reason?: string
++): Promise<VehicleCapabilityOverrideDto> {
++  try {
++    const res = await http.put<VehicleCapabilityOverrideDto>(
++      `/capabilities/vehicles/${encodeURIComponent(vehicleId)}/override`,
++      { overrides, reason }
++    );
++    if (res && res.id) {
++      return res;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 离线降级持久化
++  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
++  const existingIdx = inMemoryVehicleOverrides.findIndex((o) => o.vehicleId === vehicleId);
++  const matchedVeh = SEED_VEHICLES.find((v) => v.id === vehicleId);
++
++  if (existingIdx !== -1) {
++    const updated: VehicleCapabilityOverrideDto = {
++      ...inMemoryVehicleOverrides[existingIdx]!,
++      overrides: JSON.parse(JSON.stringify(overrides)),
++      updatedAt: now,
++      updatedBy: 'operator-admin',
++    };
++    inMemoryVehicleOverrides[existingIdx] = updated;
++    return JSON.parse(JSON.stringify(updated));
++  } else {
++    const newRecord: VehicleCapabilityOverrideDto = {
++      id: `override-${vehicleId}-${Date.now()}`,
++      vehicleId,
++      vin: matchedVeh?.vin || `VIN-${vehicleId.toUpperCase()}`,
++      plateNumber: matchedVeh?.plateNumber || `粤B·${vehicleId.slice(-5).toUpperCase()}`,
++      modelId: matchedVeh?.modelId || 'model-default',
++      updatedAt: now,
++      updatedBy: 'operator-admin',
++      overrides: JSON.parse(JSON.stringify(overrides)),
++    };
++    inMemoryVehicleOverrides.push(newRecord);
++    return JSON.parse(JSON.stringify(newRecord));
++  }
++}
++
++/**
++ * 重置单车覆盖配置 (完全恢复继承车型默认模板)
++ */
++export async function resetVehicleOverrideApi(vehicleId: string): Promise<boolean> {
++  try {
++    const res = await http.delete<{ success: boolean }>(
++      `/capabilities/vehicles/${encodeURIComponent(vehicleId)}/override`
++    );
++    if (res && typeof res.success === 'boolean') {
++      return res.success;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 离线降级重置：移除该车辆的专属覆盖记录
++  inMemoryVehicleOverrides = inMemoryVehicleOverrides.filter((o) => o.vehicleId !== vehicleId);
++  return true;
++}
+diff --git a/apps/web/src/test/vehicle-override.test.ts b/apps/web/src/test/vehicle-override.test.ts
+new file mode 100644
+index 0000000..dccd7b8
+--- /dev/null
++++ b/apps/web/src/test/vehicle-override.test.ts
+@@ -0,0 +1,459 @@
++import { describe, it, beforeEach } from 'node:test';
++import assert from 'node:assert/strict';
++import { CommandCode, SecurityLevel } from '@car-control/contracts';
++import {
++  type VehicleCapabilityOverrideDto,
++  type VehicleEffectiveCommandItem,
++  type VehicleOverrideSummaryDto,
++  resolveVehicleEffectiveList,
++  calculateOverrideSummary,
++  cleanRedundantOverrides,
++  isRuleEqual,
++  SEED_VEHICLE_OVERRIDES,
++} from '../views/command/vehicle-override-core.ts';
++import {
++  SEED_CAPABILITY_TEMPLATES,
++  createDefaultCapabilities,
++  type ModelTemplateDto,
++  type CapabilityRule,
++  CommandCategory,
++} from '../views/command/capability-core.ts';
++import {
++  fetchVehicleOverrideApi,
++  saveVehicleOverrideApi,
++  resetVehicleOverrideApi,
++  getInMemoryVehicleOverrides,
++  setInMemoryVehicleOverrides,
++  resetInMemoryVehicleOverrides,
++} from '../api/vehicle-override.ts';
++import { ApiError, http } from '../api/client.ts';
++
++describe('Vehicle Capability Override Core & TDD Test Suite', () => {
++  const baseTemplate: ModelTemplateDto = SEED_CAPABILITY_TEMPLATES[0]; // EV Flagship
++
++  beforeEach(() => {
++    resetInMemoryVehicleOverrides();
++  });
++
++  describe('1. Rule Equality Checker (isRuleEqual)', () => {
++    it('returns true when two rules are identical in all fields', () => {
++      const ruleA: CapabilityRule = {
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++        paramConstraints: { minTemp: 16, maxTemp: 30 },
++      };
++      const ruleB: CapabilityRule = {
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++        paramConstraints: { maxTemp: 30, minTemp: 16 }, // key-order invariant
++      };
++      assert.equal(isRuleEqual(ruleA, ruleB), true);
++    });
++
++    it('detects differences in supported status', () => {
++      const ruleA: CapabilityRule = {
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      };
++      const ruleB: CapabilityRule = {
++        ...ruleA,
++        supported: false,
++      };
++      assert.equal(isRuleEqual(ruleA, ruleB), false);
++    });
++
++    it('detects differences in security level', () => {
++      const ruleA: CapabilityRule = {
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      };
++      const ruleB: CapabilityRule = {
++        ...ruleA,
++        securityLevel: SecurityLevel.L2,
++      };
++      assert.equal(isRuleEqual(ruleA, ruleB), false);
++    });
++
++    it('detects differences in timeoutMs and frequencyLimitSeconds', () => {
++      const ruleA: CapabilityRule = {
++        supported: true,
++        securityLevel: SecurityLevel.L0,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++      };
++      const ruleB: CapabilityRule = {
++        ...ruleA,
++        timeoutMs: 15000,
++      };
++      const ruleC: CapabilityRule = {
++        ...ruleA,
++        frequencyLimitSeconds: 0,
++      };
++      assert.equal(isRuleEqual(ruleA, ruleB), false);
++      assert.equal(isRuleEqual(ruleA, ruleC), false);
++    });
++
++    it('detects differences in nested paramConstraints', () => {
++      const ruleA: CapabilityRule = {
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++        paramConstraints: { durationMin: 5, durationMax: 30 },
++      };
++      const ruleB: CapabilityRule = {
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++        paramConstraints: { durationMin: 5, durationMax: 45 },
++      };
++      assert.equal(isRuleEqual(ruleA, ruleB), false);
++    });
++  });
++
++  describe('2. Effective Capability Resolution Pipeline (resolveVehicleEffectiveList)', () => {
++    it('returns all 13 command items with isOverridden = false when no override is provided', () => {
++      const result = resolveVehicleEffectiveList(baseTemplate, null);
++
++      assert.equal(result.length, 13);
++      for (const item of result) {
++        assert.equal(item.isOverridden, false);
++        assert.equal(item.differsFromTemplate, false);
++        assert.deepEqual(item.effectiveRule, item.templateRule);
++        assert.ok(item.category);
++        assert.equal(item.overrideReason, undefined);
++      }
++    });
++
++    it('applies per-command overrides correctly when override record exists', () => {
++      const overrideDto: VehicleCapabilityOverrideDto = {
++        id: 'override-test-01',
++        vehicleId: 'veh-001',
++        vin: 'LFPH2E023N1000001',
++        plateNumber: '粤B·88888',
++        modelId: baseTemplate.modelId,
++        updatedAt: '2026-10-14 10:00:00',
++        overrides: {
++          [CommandCode.CMD_ENGINE_START]: {
++            supported: false,
++            securityLevel: SecurityLevel.L2,
++            timeoutMs: 20000,
++            frequencyLimitSeconds: 30,
++            description: '测试车辆防盗限制：单车禁止远程点火',
++          },
++          [CommandCode.CMD_FIND_VEHICLE]: {
++            supported: true,
++            securityLevel: SecurityLevel.L0,
++            timeoutMs: 8000,
++            frequencyLimitSeconds: 0,
++            description: 'VIP 专属快速寻车免冷却',
++          },
++        },
++      };
++
++      const result = resolveVehicleEffectiveList(baseTemplate, overrideDto);
++      assert.equal(result.length, 13);
++
++      const engineStartItem = result.find((i) => i.commandCode === CommandCode.CMD_ENGINE_START);
++      assert.ok(engineStartItem);
++      assert.equal(engineStartItem.isOverridden, true);
++      assert.equal(engineStartItem.differsFromTemplate, true);
++      assert.equal(engineStartItem.effectiveRule.supported, false);
++      assert.equal(engineStartItem.templateRule.supported, true);
++      assert.equal(engineStartItem.overrideReason, '测试车辆防盗限制：单车禁止远程点火');
++
++      const findVehItem = result.find((i) => i.commandCode === CommandCode.CMD_FIND_VEHICLE);
++      assert.ok(findVehItem);
++      assert.equal(findVehItem.isOverridden, true);
++      assert.equal(findVehItem.differsFromTemplate, true);
++      assert.equal(findVehItem.effectiveRule.frequencyLimitSeconds, 0);
++      assert.equal(findVehItem.templateRule.frequencyLimitSeconds, 5);
++
++      const lockItem = result.find((i) => i.commandCode === CommandCode.CMD_LOCK);
++      assert.ok(lockItem);
++      assert.equal(lockItem.isOverridden, false);
++      assert.equal(lockItem.differsFromTemplate, false);
++      assert.deepEqual(lockItem.effectiveRule, lockItem.templateRule);
++    });
++
++    it('marks differsFromTemplate = false when override is present but rules are strictly identical', () => {
++      const templateLockRule = baseTemplate.capabilities[CommandCode.CMD_LOCK];
++      const overrideDto: VehicleCapabilityOverrideDto = {
++        id: 'override-test-02',
++        vehicleId: 'veh-002',
++        vin: 'LFPH2E023N1000002',
++        plateNumber: '粤B·D12345',
++        modelId: baseTemplate.modelId,
++        updatedAt: '2026-10-14 10:00:00',
++        overrides: {
++          [CommandCode.CMD_LOCK]: {
++            ...templateLockRule,
++          },
++        },
++      };
++
++      const result = resolveVehicleEffectiveList(baseTemplate, overrideDto);
++      const lockItem = result.find((i) => i.commandCode === CommandCode.CMD_LOCK)!;
++
++      assert.equal(lockItem.isOverridden, true);
++      assert.equal(lockItem.differsFromTemplate, false);
++    });
++
++    it('maps all 4 command categories correctly for the 13 command items', () => {
++      const result = resolveVehicleEffectiveList(baseTemplate, null);
++      const catCount: Record<CommandCategory, number> = {
++        [CommandCategory.DOOR_BODY]: 0,
++        [CommandCategory.POWER_FIND]: 0,
++        [CommandCategory.CABIN_CLIMATE]: 0,
++        [CommandCategory.WINDOW_ROOF]: 0,
++      };
++
++      for (const item of result) {
++        catCount[item.category]++;
++      }
++
++      assert.equal(catCount[CommandCategory.DOOR_BODY], 4);
++      assert.equal(catCount[CommandCategory.POWER_FIND], 3);
++      assert.equal(catCount[CommandCategory.CABIN_CLIMATE], 3);
++      assert.equal(catCount[CommandCategory.WINDOW_ROOF], 3);
++    });
++  });
++
++  describe('3. Redundant Override Pruning (cleanRedundantOverrides)', () => {
++    it('prunes overrides that are completely identical to the template', () => {
++      const templateLockRule = baseTemplate.capabilities[CommandCode.CMD_LOCK];
++      const templateUnlockRule = baseTemplate.capabilities[CommandCode.CMD_UNLOCK];
++
++      const rawOverrides: Partial<Record<CommandCode, CapabilityRule>> = {
++        [CommandCode.CMD_LOCK]: { ...templateLockRule },
++        [CommandCode.CMD_UNLOCK]: { ...templateUnlockRule },
++        [CommandCode.CMD_ENGINE_START]: {
++          ...baseTemplate.capabilities[CommandCode.CMD_ENGINE_START],
++          supported: false,
++        },
++      };
++
++      const cleaned = cleanRedundantOverrides(rawOverrides, baseTemplate);
++
++      assert.equal(CommandCode.CMD_LOCK in cleaned, false);
++      assert.equal(CommandCode.CMD_UNLOCK in cleaned, false);
++      assert.equal(CommandCode.CMD_ENGINE_START in cleaned, true);
++      assert.equal(cleaned[CommandCode.CMD_ENGINE_START]?.supported, false);
++    });
++
++    it('returns empty object when all overrides match template rules', () => {
++      const rawOverrides: Partial<Record<CommandCode, CapabilityRule>> = {
++        [CommandCode.CMD_LOCK]: { ...baseTemplate.capabilities[CommandCode.CMD_LOCK] },
++        [CommandCode.CMD_AC_START]: { ...baseTemplate.capabilities[CommandCode.CMD_AC_START] },
++      };
++
++      const cleaned = cleanRedundantOverrides(rawOverrides, baseTemplate);
++      assert.deepEqual(cleaned, {});
++    });
++
++    it('preserves all genuine differences in timeout, security level, or param constraints', () => {
++      const rawOverrides: Partial<Record<CommandCode, CapabilityRule>> = {
++        [CommandCode.CMD_AC_START]: {
++          ...baseTemplate.capabilities[CommandCode.CMD_AC_START],
++          timeoutMs: 30000, // modified timeout
++        },
++        [CommandCode.CMD_LOCK]: {
++          ...baseTemplate.capabilities[CommandCode.CMD_LOCK],
++          securityLevel: SecurityLevel.L1, // elevated security
++        },
++      };
++
++      const cleaned = cleanRedundantOverrides(rawOverrides, baseTemplate);
++      assert.equal(Object.keys(cleaned).length, 2);
++      assert.equal(cleaned[CommandCode.CMD_AC_START]?.timeoutMs, 30000);
++      assert.equal(cleaned[CommandCode.CMD_LOCK]?.securityLevel, SecurityLevel.L1);
++    });
++  });
++
++  describe('4. Override KPI & Summary Calculation (calculateOverrideSummary)', () => {
++    it('calculates 0 overrides and 0 differences for untouched template items', () => {
++      const items = resolveVehicleEffectiveList(baseTemplate, null);
++      const summary = calculateOverrideSummary(items);
++
++      assert.equal(summary.totalCommands, 13);
++      assert.equal(summary.overriddenCount, 0);
++      assert.equal(summary.differsCount, 0);
++      assert.equal(summary.hasOverrides, false);
++      assert.equal(summary.hasDifferences, false);
++      assert.equal(summary.disabledCount, 0); // EV Flagship has 13 supported
++      assert.equal(summary.l2GuardedCount, 2); // CMD_ENGINE_START, CMD_ENGINE_STOP
++    });
++
++    it('calculates metrics accurately with mixed overrides and disabled commands', () => {
++      const overrideDto: VehicleCapabilityOverrideDto = {
++        id: 'override-test-03',
++        vehicleId: 'veh-001',
++        vin: 'LFPH2E023N1000001',
++        plateNumber: '粤B·88888',
++        modelId: baseTemplate.modelId,
++        updatedAt: '2026-10-14 10:00:00',
++        overrides: {
++          [CommandCode.CMD_ENGINE_START]: {
++            ...baseTemplate.capabilities[CommandCode.CMD_ENGINE_START],
++            supported: false, // 1 disabled
++          },
++          [CommandCode.CMD_WINDOW_OPEN]: {
++            ...baseTemplate.capabilities[CommandCode.CMD_WINDOW_OPEN],
++            supported: false, // 2 disabled
++          },
++          [CommandCode.CMD_LOCK]: {
++            ...baseTemplate.capabilities[CommandCode.CMD_LOCK],
++            securityLevel: SecurityLevel.L2, // 1 extra L2
++          },
++          [CommandCode.CMD_UNLOCK]: {
++            ...baseTemplate.capabilities[CommandCode.CMD_UNLOCK], // identical to template
++          },
++        },
++      };
++
++      const items = resolveVehicleEffectiveList(baseTemplate, overrideDto);
++      const summary = calculateOverrideSummary(items);
++
++      assert.equal(summary.totalCommands, 13);
++      assert.equal(summary.overriddenCount, 4);
++      assert.equal(summary.differsCount, 3); // ENGINE_START, WINDOW_OPEN, LOCK differ; UNLOCK is identical
++      assert.equal(summary.hasOverrides, true);
++      assert.equal(summary.hasDifferences, true);
++      assert.equal(summary.disabledCount, 2);
++      assert.equal(summary.l2GuardedCount, 3); // ENGINE_START (L2), ENGINE_STOP (L2), LOCK (elevated to L2)
++    });
++  });
++
++  describe('5. Seed Vehicle Overrides (SEED_VEHICLE_OVERRIDES)', () => {
++    it('provides valid seeds with expected test vehicle constraints', () => {
++      assert.ok(Array.isArray(SEED_VEHICLE_OVERRIDES));
++      assert.ok(SEED_VEHICLE_OVERRIDES.length >= 2);
++
++      const testVeh = SEED_VEHICLE_OVERRIDES.find((o) => o.vehicleId === 'veh-001');
++      assert.ok(testVeh, 'veh-001 seed must exist');
++      assert.ok(testVeh.overrides[CommandCode.CMD_ENGINE_START], 'veh-001 must override CMD_ENGINE_START');
++      assert.equal(testVeh.overrides[CommandCode.CMD_ENGINE_START]?.supported, false);
++      assert.ok(testVeh.overrides[CommandCode.CMD_ENGINE_START]?.description);
++
++      const vipVeh = SEED_VEHICLE_OVERRIDES.find((o) => o.vehicleId === 'veh-004');
++      assert.ok(vipVeh, 'veh-004 VIP seed must exist');
++      assert.ok(vipVeh.overrides[CommandCode.CMD_FIND_VEHICLE]);
++      assert.equal(vipVeh.overrides[CommandCode.CMD_FIND_VEHICLE]?.frequencyLimitSeconds, 0);
++    });
++
++    it('ensures all seed override records have valid IDs, timestamps, and vehicle metadata', () => {
++      for (const seed of SEED_VEHICLE_OVERRIDES) {
++        assert.ok(seed.id.startsWith('override-'));
++        assert.ok(seed.vehicleId.startsWith('veh-'));
++        assert.ok(seed.vin.length === 17);
++        assert.ok(seed.plateNumber.length >= 7);
++        assert.ok(seed.modelId.length > 0);
++        assert.ok(seed.updatedAt.length > 0);
++      }
++    });
++  });
++
++  describe('6. API Client Integration & Offline Fallback (api/vehicle-override.ts)', () => {
++    it('fetchVehicleOverrideApi returns seed override for veh-001 and null for unconfigured vehicle', async () => {
++      const veh001 = await fetchVehicleOverrideApi('veh-001');
++      assert.ok(veh001);
++      assert.equal(veh001.vehicleId, 'veh-001');
++      assert.equal(veh001.overrides[CommandCode.CMD_ENGINE_START]?.supported, false);
++
++      const unconfigured = await fetchVehicleOverrideApi('veh-999-empty');
++      assert.equal(unconfigured, null);
++    });
++
++    it('saveVehicleOverrideApi updates existing override in memory fallback', async () => {
++      const newOverrides: Partial<Record<CommandCode, CapabilityRule>> = {
++        [CommandCode.CMD_TRUNK_OPEN]: {
++          ...baseTemplate.capabilities[CommandCode.CMD_TRUNK_OPEN],
++          supported: false,
++          description: '尾门电机硬件异常临时禁用',
++        },
++      };
++
++      const saved = await saveVehicleOverrideApi('veh-001', newOverrides, '故障隔离');
++      assert.ok(saved);
++      assert.equal(saved.vehicleId, 'veh-001');
++      assert.equal(saved.overrides[CommandCode.CMD_TRUNK_OPEN]?.supported, false);
++
++      // Verify persistence in in-memory store
++      const fetched = await fetchVehicleOverrideApi('veh-001');
++      assert.ok(fetched);
++      assert.equal(fetched.overrides[CommandCode.CMD_TRUNK_OPEN]?.supported, false);
++      assert.equal(fetched.overrides[CommandCode.CMD_ENGINE_START], undefined); // replaced
++    });
++
++    it('saveVehicleOverrideApi creates new override record for vehicle without prior override', async () => {
++      const newOverrides: Partial<Record<CommandCode, CapabilityRule>> = {
++        [CommandCode.CMD_SUNROOF_CONTROL]: {
++          ...baseTemplate.capabilities[CommandCode.CMD_SUNROOF_CONTROL],
++          supported: false,
++          description: '天窗滑轨润滑维保，单车禁用',
++        },
++      };
++
++      const saved = await saveVehicleOverrideApi('veh-002', newOverrides);
++      assert.ok(saved);
++      assert.equal(saved.vehicleId, 'veh-002');
++      assert.equal(saved.overrides[CommandCode.CMD_SUNROOF_CONTROL]?.supported, false);
++
++      const inStore = getInMemoryVehicleOverrides().find((o) => o.vehicleId === 'veh-002');
++      assert.ok(inStore);
++    });
++
++    it('resetVehicleOverrideApi clears override for vehicle and returns true', async () => {
++      const before = await fetchVehicleOverrideApi('veh-001');
++      assert.ok(before);
++
++      const resetOk = await resetVehicleOverrideApi('veh-001');
++      assert.equal(resetOk, true);
++
++      const after = await fetchVehicleOverrideApi('veh-001');
++      assert.equal(after, null);
++    });
++
++    it('re-throws ApiError when server encounters real business error', async () => {
++      const originalPut = http.put.bind(http);
++      try {
++        http.put = async () => {
++          throw new ApiError('Tenant permission denied', 403, 'Forbidden');
++        };
++
++        await assert.rejects(
++          async () => {
++            await saveVehicleOverrideApi('veh-001', {});
++          },
++          (err: any) => {
++            assert.ok(err instanceof ApiError);
++            assert.equal(err.statusCode, 403);
++            assert.equal(err.message, 'Tenant permission denied');
++            return true;
++          }
++        );
++      } finally {
++        http.put = originalPut;
++      }
++    });
++
++    it('resetInMemoryVehicleOverrides restores initial seeds', async () => {
++      await resetVehicleOverrideApi('veh-001');
++      assert.equal(await fetchVehicleOverrideApi('veh-001'), null);
++
++      resetInMemoryVehicleOverrides();
++      const restored = await fetchVehicleOverrideApi('veh-001');
++      assert.ok(restored);
++      assert.equal(restored.vehicleId, 'veh-001');
++    });
++  });
++});
+diff --git a/apps/web/src/views/command/CarControlWorkbench.tsx b/apps/web/src/views/command/CarControlWorkbench.tsx
+index 5a40c58..d33f6ad 100644
+--- a/apps/web/src/views/command/CarControlWorkbench.tsx
++++ b/apps/web/src/views/command/CarControlWorkbench.tsx
+@@ -48,6 +48,7 @@ import {
+   ReloadOutlined,
+   InfoCircleOutlined,
+   ControlOutlined,
++  SlidersOutlined,
+ } from '@ant-design/icons';
+ import {
+   CommandCode,
+@@ -76,6 +77,7 @@ import { useVehicleStore } from '../../store/useVehicleStore.ts';
+ import { useNavTabsStore } from '../../store/useNavTabsStore.ts';
+ import { RoutePath } from '../../router/routes.ts';
+ import { CommandStreamDrawer } from './CommandStreamDrawer.tsx';
++import { VehicleOverrideDrawer } from './VehicleOverrideDrawer.tsx';
+ 
+ const { Title, Text } = Typography;
+ 
+@@ -140,6 +142,9 @@ export const CarControlWorkbench: React.FC = () => {
+   const [drawerOpen, setDrawerOpen] = useState(false);
+   const [selectedCommandId, setSelectedCommandId] = useState<string | null>(null);
+ 
++  // 单车专属可控范围能力覆盖抽屉
++  const [overrideDrawerOpen, setOverrideDrawerOpen] = useState(false);
++
+   const handleOpenTraceDrawer = (cmdId?: string) => {
+     setSelectedCommandId(cmdId || commandLogs[0]?.id || 'cmd-seed-01');
+     setDrawerOpen(true);
+@@ -587,6 +592,12 @@ export const CarControlWorkbench: React.FC = () => {
+               >
+                 车型能力配置
+               </Button>
++              <Button
++                icon={<SlidersOutlined />}
++                onClick={() => setOverrideDrawerOpen(true)}
++              >
++                专属能力覆盖
++              </Button>
+               <Button
+                 icon={<ThunderboltOutlined />}
+                 onClick={() => handleOpenTraceDrawer()}
+@@ -1319,6 +1330,16 @@ export const CarControlWorkbench: React.FC = () => {
+         commandId={selectedCommandId}
+         vehicleId={selectedVehicleId}
+       />
++
++      {/* ---------------- 720px 单车专属可控范围能力覆盖抽屉 ---------------- */}
++      <VehicleOverrideDrawer
++        open={overrideDrawerOpen}
++        onClose={() => setOverrideDrawerOpen(false)}
++        vehicleId={selectedVehicleId}
++        vehicle={currentVehicle as any}
++        onSaved={() => loadVehicleContext(selectedVehicleId)}
++        onReset={() => loadVehicleContext(selectedVehicleId)}
++      />
+     </div>
+   );
+ };
+diff --git a/apps/web/src/views/command/VehicleOverrideDrawer.tsx b/apps/web/src/views/command/VehicleOverrideDrawer.tsx
+new file mode 100644
+index 0000000..9b0aec4
+--- /dev/null
++++ b/apps/web/src/views/command/VehicleOverrideDrawer.tsx
+@@ -0,0 +1,722 @@
++import React, { useState, useEffect, useMemo, useCallback } from 'react';
++import {
++  Drawer,
++  Typography,
++  Tag,
++  Space,
++  Alert,
++  Table,
++  Switch,
++  Select,
++  InputNumber,
++  Input,
++  Button,
++  Popconfirm,
++  Divider,
++  Segmented,
++  Tooltip,
++  message,
++  Spin,
++} from 'antd';
++import type { ColumnsType } from 'antd/es/table';
++import {
++  LockOutlined,
++  UnlockOutlined,
++  InboxOutlined,
++  CarOutlined,
++  BellOutlined,
++  ThunderboltOutlined,
++  PoweroffOutlined,
++  FireOutlined,
++  PauseCircleOutlined,
++  HeatMapOutlined,
++  DownSquareOutlined,
++  UpSquareOutlined,
++  BorderOutlined,
++  UndoOutlined,
++  SaveOutlined,
++  CheckCircleOutlined,
++  WarningOutlined,
++  SlidersOutlined,
++} from '@ant-design/icons';
++import { CommandCode, SecurityLevel } from '@car-control/contracts';
++import {
++  type CapabilityRule,
++  type ModelTemplateDto,
++  CommandCategory,
++  COMMAND_CATEGORY_MAP,
++  SEED_CAPABILITY_TEMPLATES,
++} from './capability-core.ts';
++import {
++  type VehicleCapabilityOverrideDto,
++  type VehicleEffectiveCommandItem,
++  type VehicleOverrideSummaryDto,
++  resolveVehicleEffectiveList,
++  calculateOverrideSummary,
++  cleanRedundantOverrides,
++} from './vehicle-override-core.ts';
++import { COMMAND_METADATA } from './command-core.ts';
++import {
++  fetchVehicleOverrideApi,
++  saveVehicleOverrideApi,
++  resetVehicleOverrideApi,
++} from '../../api/vehicle-override.ts';
++import { fetchCapabilityTemplateByModelApi } from '../../api/capability.ts';
++import { fetchVehiclesApi } from '../../api/vehicle.ts';
++import { type VehicleDto, SEED_VEHICLES } from '../vehicle/vehicle-core.ts';
++import { POWERTRAIN_MAP, type PowertrainType } from '../vehicle/model-core.ts';
++
++const { Text } = Typography;
++
++// 指令图标映射字典
++const COMMAND_ICON_MAP: Record<CommandCode, React.ReactNode> = {
++  [CommandCode.CMD_LOCK]: <LockOutlined />,
++  [CommandCode.CMD_UNLOCK]: <UnlockOutlined />,
++  [CommandCode.CMD_TRUNK_OPEN]: <InboxOutlined />,
++  [CommandCode.CMD_TRUNK_CLOSE]: <CarOutlined />,
++  [CommandCode.CMD_FIND_VEHICLE]: <BellOutlined />,
++  [CommandCode.CMD_ENGINE_START]: <ThunderboltOutlined />,
++  [CommandCode.CMD_ENGINE_STOP]: <PoweroffOutlined />,
++  [CommandCode.CMD_AC_START]: <FireOutlined />,
++  [CommandCode.CMD_AC_STOP]: <PauseCircleOutlined />,
++  [CommandCode.CMD_SEAT_HEAT]: <HeatMapOutlined />,
++  [CommandCode.CMD_WINDOW_OPEN]: <DownSquareOutlined />,
++  [CommandCode.CMD_WINDOW_CLOSE]: <UpSquareOutlined />,
++  [CommandCode.CMD_SUNROOF_CONTROL]: <BorderOutlined />,
++};
++
++export interface VehicleOverrideDrawerProps {
++  open: boolean;
++  onClose: () => void;
++  vehicleId?: string | null;
++  vehicle?: VehicleDto | null;
++  onSaved?: (override: VehicleCapabilityOverrideDto) => void;
++  onReset?: () => void;
++}
++
++export const VehicleOverrideDrawer: React.FC<VehicleOverrideDrawerProps> = ({
++  open,
++  onClose,
++  vehicleId,
++  vehicle,
++  onSaved,
++  onReset,
++}) => {
++  // 当前目标车辆信息
++  const [targetVehicle, setTargetVehicle] = useState<VehicleDto | null>(vehicle || null);
++  // 当前车辆对应的基准车型能力模板
++  const [template, setTemplate] = useState<ModelTemplateDto | null>(null);
++  // 当前正在编辑的单车覆盖规则集合
++  const [editingOverrides, setEditingOverrides] = useState<
++    Partial<Record<CommandCode, CapabilityRule>>
++  >({});
++
++  const [loading, setLoading] = useState<boolean>(false);
++  const [saving, setSaving] = useState<boolean>(false);
++  const [resetting, setResetting] = useState<boolean>(false);
++
++  // 过滤控制
++  const [categoryFilter, setCategoryFilter] = useState<string>('ALL');
++  const [filterOnlyDiff, setFilterOnlyDiff] = useState<boolean>(false);
++
++  // 确定有效车辆 ID
++  const effectiveVehId = vehicle?.id || vehicleId;
++
++  // 加载单车背景数据、基准模板与覆盖配置
++  const loadData = useCallback(async () => {
++    if (!effectiveVehId) return;
++    setLoading(true);
++
++    try {
++      // 1. 获取车辆基础信息
++      let currentVeh: VehicleDto | null = vehicle || null;
++      if (!currentVeh) {
++        currentVeh = SEED_VEHICLES.find((v) => v.id === effectiveVehId) || null;
++        if (!currentVeh) {
++          try {
++            const list = await fetchVehiclesApi();
++            currentVeh = list.find((v) => v.id === effectiveVehId) || null;
++          } catch {
++            // fallback gracefully
++          }
++        }
++      }
++      setTargetVehicle(currentVeh);
++
++      const modelId = currentVeh?.modelId || 'model-ev-flagship';
++
++      // 2. 获取该车型的基准能力模板
++      let tpl: ModelTemplateDto | null = null;
++      try {
++        tpl = await fetchCapabilityTemplateByModelApi(modelId);
++      } catch {
++        // fallback
++      }
++      if (!tpl) {
++        tpl =
++          SEED_CAPABILITY_TEMPLATES.find((t) => t.modelId === modelId) ||
++          SEED_CAPABILITY_TEMPLATES[0];
++      }
++      setTemplate(tpl);
++
++      // 3. 获取单车已持久化的覆盖配置
++      const overrideRecord = await fetchVehicleOverrideApi(effectiveVehId);
++      setEditingOverrides(
++        overrideRecord?.overrides ? JSON.parse(JSON.stringify(overrideRecord.overrides)) : {}
++      );
++    } catch (err) {
++      console.error('Failed to load vehicle override context:', err);
++      message.error('加载单车能力覆盖数据异常，请刷新重试');
++    } finally {
++      setLoading(false);
++    }
++  }, [effectiveVehId, vehicle]);
++
++  useEffect(() => {
++    if (open) {
++      loadData();
++    }
++  }, [open, loadData]);
++
++  // 基准有效规则比对列表
++  const effectiveList: VehicleEffectiveCommandItem[] = useMemo(() => {
++    if (!template) return [];
++    return resolveVehicleEffectiveList(template, {
++      id: '',
++      vehicleId: effectiveVehId || '',
++      vin: targetVehicle?.vin || '',
++      plateNumber: targetVehicle?.plateNumber || '',
++      modelId: template.modelId,
++      updatedAt: '',
++      overrides: editingOverrides,
++    });
++  }, [template, editingOverrides, effectiveVehId, targetVehicle]);
++
++  // KPI 概览统计
++  const summary: VehicleOverrideSummaryDto = useMemo(() => {
++    return calculateOverrideSummary(effectiveList);
++  }, [effectiveList]);
++
++  // 过滤后的表格展示数据
++  const displayRows = useMemo(() => {
++    let list = effectiveList;
++    if (categoryFilter !== 'ALL') {
++      list = list.filter((i) => i.category === categoryFilter);
++    }
++    if (filterOnlyDiff) {
++      list = list.filter((i) => i.differsFromTemplate);
++    }
++    return list;
++  }, [effectiveList, categoryFilter, filterOnlyDiff]);
++
++  // 模式切换：继承 vs 覆盖
++  const handleToggleMode = (code: CommandCode, isOverride: boolean) => {
++    if (!template) return;
++    setEditingOverrides((prev) => {
++      const next = { ...prev };
++      if (isOverride) {
++        const baseRule = template.capabilities[code] || {
++          supported: true,
++          securityLevel: SecurityLevel.L1,
++          timeoutMs: 10000,
++          frequencyLimitSeconds: 5,
++        };
++        next[code] = { ...baseRule };
++      } else {
++        delete next[code];
++      }
++      return next;
++    });
++  };
++
++  // 修改覆盖单项属性
++  const handleUpdateRuleProp = <K extends keyof CapabilityRule>(
++    code: CommandCode,
++    prop: K,
++    value: CapabilityRule[K]
++  ) => {
++    if (!template) return;
++    setEditingOverrides((prev) => {
++      const currentRule = prev[code] || template.capabilities[code];
++      return {
++        ...prev,
++        [code]: {
++          ...currentRule,
++          [prop]: value,
++        },
++      };
++    });
++  };
++
++  // 还原单项为继承
++  const handleRevertItem = (code: CommandCode) => {
++    setEditingOverrides((prev) => {
++      const next = { ...prev };
++      delete next[code];
++      return next;
++    });
++    message.success(`指令 ${COMMAND_METADATA[code]?.name || code} 已恢复继承车型模板`);
++  };
++
++  // 全部重置为继承车型模板
++  const handleResetAll = async () => {
++    if (!effectiveVehId) return;
++    setResetting(true);
++    try {
++      await resetVehicleOverrideApi(effectiveVehId);
++      setEditingOverrides({});
++      message.success('已清空单车覆盖规则，完全恢复继承车型默认模板');
++      onReset?.();
++    } catch (err) {
++      console.error('Failed to reset overrides:', err);
++      message.error('重置单车覆盖失败，请重试');
++    } finally {
++      setResetting(false);
++    }
++  };
++
++  // 保存单车覆盖配置
++  const handleSave = async () => {
++    if (!effectiveVehId || !template) return;
++    setSaving(true);
++    try {
++      // 清理与车型基准模板完全一致的冗余覆盖项
++      const cleaned = cleanRedundantOverrides(editingOverrides, template);
++      const saved = await saveVehicleOverrideApi(
++        effectiveVehId,
++        cleaned,
++        '运营控制台单车能力覆盖配置更新'
++      );
++      setEditingOverrides(saved.overrides || {});
++      message.success('单车专属能力覆盖配置已成功保存！');
++      onSaved?.(saved);
++      onClose();
++    } catch (err) {
++      console.error('Failed to save overrides:', err);
++      message.error('保存单车能力覆盖配置失败');
++    } finally {
++      setSaving(false);
++    }
++  };
++
++  // 动力类型元信息
++  const powertrain = (template?.powertrain || 'EV') as PowertrainType;
++  const ptMeta = POWERTRAIN_MAP[powertrain] || POWERTRAIN_MAP.EV;
++
++  // 表格列定义
++  const columns: ColumnsType<VehicleEffectiveCommandItem> = [
++    {
++      title: '指令与集群',
++      key: 'commandInfo',
++      width: 170,
++      render: (_, record) => {
++        const meta = COMMAND_METADATA[record.commandCode];
++        const catMeta = COMMAND_CATEGORY_MAP[record.category];
++        const icon = COMMAND_ICON_MAP[record.commandCode];
++
++        return (
++          <Space orientation="vertical" size={2} style={{ width: '100%' }}>
++            <Space size={6} align="center">
++              <span style={{ fontSize: 16, color: catMeta?.color || '#1677ff' }}>{icon}</span>
++              <Text strong style={{ fontSize: 13 }}>
++                {meta?.name || record.commandCode}
++              </Text>
++            </Space>
++            <Space size={4} wrap>
++              <Tag color={catMeta?.tagColor || 'blue'} style={{ margin: 0, fontSize: 11 }}>
++                {catMeta?.label || '常规'}
++              </Tag>
++              <Text
++                type="secondary"
++                style={{ fontSize: 11, fontFamily: 'monospace' }}
++              >
++                {record.commandCode}
++              </Text>
++            </Space>
++          </Space>
++        );
++      },
++    },
++    {
++      title: '管控模式',
++      key: 'mode',
++      width: 120,
++      render: (_, record) => (
++        <Space orientation="vertical" size={4} align="center">
++          <Switch
++            checked={record.isOverridden}
++            onChange={(checked) => handleToggleMode(record.commandCode, checked)}
++            checkedChildren="覆盖"
++            unCheckedChildren="继承"
++            style={{
++              backgroundColor: record.isOverridden ? '#722ed1' : undefined,
++            }}
++          />
++          {record.isOverridden ? (
++            <Tag color="purple" style={{ margin: 0, fontSize: 11 }}>
++              单车专属
++            </Tag>
++          ) : (
++            <Tag style={{ margin: 0, fontSize: 11 }}>继承模板</Tag>
++          )}
++        </Space>
++      ),
++    },
++    {
++      title: '生效控车状态',
++      key: 'supported',
++      width: 110,
++      render: (_, record) => {
++        const isSupported = record.effectiveRule.supported;
++        const differs =
++          record.isOverridden && record.effectiveRule.supported !== record.templateRule.supported;
++
++        return (
++          <Space orientation="vertical" size={4} align="center">
++            <Switch
++              size="small"
++              checked={isSupported}
++              disabled={!record.isOverridden}
++              onChange={(checked) =>
++                handleUpdateRuleProp(record.commandCode, 'supported', checked)
++              }
++              checkedChildren="允许"
++              unCheckedChildren="禁用"
++            />
++            {isSupported ? (
++              <Tag color="success" style={{ margin: 0, fontSize: 11 }}>
++                支持控车
++              </Tag>
++            ) : (
++              <Tag color="error" style={{ margin: 0, fontSize: 11 }}>
++                单车禁用
++              </Tag>
++            )}
++            {differs && (
++              <Tag color="warning" style={{ margin: 0, fontSize: 10 }}>
++                差异已生效
++              </Tag>
++            )}
++          </Space>
++        );
++      },
++    },
++    {
++      title: '安全等级',
++      key: 'securityLevel',
++      width: 110,
++      render: (_, record) => {
++        const differs =
++          record.isOverridden &&
++          record.effectiveRule.securityLevel !== record.templateRule.securityLevel;
++
++        return (
++          <Space orientation="vertical" size={2} style={{ width: '100%' }}>
++            <Select
++              size="small"
++              value={record.effectiveRule.securityLevel}
++              disabled={!record.isOverridden}
++              onChange={(val) =>
++                handleUpdateRuleProp(record.commandCode, 'securityLevel', val)
++              }
++              style={{ width: '100%' }}
++              options={[
++                { value: SecurityLevel.L0, label: 'L0 直发' },
++                { value: SecurityLevel.L1, label: 'L1 确认' },
++                { value: SecurityLevel.L2, label: 'L2 鉴权' },
++              ]}
++            />
++            {differs && (
++              <Tag color="warning" style={{ margin: 0, fontSize: 10 }}>
++                原模板: {record.templateRule.securityLevel}
++              </Tag>
++            )}
++          </Space>
++        );
++      },
++    },
++    {
++      title: '响应超时 / 频控',
++      key: 'thresholds',
++      width: 125,
++      render: (_, record) => {
++        const timeoutDiff =
++          record.isOverridden &&
++          record.effectiveRule.timeoutMs !== record.templateRule.timeoutMs;
++        const freqDiff =
++          record.isOverridden &&
++          record.effectiveRule.frequencyLimitSeconds !==
++            record.templateRule.frequencyLimitSeconds;
++
++        return (
++          <Space orientation="vertical" size={4} style={{ width: '100%' }}>
++            <div>
++              <InputNumber
++                size="small"
++                min={3000}
++                max={60000}
++                step={1000}
++                addonAfter="ms"
++                disabled={!record.isOverridden}
++                value={record.effectiveRule.timeoutMs}
++                onChange={(val) =>
++                  handleUpdateRuleProp(record.commandCode, 'timeoutMs', Number(val) || 10000)
++                }
++                style={{ width: '100%' }}
++              />
++              {timeoutDiff && (
++                <Text type="secondary" style={{ fontSize: 10, color: '#fa8c16' }}>
++                  原: {record.templateRule.timeoutMs}ms
++                </Text>
++              )}
++            </div>
++            <div>
++              <InputNumber
++                size="small"
++                min={0}
++                max={300}
++                step={1}
++                addonAfter="s"
++                disabled={!record.isOverridden}
++                value={record.effectiveRule.frequencyLimitSeconds}
++                onChange={(val) =>
++                  handleUpdateRuleProp(
++                    record.commandCode,
++                    'frequencyLimitSeconds',
++                    Number(val) || 0
++                  )
++                }
++                style={{ width: '100%' }}
++              />
++              {freqDiff && (
++                <Text type="secondary" style={{ fontSize: 10, color: '#fa8c16' }}>
++                  原: {record.templateRule.frequencyLimitSeconds}s
++                </Text>
++              )}
++            </div>
++          </Space>
++        );
++      },
++    },
++    {
++      title: '覆盖原因说明 / 操作',
++      key: 'overrideReason',
++      render: (_, record) => {
++        if (!record.isOverridden) {
++          return (
++            <Text type="secondary" style={{ fontSize: 12 }}>
++              完全遵循车型模板默认规则
++            </Text>
++          );
++        }
++
++        return (
++          <Space orientation="vertical" size={4} style={{ width: '100%' }}>
++            <Input
++              size="small"
++              placeholder="请输入单车覆盖管控原因/备注说明"
++              value={record.effectiveRule.description || ''}
++              onChange={(e) =>
++                handleUpdateRuleProp(record.commandCode, 'description', e.target.value)
++              }
++            />
++            <Button
++              type="link"
++              danger
++              size="small"
++              icon={<UndoOutlined />}
++              onClick={() => handleRevertItem(record.commandCode)}
++              style={{ padding: 0, height: 20, fontSize: 12 }}
++            >
++              还原为继承
++            </Button>
++          </Space>
++        );
++      },
++    },
++  ];
++
++  return (
++    <Drawer
++      title={
++        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
++          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
++            <SlidersOutlined style={{ fontSize: 18, color: '#1677ff' }} />
++            <Text strong style={{ fontSize: 16 }}>
++              单车专属可控范围能力覆盖抽屉
++            </Text>
++            {targetVehicle?.plateNumber && (
++              <Tag color="blue" style={{ fontSize: 13, fontWeight: 600 }}>
++                {targetVehicle.plateNumber}
++              </Tag>
++            )}
++            {targetVehicle?.vin && (
++              <Text copyable style={{ fontFamily: 'monospace', fontSize: 12 }}>
++                {targetVehicle.vin}
++              </Text>
++            )}
++          </div>
++          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
++            <Text type="secondary" style={{ fontSize: 12 }}>
++              基准车型：{template?.modelName || targetVehicle?.modelName || '未知车型'}
++            </Text>
++            <Tag color="purple" style={{ fontSize: 11 }}>
++              0x02 协议: {template?.protocolCode || '0x0001'}
++            </Tag>
++            <Tag color={ptMeta.tagColor} style={{ fontSize: 11 }}>
++              {ptMeta.label}
++            </Tag>
++          </div>
++        </div>
++      }
++      placement="right"
++      width={720}
++      open={open}
++      onClose={onClose}
++      destroyOnClose
++      styles={{
++        body: {
++          padding: '16px 20px',
++          display: 'flex',
++          flexDirection: 'column',
++          gap: 16,
++        },
++      }}
++      footer={
++        <div
++          style={{
++            display: 'flex',
++            justifyContent: 'space-between',
++            alignItems: 'center',
++            width: '100%',
++          }}
++        >
++          <Popconfirm
++            title="清空重置确认"
++            description="确定要清空该车辆所有专属覆盖，完全恢复继承基准车型能力模板吗？"
++            onConfirm={handleResetAll}
++            okText="确认重置"
++            cancelText="取消"
++            disabled={!summary.hasOverrides}
++          >
++            <Button
++              danger
++              icon={<UndoOutlined />}
++              disabled={!summary.hasOverrides}
++              loading={resetting}
++            >
++              全部重置为继承车型模板
++            </Button>
++          </Popconfirm>
++
++          <Space size="middle">
++            <Button onClick={onClose}>取消</Button>
++            <Button
++              type="primary"
++              icon={<SaveOutlined />}
++              loading={saving}
++              onClick={handleSave}
++            >
++              保存单车覆盖配置
++              {summary.hasDifferences ? ` (${summary.differsCount} 项差异)` : ''}
++            </Button>
++          </Space>
++        </div>
++      }
++    >
++      <Spin spinning={loading}>
++        {/* KPI 覆盖状态汇总 Alert Banner */}
++        {summary.hasOverrides ? (
++          <Alert
++            type={summary.hasDifferences ? 'warning' : 'info'}
++            showIcon
++            icon={summary.hasDifferences ? <WarningOutlined /> : <CheckCircleOutlined />}
++            message={
++              <Space size="middle">
++                <Text strong>
++                  当前车辆已配置 {summary.overriddenCount} 项专属覆盖规则
++                  {summary.hasDifferences ? `，其中 ${summary.differsCount} 项与车型模板产生实际属性差异` : ''}
++                </Text>
++              </Space>
++            }
++            description={
++              <div style={{ marginTop: 4, fontSize: 12 }}>
++                当前生效规则：
++                <Tag color={summary.disabledCount > 0 ? 'error' : 'default'} style={{ marginLeft: 4 }}>
++                  禁用控车 {summary.disabledCount} 项
++                </Tag>
++                <Tag color="orange">
++                  L2 深度鉴权 {summary.l2GuardedCount} 项
++                </Tag>
++                <Tag color="processing">
++                  继承保持 {summary.totalCommands - summary.overriddenCount} 项
++                </Tag>
++              </div>
++            }
++            style={{ borderRadius: 6 }}
++          />
++        ) : (
++          <Alert
++            type="success"
++            showIcon
++            message="当前车辆完全继承基准车型模板"
++            description="未配置单车专属覆盖规则，该车所有车控功能、安全等级、超时阈值与冷却频控完全由车型基准模板统一管控。"
++            style={{ borderRadius: 6 }}
++          />
++        )}
++
++        {/* 顶部快速分类与差异过滤栏 */}
++        <div
++          style={{
++            display: 'flex',
++            justifyContent: 'space-between',
++            alignItems: 'center',
++            flexWrap: 'wrap',
++            gap: 8,
++            marginTop: 12,
++            marginBottom: 8,
++          }}
++        >
++          <Segmented
++            size="small"
++            value={categoryFilter}
++            onChange={(val) => setCategoryFilter(val as string)}
++            options={[
++              { label: '全量指令 (13)', value: 'ALL' },
++              { label: '门锁车身 (4)', value: CommandCategory.DOOR_BODY },
++              { label: '动力寻车 (3)', value: CommandCategory.POWER_FIND },
++              { label: '座舱温控 (3)', value: CommandCategory.CABIN_CLIMATE },
++              { label: '车窗天窗 (3)', value: CommandCategory.WINDOW_ROOF },
++            ]}
++          />
++
++          <Space size="middle">
++            <Tooltip title="快速过滤出相比基准车型模板发生实质参数变更的指令项">
++              <Space size={6}>
++                <Text style={{ fontSize: 12 }}>仅看差异项：</Text>
++                <Switch
++                  size="small"
++                  checked={filterOnlyDiff}
++                  onChange={setFilterOnlyDiff}
++                  disabled={!summary.hasDifferences}
++                />
++              </Space>
++            </Tooltip>
++          </Space>
++        </div>
++
++        {/* 核心能力覆盖对照矩阵 Table */}
++        <Table<VehicleEffectiveCommandItem>
++          rowKey="commandCode"
++          columns={columns}
++          dataSource={displayRows}
++          pagination={false}
++          size="small"
++          bordered
++          scroll={{ x: 670 }}
++          style={{ borderRadius: 6 }}
++        />
++      </Spin>
++    </Drawer>
++  );
++};
+diff --git a/apps/web/src/views/command/index.ts b/apps/web/src/views/command/index.ts
+index 81d4f08..7c86ad2 100644
+--- a/apps/web/src/views/command/index.ts
++++ b/apps/web/src/views/command/index.ts
+@@ -1,7 +1,9 @@
+ export { CarControlWorkbench } from './CarControlWorkbench.tsx';
+ export { CommandStreamDrawer, type CommandStreamDrawerProps } from './CommandStreamDrawer.tsx';
+ export { CapabilityTemplateView } from './CapabilityTemplateView.tsx';
++export { VehicleOverrideDrawer, type VehicleOverrideDrawerProps } from './VehicleOverrideDrawer.tsx';
+ export * from './command-core.ts';
+ export * from './command-stream-core.ts';
+ export * from './capability-core.ts';
++export * from './vehicle-override-core.ts';
+ 
+diff --git a/apps/web/src/views/command/vehicle-override-core.ts b/apps/web/src/views/command/vehicle-override-core.ts
+new file mode 100644
+index 0000000..ad91ba2
+--- /dev/null
++++ b/apps/web/src/views/command/vehicle-override-core.ts
+@@ -0,0 +1,281 @@
++import { CommandCode, SecurityLevel } from '@car-control/contracts';
++import {
++  type ModelTemplateDto,
++  type CapabilityRule,
++  CommandCategory,
++  getCategoryForCommand,
++  areConstraintsEqual,
++  createDefaultCapabilities,
++} from './capability-core.ts';
++
++/**
++ * 单车能力覆盖数据传输模型 (DTO)
++ * 处于能力继承管道最高优先级 (Global -> Model -> Project -> Vehicle)
++ */
++export interface VehicleCapabilityOverrideDto {
++  id: string;
++  vehicleId: string;
++  vin: string;
++  plateNumber: string;
++  modelId: string;
++  updatedAt: string;
++  updatedBy?: string;
++  overrides: Partial<Record<CommandCode, CapabilityRule>>;
++}
++
++/**
++ * 单车生效指令能力对比项模型
++ */
++export interface VehicleEffectiveCommandItem {
++  commandCode: CommandCode;
++  category: CommandCategory;
++  isOverridden: boolean; // 是否启用了单车专属覆盖
++  effectiveRule: CapabilityRule; // 当前生效的规则 (若覆盖取覆盖值，否则取车型模板值)
++  templateRule: CapabilityRule; // 基础车型模板的默认规则
++  differsFromTemplate: boolean; // 覆盖值是否与车型模板存在实际属性差异
++  overrideReason?: string; // 单车覆盖原因/备注说明
++}
++
++/**
++ * 单车能力覆盖统计摘要
++ */
++export interface VehicleOverrideSummaryDto {
++  totalCommands: number; // 指令总项数 (通常为 13)
++  overriddenCount: number; // 启用专属覆盖的指令数
++  differsCount: number; // 实际与车型模板产生差异的指令数
++  disabledCount: number; // 当前生效规则下被禁用的指令数
++  l2GuardedCount: number; // 当前生效规则下需 L2 高危鉴权的指令数
++  hasOverrides: boolean; // 是否存在单车覆盖项
++  hasDifferences: boolean; // 是否存在实际差异
++}
++
++/**
++ * 13 类标准车控指令全量顺序列表
++ */
++export const ALL_COMMAND_CODES: CommandCode[] = [
++  // 门锁与车身
++  CommandCode.CMD_LOCK,
++  CommandCode.CMD_UNLOCK,
++  CommandCode.CMD_TRUNK_OPEN,
++  CommandCode.CMD_TRUNK_CLOSE,
++  // 动力与寻车
++  CommandCode.CMD_FIND_VEHICLE,
++  CommandCode.CMD_ENGINE_START,
++  CommandCode.CMD_ENGINE_STOP,
++  // 座舱温控
++  CommandCode.CMD_AC_START,
++  CommandCode.CMD_AC_STOP,
++  CommandCode.CMD_SEAT_HEAT,
++  // 车窗天窗
++  CommandCode.CMD_WINDOW_OPEN,
++  CommandCode.CMD_WINDOW_CLOSE,
++  CommandCode.CMD_SUNROOF_CONTROL,
++];
++
++/**
++ * 判断两个 CapabilityRule 规则在执行控制层面是否完全一致
++ * (比对 supported, securityLevel, timeoutMs, frequencyLimitSeconds 以及 paramConstraints)
++ */
++export function isRuleEqual(a: CapabilityRule, b: CapabilityRule): boolean {
++  if (a === b) return true;
++  if (a.supported !== b.supported) return false;
++  if (a.securityLevel !== b.securityLevel) return false;
++  if (a.timeoutMs !== b.timeoutMs) return false;
++  if (a.frequencyLimitSeconds !== b.frequencyLimitSeconds) return false;
++  if (!areConstraintsEqual(a.paramConstraints as any, b.paramConstraints as any)) return false;
++  return true;
++}
++
++/**
++ * 计算 13 类指令在单车视角下的最终生效规则与基准模板差异比对
++ */
++export function resolveVehicleEffectiveList(
++  template: ModelTemplateDto,
++  override?: VehicleCapabilityOverrideDto | null
++): VehicleEffectiveCommandItem[] {
++  const defaultCaps = createDefaultCapabilities();
++  const result: VehicleEffectiveCommandItem[] = [];
++
++  for (const code of ALL_COMMAND_CODES) {
++    const templateRule = template.capabilities[code] || defaultCaps[code];
++    const category = getCategoryForCommand(code);
++    const isOverridden = Boolean(
++      override?.overrides &&
++        code in override.overrides &&
++        override.overrides[code] !== undefined
++    );
++
++    if (isOverridden) {
++      const rawEffective = override!.overrides[code]!;
++      const effectiveRule: CapabilityRule = {
++        supported: rawEffective.supported ?? templateRule.supported,
++        securityLevel: rawEffective.securityLevel ?? templateRule.securityLevel,
++        timeoutMs: rawEffective.timeoutMs ?? templateRule.timeoutMs,
++        frequencyLimitSeconds:
++          rawEffective.frequencyLimitSeconds ?? templateRule.frequencyLimitSeconds,
++        paramConstraints:
++          rawEffective.paramConstraints !== undefined
++            ? rawEffective.paramConstraints
++            : templateRule.paramConstraints,
++        description: rawEffective.description ?? templateRule.description,
++      };
++
++      const differsFromTemplate = !isRuleEqual(effectiveRule, templateRule);
++      const overrideReason = rawEffective.description || undefined;
++
++      result.push({
++        commandCode: code,
++        category,
++        isOverridden: true,
++        effectiveRule,
++        templateRule,
++        differsFromTemplate,
++        overrideReason,
++      });
++    } else {
++      result.push({
++        commandCode: code,
++        category,
++        isOverridden: false,
++        effectiveRule: templateRule,
++        templateRule,
++        differsFromTemplate: false,
++        overrideReason: undefined,
++      });
++    }
++  }
++
++  return result;
++}
++
++/**
++ * 统计单车覆盖项概览核心 KPI 指标
++ */
++export function calculateOverrideSummary(
++  items: VehicleEffectiveCommandItem[]
++): VehicleOverrideSummaryDto {
++  const totalCommands = items.length;
++  let overriddenCount = 0;
++  let differsCount = 0;
++  let disabledCount = 0;
++  let l2GuardedCount = 0;
++
++  for (const item of items) {
++    if (item.isOverridden) {
++      overriddenCount++;
++    }
++    if (item.differsFromTemplate) {
++      differsCount++;
++    }
++    if (!item.effectiveRule.supported) {
++      disabledCount++;
++    }
++    if (item.effectiveRule.securityLevel === SecurityLevel.L2) {
++      l2GuardedCount++;
++    }
++  }
++
++  return {
++    totalCommands,
++    overriddenCount,
++    differsCount,
++    disabledCount,
++    l2GuardedCount,
++    hasOverrides: overriddenCount > 0,
++    hasDifferences: differsCount > 0,
++  };
++}
++
++/**
++ * 清理与车型基准模板完全一致的冗余覆盖项，优化存储与网络传输载荷
++ */
++export function cleanRedundantOverrides(
++  overrides: Partial<Record<CommandCode, CapabilityRule>>,
++  template: ModelTemplateDto
++): Partial<Record<CommandCode, CapabilityRule>> {
++  const cleaned: Partial<Record<CommandCode, CapabilityRule>> = {};
++  for (const [codeStr, rule] of Object.entries(overrides)) {
++    if (!rule) continue;
++    const code = codeStr as CommandCode;
++    const templateRule = template.capabilities[code];
++    if (!templateRule) {
++      cleaned[code] = rule;
++      continue;
++    }
++    if (!isRuleEqual(rule, templateRule)) {
++      cleaned[code] = rule;
++    }
++  }
++  return cleaned;
++}
++
++/**
++ * 高保真生产级单车能力覆盖种子数据
++ */
++export const SEED_VEHICLE_OVERRIDES: VehicleCapabilityOverrideDto[] = [
++  // 1. 典型测试车辆 (禁用点火与车窗升降，带有明确安全风控覆盖原因)
++  {
++    id: 'override-veh-001',
++    vehicleId: 'veh-001',
++    vin: 'LFPH2E023N1000001',
++    plateNumber: '粤B·88888',
++    modelId: 'model-byd-han',
++    updatedAt: '2026-03-01 10:00:00',
++    updatedBy: 'system-admin',
++    overrides: {
++      [CommandCode.CMD_ENGINE_START]: {
++        supported: false,
++        securityLevel: SecurityLevel.L2,
++        timeoutMs: 15000,
++        frequencyLimitSeconds: 15,
++        description: '测试车辆防盗风控：全场景禁止远程点火启动',
++      },
++      [CommandCode.CMD_WINDOW_OPEN]: {
++        supported: false,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++        description: '测试车辆安全规范：禁用远程开启车窗',
++      },
++      [CommandCode.CMD_WINDOW_CLOSE]: {
++        supported: false,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 5,
++        description: '测试车辆安全规范：禁用远程关闭车窗',
++      },
++    },
++  },
++  // 2. 典型 VIP/应急车辆 (免频控冷却寻车与极速座舱温控保障)
++  {
++    id: 'override-veh-004',
++    vehicleId: 'veh-004',
++    vin: 'LFPH2E023N1000004',
++    plateNumber: '京A·F66666',
++    modelId: 'model-zeekr-001',
++    updatedAt: '2026-03-08 09:30:00',
++    updatedBy: 'system-admin',
++    overrides: {
++      [CommandCode.CMD_FIND_VEHICLE]: {
++        supported: true,
++        securityLevel: SecurityLevel.L0,
++        timeoutMs: 10000,
++        frequencyLimitSeconds: 0,
++        description: 'VIP 专属车队：免冷却快速寻车保障',
++      },
++      [CommandCode.CMD_AC_START]: {
++        supported: true,
++        securityLevel: SecurityLevel.L1,
++        timeoutMs: 20000,
++        frequencyLimitSeconds: 0,
++        paramConstraints: {
++          tempMin: 16,
++          tempMax: 30,
++          allowedModes: ['AUTO', 'COOL', 'HEAT', 'VENT'],
++          allowedWindSpeeds: [1, 2, 3, 4, 5],
++        },
++        description: 'VIP 应急座舱温控：零频控极速上电制冷制热',
++      },
++    },
++  },
++];
+diff --git a/apps/web/src/views/vehicle/VehicleListView.tsx b/apps/web/src/views/vehicle/VehicleListView.tsx
+index ca8ca3a..4847479 100644
+--- a/apps/web/src/views/vehicle/VehicleListView.tsx
++++ b/apps/web/src/views/vehicle/VehicleListView.tsx
+@@ -69,6 +69,7 @@ import { fetchProjectsApi, fetchDevicesApi, type ProjectDto, type DeviceDto } fr
+ import { SEED_PROJECTS } from '../device/device-core.ts';
+ import { useTenantStore } from '../../store/useTenantStore.ts';
+ import { VehicleBindModal } from './VehicleBindModal.tsx';
++import { VehicleOverrideDrawer } from '../command/VehicleOverrideDrawer.tsx';
+ 
+ const { Text } = Typography;
+ 
+@@ -95,9 +96,16 @@ export const VehicleListView: React.FC = () => {
+   const [detailModalOpen, setDetailModalOpen] = useState(false);
+   const [statusModalOpen, setStatusModalOpen] = useState(false);
+   const [bindModalOpen, setBindModalOpen] = useState(false);
++  const [overrideDrawerOpen, setOverrideDrawerOpen] = useState(false);
++  const [selectedVehicleForOverride, setSelectedVehicleForOverride] = useState<VehicleDto | null>(null);
+   const [selectedVehicle, setSelectedVehicle] = useState<VehicleDto | null>(null);
+   const [targetStatus, setTargetStatus] = useState<VehicleStatus>('NORMAL');
+ 
++  const handleOpenOverrideDrawer = (veh: VehicleDto) => {
++    setSelectedVehicleForOverride(veh);
++    setOverrideDrawerOpen(true);
++  };
++
+   const [createForm] = Form.useForm();
+   const selectedBrandInForm = Form.useWatch('brandId', createForm);
+ 
+@@ -454,7 +462,7 @@ export const VehicleListView: React.FC = () => {
+       title: '操作',
+       key: 'action',
+       fixed: 'right',
+-      width: 200,
++      width: 260,
+       render: (_, record) => {
+         const isScrapped = record.status === 'SCRAPPED';
+ 
+@@ -495,6 +503,14 @@ export const VehicleListView: React.FC = () => {
+             >
+               {record.deviceId ? '换绑/解绑' : '绑定'}
+             </Button>
++
++            <Button
++              type="link"
++              size="small"
++              onClick={() => handleOpenOverrideDrawer(record)}
++            >
++              能力覆盖
++            </Button>
+           </Space>
+         );
+       },
+@@ -1081,6 +1097,16 @@ export const VehicleListView: React.FC = () => {
+           loadData();
+         }}
+       />
++
++      {/* 单车专属能力覆盖配置抽屉 */}
++      <VehicleOverrideDrawer
++        open={overrideDrawerOpen}
++        vehicle={selectedVehicleForOverride}
++        onClose={() => {
++          setOverrideDrawerOpen(false);
++          setSelectedVehicleForOverride(null);
++        }}
++      />
+     </div>
+   );
+ };

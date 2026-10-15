@@ -1,0 +1,270 @@
+diff --git a/apps/web/src/test/tenant-views.test.ts b/apps/web/src/test/tenant-views.test.ts
+index bcec662..854611e 100644
+--- a/apps/web/src/test/tenant-views.test.ts
++++ b/apps/web/src/test/tenant-views.test.ts
+@@ -19,6 +19,7 @@ if (typeof window === 'undefined') {
+ 
+ import { useTenantStore } from '../store/useTenantStore.ts';
+ import type { TenantDto, OrgNodeDto } from '../store/useTenantStore.ts';
++import { ApiError } from '../api/client.ts';
+ import {
+   calculateTenantStats,
+   filterTenants,
+@@ -29,6 +30,7 @@ import {
+   filterOrgTree,
+   canDisableOrg,
+   findOrgNodeById,
++  isApiError,
+   type OrgTreeNode,
+ } from '../views/tenant/tenant-core.ts';
+ 
+@@ -397,4 +399,48 @@ test('Tenant & Org Management Center Logic Test Suite (TDD)', async (t) => {
+     assert.equal(useTenantStore.getState().tenantList.length, 0);
+     assert.equal(useTenantStore.getState().orgTree.length, 0);
+   });
++
++  // 10. ApiError 区分与异常判定测试
++  await t.test('isApiError correctly distinguishes server business errors from network dropouts', () => {
++    // 真实的 ApiError 实例
++    const apiErr = new ApiError('租户代码已被占用', 409, 'TENANT_CODE_CONFLICT');
++    assert.equal(isApiError(apiErr), true);
++
++    // 含有 statusCode 的对象
++    const duckTypedErr = { message: '无权限访问', statusCode: 403 };
++    assert.equal(isApiError(duckTypedErr), true);
++
++    // 普通网络异常 / TypeError
++    const networkErr = new TypeError('Failed to fetch');
++    assert.equal(isApiError(networkErr), false);
++
++    const genericErr = new Error('Connection timeout');
++    assert.equal(isApiError(genericErr), false);
++
++    const nullValue = null;
++    assert.equal(isApiError(nullValue), false);
++  });
++
++  // 11. 机构元数据完整性与持久化字段透传测试
++  await t.test('buildOrgTree preserves optional metadata like leader, phone, description', () => {
++    const orgsWithMeta: OrgNodeDto[] = [
++      {
++        id: 'org-1',
++        tenantId: 'tenant-001',
++        name: '指挥中心',
++        code: 'CMD_CENTER',
++        parentId: null,
++        leader: '张队长',
++        phone: '13812345678',
++        description: '核心运营',
++      },
++    ];
++
++    const tree = buildOrgTree(orgsWithMeta);
++    assert.equal(tree.length, 1);
++    const node = tree[0]!;
++    assert.equal(node.leader, '张队长');
++    assert.equal(node.phone, '13812345678');
++    assert.equal(node.description, '核心运营');
++  });
+ });
+diff --git a/apps/web/src/views/tenant/OrgTreeView.tsx b/apps/web/src/views/tenant/OrgTreeView.tsx
+index 4df2949..b83de46 100644
+--- a/apps/web/src/views/tenant/OrgTreeView.tsx
++++ b/apps/web/src/views/tenant/OrgTreeView.tsx
+@@ -48,6 +48,7 @@ import {
+   filterOrgTree,
+   canDisableOrg,
+   findOrgNodeById,
++  isApiError,
+   type OrgTreeNode,
+ } from './tenant-core.ts';
+ 
+@@ -162,7 +163,10 @@ export const OrgTreeView: React.FC = () => {
+         setFlatOrgs(SEED_ORGS);
+         setOrgTreeRaw(SEED_ORGS);
+       }
+-    } catch {
++    } catch (err: unknown) {
++      if (isApiError(err)) {
++        message.error(`拉取机构树失败: ${err.message}`);
++      }
+       // 容错降级
+       setFlatOrgs(SEED_ORGS);
+       setOrgTreeRaw(SEED_ORGS);
+@@ -172,9 +176,7 @@ export const OrgTreeView: React.FC = () => {
+   };
+ 
+   useEffect(() => {
+-    if (orgTreeRaw.length === 0) {
+-      loadOrgs();
+-    }
++    loadOrgs();
+   }, [currentTenantId]);
+ 
+   // 构建层级树
+@@ -323,8 +325,15 @@ export const OrgTreeView: React.FC = () => {
+             name: newOrg.name,
+             code: newOrg.code,
+             parentId: null,
++            leader: values.leader,
++            phone: values.phone,
++            description: values.description,
+           });
+-        } catch {
++        } catch (err: unknown) {
++          if (isApiError(err)) {
++            message.error(err.message || '创建顶级机构失败');
++            return;
++          }
+           // Mock 降级
+         }
+         const updated = [...flatOrgs, newOrg];
+@@ -354,8 +363,15 @@ export const OrgTreeView: React.FC = () => {
+             name: newSubOrg.name,
+             code: newSubOrg.code,
+             parentId: selectedNode.id,
++            leader: values.leader,
++            phone: values.phone,
++            description: values.description,
+           });
+-        } catch {
++        } catch (err: unknown) {
++          if (isApiError(err)) {
++            message.error(err.message || '添加下级机构失败');
++            return;
++          }
+           // Mock 降级
+         }
+         const updated = [...flatOrgs, newSubOrg];
+@@ -368,7 +384,11 @@ export const OrgTreeView: React.FC = () => {
+         if (!selectedNode) return;
+         try {
+           await updateOrgApi(selectedNode.id, values);
+-        } catch {
++        } catch (err: unknown) {
++          if (isApiError(err)) {
++            message.error(err.message || '更新机构信息失败');
++            return;
++          }
+           // Mock 降级
+         }
+         const updated = flatOrgs.map((o) =>
+@@ -404,7 +424,11 @@ export const OrgTreeView: React.FC = () => {
+       selectedNode.status === 'ACTIVE' ? 'DISABLED' : 'ACTIVE';
+     try {
+       await updateOrgApi(selectedNode.id, { status: nextStatus });
+-    } catch {
++    } catch (err: unknown) {
++      if (isApiError(err)) {
++        message.error(err.message || '更新机构运营状态失败');
++        return;
++      }
+       // Mock 降级
+     }
+ 
+diff --git a/apps/web/src/views/tenant/TenantListView.tsx b/apps/web/src/views/tenant/TenantListView.tsx
+index 1cd8a53..ddd0cc2 100644
+--- a/apps/web/src/views/tenant/TenantListView.tsx
++++ b/apps/web/src/views/tenant/TenantListView.tsx
+@@ -49,6 +49,7 @@ import {
+   calculateQuotaUsage,
+   validateQuotaAdjustment,
+   validateTenantForm,
++  isApiError,
+ } from './tenant-core.ts';
+ 
+ const { Title, Text } = Typography;
+@@ -150,7 +151,10 @@ export const TenantListView: React.FC = () => {
+       } else if (tenantList.length === 0) {
+         setTenantList(SEED_TENANTS);
+       }
+-    } catch {
++    } catch (err: unknown) {
++      if (isApiError(err)) {
++        message.error(`拉取租户列表失败: ${err.message}`);
++      }
+       // 容错降级：若后端接口尚未启动，回退并保底展示种子列表
+       if (tenantList.length === 0) {
+         setTenantList(SEED_TENANTS);
+@@ -191,8 +195,13 @@ export const TenantListView: React.FC = () => {
+       let newTenant: TenantDto;
+       try {
+         newTenant = await createTenantApi(values);
+-      } catch {
+-        // 本地 Mock 新建
++      } catch (err: unknown) {
++        // 区分真实服务端业务错误与离线环境
++        if (isApiError(err)) {
++          message.error(err.message || '创建企业租户失败');
++          return;
++        }
++        // 本地开发离线无服务端时的 Mock 降级新建
+         newTenant = {
+           id: `tenant-${Date.now()}`,
+           name: values.name,
+@@ -245,8 +254,12 @@ export const TenantListView: React.FC = () => {
+       const values = await editForm.validateFields();
+       try {
+         await updateTenantApi(editingTenant.id, values);
+-      } catch {
+-        // 允许降级
++      } catch (err: unknown) {
++        if (isApiError(err)) {
++          message.error(err.message || '更新企业租户信息失败');
++          return;
++        }
++        // 仅在无网络/无服务端时降级
+       }
+ 
+       const updated = effectiveTenants.map((t) =>
+@@ -292,7 +305,11 @@ export const TenantListView: React.FC = () => {
+           quotaDeviceCount: values.newDeviceQuota,
+           quotaVehicleCount: values.newVehicleQuota,
+         });
+-      } catch {
++      } catch (err: unknown) {
++        if (isApiError(err)) {
++          message.error(err.message || '配额调整失败');
++          return;
++        }
+         // 降级本地更新
+       }
+ 
+@@ -323,7 +340,11 @@ export const TenantListView: React.FC = () => {
+     const nextStatus: 'ACTIVE' | 'SUSPENDED' = tenant.status === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE';
+     try {
+       await updateTenantStatusApi(tenant.id, nextStatus);
+-    } catch {
++    } catch (err: unknown) {
++      if (isApiError(err)) {
++        message.error(err.message || '更新租户运行状态失败');
++        return;
++      }
+       // 本地状态同步降级
+     }
+ 
+diff --git a/apps/web/src/views/tenant/tenant-core.ts b/apps/web/src/views/tenant/tenant-core.ts
+index 876a6df..571b86c 100644
+--- a/apps/web/src/views/tenant/tenant-core.ts
++++ b/apps/web/src/views/tenant/tenant-core.ts
+@@ -1,4 +1,20 @@
+ import type { TenantDto, OrgNodeDto } from '../../store/useTenantStore.ts';
++import { ApiError } from '../../api/client.ts';
++
++/**
++ * 判断捕获的异常是否为带有 HTTP 状态码的后端业务 ApiError
++ */
++export function isApiError(err: unknown): err is ApiError {
++  if (err instanceof ApiError) return true;
++  if (typeof err === 'object' && err !== null) {
++    const candidate = err as Record<string, unknown>;
++    return (
++      typeof candidate.statusCode === 'number' &&
++      typeof candidate.message === 'string'
++    );
++  }
++  return false;
++}
+ 
+ export interface TenantStats {
+   totalTenants: number;

@@ -1,0 +1,2150 @@
+diff --git a/apps/web/src/api/device.ts b/apps/web/src/api/device.ts
+new file mode 100644
+index 0000000..cf3a066
+--- /dev/null
++++ b/apps/web/src/api/device.ts
+@@ -0,0 +1,146 @@
++import { http } from './client.ts';
++import {
++  type DeviceDto,
++  type DeviceQueryParams,
++  type DeviceStatsDto,
++  type ProjectDto,
++  type CreateDeviceInput,
++  type DeviceLifecycleStatus,
++  type OnlineStatus,
++  isApiError,
++  filterDevices,
++  SEED_DEVICES,
++  SEED_PROJECTS,
++} from '../views/device/device-core.ts';
++
++export type {
++  DeviceDto,
++  DeviceQueryParams,
++  DeviceStatsDto,
++  ProjectDto,
++  CreateDeviceInput,
++  DeviceLifecycleStatus,
++  OnlineStatus,
++};
++
++// 本地内存备份状态池（支持离线环境和开发环境平滑降级）
++let inMemoryDevices: DeviceDto[] = [...SEED_DEVICES];
++let inMemoryProjects: ProjectDto[] = [...SEED_PROJECTS];
++
++/**
++ * 拉取设备资产列表 API
++ * 遵循 isApiError 模式：真实服务端异常抛出中断并提示，离线/开发环境平滑降级至种子数据
++ */
++export async function fetchDevicesApi(params?: DeviceQueryParams): Promise<DeviceDto[]> {
++  try {
++    const data = await http.get<DeviceDto[]>('/devices', params);
++    if (Array.isArray(data)) {
++      return data;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 服务未部署或离线时平滑降级至内存数据并应用过滤
++  return filterDevices(inMemoryDevices, params);
++}
++
++/**
++ * 创建单个设备建档 API
++ * 遵循 isApiError 模式：服务端异常抛出，离线时本地建档并存入状态池
++ */
++export async function createDeviceApi(data: CreateDeviceInput): Promise<DeviceDto> {
++  try {
++    const result = await http.post<DeviceDto>('/devices', data);
++    if (result && result.id) {
++      return result;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 离线/开发环境降级建档
++  const matchedProject = inMemoryProjects.find((p) => p.id === data.projectId);
++  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
++  const newDevice: DeviceDto = {
++    id: `dev-${Date.now()}`,
++    deviceNo: data.deviceNo,
++    imei: data.imei,
++    iccid: data.iccid,
++    productKey: data.productKey,
++    productName: data.productKey === 'TBOX-G5-PRO' ? '5G 高性能车载终端 (旗舰版)' : '4G 智慧车载终端 (标准版)',
++    projectId: data.projectId,
++    projectName: matchedProject?.name ?? '默认车队项目',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: null,
++    boundVin: null,
++    onlineStatus: 'OFFLINE',
++    signalRsrp: undefined,
++    firmwareVersion: 'v2.1.0',
++    status: data.status || 'ACTIVE',
++    activatedAt: now,
++    lastHeartbeatAt: undefined,
++    createdAt: now,
++    updatedAt: now,
++  };
++
++  inMemoryDevices = [newDevice, ...inMemoryDevices];
++  return newDevice;
++}
++
++/**
++ * 更新设备生命周期状态 API (ACTIVE / INACTIVE / DECOMMISSIONED)
++ * 遵循 isApiError 模式
++ */
++export async function updateDeviceStatusApi(
++  id: string,
++  status: DeviceLifecycleStatus
++): Promise<DeviceDto> {
++  try {
++    const result = await http.patch<DeviceDto>(`/devices/${encodeURIComponent(id)}/status`, { status });
++    if (result && result.id) {
++      return result;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 离线/开发环境本地更新
++  const index = inMemoryDevices.findIndex((d) => d.id === id);
++  if (index !== -1) {
++    const existing = inMemoryDevices[index]!;
++    const updated: DeviceDto = {
++      ...existing,
++      status,
++      updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19),
++    };
++    inMemoryDevices[index] = updated;
++    return updated;
++  }
++
++  throw new Error(`Device not found with id: ${id}`);
++}
++
++/**
++ * 获取项目列表 API（用于下拉选择项目）
++ */
++export async function fetchProjectsApi(): Promise<ProjectDto[]> {
++  try {
++    const data = await http.get<ProjectDto[]>('/projects');
++    if (Array.isArray(data)) {
++      return data;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  return [...inMemoryProjects];
++}
+diff --git a/apps/web/src/layouts/AdminLayout.tsx b/apps/web/src/layouts/AdminLayout.tsx
+index 85a6b35..9896f49 100644
+--- a/apps/web/src/layouts/AdminLayout.tsx
++++ b/apps/web/src/layouts/AdminLayout.tsx
+@@ -44,6 +44,7 @@ import { NavTabs } from './NavTabs.tsx';
+ import { CarControlPanel } from '../components/CarControlPanel.tsx';
+ import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
+ import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
++import { DeviceListView } from '../views/device/index.ts';
+ 
+ const { Header, Sider, Content, Footer } = Layout;
+ const { Title, Text, Paragraph } = Typography;
+@@ -138,7 +139,11 @@ export const AdminLayout: React.FC = () => {
+       return <AuditLogView />;
+     }
+ 
+-    if (activeKey === RoutePath.COMMANDS || activeKey === RoutePath.DEVICES) {
++    if (activeKey === RoutePath.DEVICES) {
++      return <DeviceListView />;
++    }
++
++    if (activeKey === RoutePath.COMMANDS) {
+       return <CarControlPanel />;
+     }
+ 
+diff --git a/apps/web/src/test/device-views.test.ts b/apps/web/src/test/device-views.test.ts
+new file mode 100644
+index 0000000..69e4226
+--- /dev/null
++++ b/apps/web/src/test/device-views.test.ts
+@@ -0,0 +1,430 @@
++import { describe, it } from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  IMEI_REGEX,
++  ICCID_REGEX,
++  validateImei,
++  validateIccid,
++  generateDeviceNo,
++  calculateDeviceStats,
++  filterDevices,
++  getSignalQuality,
++  getOnlineStatusMeta,
++  getLifecycleStatusMeta,
++  isValidStatusTransition,
++  isApiError,
++  SEED_PROJECTS,
++  SEED_DEVICES,
++  type DeviceDto,
++  type DeviceQueryParams,
++  type DeviceLifecycleStatus,
++} from '../views/device/device-core.ts';
++import {
++  fetchDevicesApi,
++  createDeviceApi,
++  updateDeviceStatusApi,
++  fetchProjectsApi,
++  type CreateDeviceInput,
++} from '../api/device.ts';
++import { ApiError } from '../api/client.ts';
++
++describe('Device Asset Management Center Core Logic Test Suite (TDD)', () => {
++  const sampleDevices: DeviceDto[] = [
++    {
++      id: 'dev-001',
++      deviceNo: 'DEV_TEST_001',
++      imei: '868123045678901',
++      iccid: '89860401123456789012',
++      productKey: 'TBOX-G4-STD',
++      productName: '4G 智慧车载终端 (标准版)',
++      projectId: 'proj-sz-01',
++      projectName: '深圳极速智慧车队',
++      tenantId: 'tenant-001',
++      boundVehiclePlate: '粤B·88888',
++      boundVin: 'LFPH2E023N10001',
++      onlineStatus: 'ONLINE',
++      signalRsrp: -75,
++      firmwareVersion: 'v2.1.0',
++      status: 'ACTIVE',
++      activatedAt: '2026-03-01 10:00:00',
++      lastHeartbeatAt: '2026-10-12 10:00:00',
++      createdAt: '2026-03-01 09:00:00',
++    },
++    {
++      id: 'dev-002',
++      deviceNo: 'DEV_TEST_002',
++      imei: '868123045678902',
++      iccid: '89860401123456789013',
++      productKey: 'TBOX-G5-PRO',
++      productName: '5G 高性能车载终端 (旗舰版)',
++      projectId: 'proj-sz-01',
++      projectName: '深圳极速智慧车队',
++      tenantId: 'tenant-001',
++      boundVehiclePlate: null,
++      boundVin: null,
++      onlineStatus: 'OFFLINE',
++      signalRsrp: undefined,
++      firmwareVersion: 'v2.0.8',
++      status: 'ACTIVE',
++      activatedAt: '2026-03-02 11:00:00',
++      lastHeartbeatAt: '2026-10-11 12:00:00',
++      createdAt: '2026-03-02 09:30:00',
++    },
++    {
++      id: 'dev-003',
++      deviceNo: 'DEV_TEST_003',
++      imei: '868123045678903',
++      iccid: '89860401123456789014',
++      productKey: 'OBD-II-PLUS',
++      productName: 'OBD-II 即插即用诊断仪',
++      projectId: 'proj-gz-02',
++      projectName: '广州网约出行运营二期',
++      tenantId: 'tenant-001',
++      boundVehiclePlate: '粤A·99887',
++      boundVin: 'LFPH2E023N10003',
++      onlineStatus: 'ALARMING',
++      signalRsrp: -108,
++      firmwareVersion: 'v2.0.8',
++      status: 'ACTIVE',
++      activatedAt: '2026-03-05 14:00:00',
++      lastHeartbeatAt: '2026-10-12 09:55:00',
++      createdAt: '2026-03-05 13:00:00',
++    },
++    {
++      id: 'dev-004',
++      deviceNo: 'DEV_TEST_004',
++      imei: '868123045678904',
++      iccid: '89860401123456789015',
++      productKey: 'TBOX-G4-STD',
++      productName: '4G 智慧车载终端 (标准版)',
++      projectId: 'proj-sh-03',
++      projectName: '上海城际新能源干线',
++      tenantId: 'tenant-001',
++      boundVehiclePlate: '沪A·E5678',
++      boundVin: 'LFPH2E023N10004',
++      onlineStatus: 'ONLINE',
++      signalRsrp: -92,
++      firmwareVersion: 'v2.1.0',
++      status: 'INACTIVE',
++      activatedAt: '2026-04-10 09:00:00',
++      lastHeartbeatAt: '2026-10-12 08:30:00',
++      createdAt: '2026-04-10 08:00:00',
++    },
++    {
++      id: 'dev-005',
++      deviceNo: 'DEV_TEST_005',
++      imei: '868123045678905',
++      iccid: '89860401123456789016',
++      productKey: 'TCU-EV-100',
++      productName: '新能源双路CAN控制器',
++      projectId: 'proj-bj-04',
++      projectName: '北方冷链特种运输项目',
++      tenantId: 'tenant-001',
++      boundVehiclePlate: null,
++      boundVin: null,
++      onlineStatus: 'OFFLINE',
++      signalRsrp: -115,
++      firmwareVersion: 'v1.9.0',
++      status: 'DECOMMISSIONED',
++      activatedAt: '2025-11-01 10:00:00',
++      lastHeartbeatAt: '2026-01-10 10:00:00',
++      createdAt: '2025-11-01 09:00:00',
++    },
++  ];
++
++  it('IMEI and ICCID regexes strictly validate hardware identifiers', () => {
++    // 1. Valid IMEI: exactly 15 digits
++    assert.equal(validateImei('868123045678901'), true);
++    assert.equal(validateImei('123456789012345'), true);
++    assert.equal(IMEI_REGEX.test('868123045678901'), true);
++
++    // Invalid IMEI: length != 15, contains letters, spaces, or symbols
++    assert.equal(validateImei('86812304567890'), false); // 14 digits
++    assert.equal(validateImei('8681230456789012'), false); // 16 digits
++    assert.equal(validateImei('86812304567890a'), false); // contains letter
++    assert.equal(validateImei(''), false);
++    assert.equal(validateImei(' 868123045678901 '), false);
++
++    // 2. Valid ICCID: 19 to 20 alphanumeric characters
++    assert.equal(validateIccid('8986040112345678901'), true); // 19 chars
++    assert.equal(validateIccid('89860401123456789012'), true); // 20 chars
++    assert.equal(validateIccid('898604A112345678901F'), true); // contains letters
++    assert.equal(ICCID_REGEX.test('89860401123456789012'), true);
++
++    // Invalid ICCID: length < 19 or > 20, or contains special characters
++    assert.equal(validateIccid('898604011234567890'), false); // 18 chars
++    assert.equal(validateIccid('898604011234567890123'), false); // 21 chars
++    assert.equal(validateIccid('89860401-12345678901'), false); // contains hyphen
++    assert.equal(validateIccid(''), false);
++  });
++
++  it('generateDeviceNo produces unique sequential or randomized device serial numbers', () => {
++    const dev1 = generateDeviceNo();
++    const dev2 = generateDeviceNo();
++    assert.ok(dev1.startsWith('DEV_'));
++    assert.ok(dev2.startsWith('DEV_'));
++    assert.notEqual(dev1, dev2);
++
++    const customPrefix = generateDeviceNo('TBOX_');
++    assert.ok(customPrefix.startsWith('TBOX_'));
++  });
++
++  it('calculateDeviceStats accurately computes summary metrics, online rate, and quota warning', () => {
++    // 5 devices in sample: 2 Online, 2 Offline, 1 Alarming
++    // With total quota = 10: 5/10 = 50% usage, isQuotaWarning = false
++    const stats50 = calculateDeviceStats(sampleDevices, 10);
++    assert.equal(stats50.totalCount, 5);
++    assert.equal(stats50.onlineCount, 2);
++    assert.equal(stats50.onlineRate, 40.0); // 2/5 = 40%
++    assert.equal(stats50.offlineCount, 2);
++    assert.equal(stats50.alarmingCount, 1);
++    assert.equal(stats50.quotaUsage, 50.0);
++    assert.equal(stats50.isQuotaWarning, false);
++
++    // Edge case: 0 devices
++    const emptyStats = calculateDeviceStats([], 100);
++    assert.equal(emptyStats.totalCount, 0);
++    assert.equal(emptyStats.onlineCount, 0);
++    assert.equal(emptyStats.onlineRate, 0);
++    assert.equal(emptyStats.quotaUsage, 0);
++    assert.equal(emptyStats.isQuotaWarning, false);
++
++    // Quota warning threshold: >= 90%
++    // 5 devices with quota = 5 (100% usage) -> warning true
++    const statsWarning100 = calculateDeviceStats(sampleDevices, 5);
++    assert.equal(statsWarning100.quotaUsage, 100.0);
++    assert.equal(statsWarning100.isQuotaWarning, true);
++
++    // 9 devices with quota = 10 (90% usage) -> warning true
++    const mock9 = Array.from({ length: 9 }, (_, i) => ({
++      ...sampleDevices[0]!,
++      id: `mock-${i}`,
++      onlineStatus: 'ONLINE' as const,
++    }));
++    const statsWarning90 = calculateDeviceStats(mock9, 10);
++    assert.equal(statsWarning90.quotaUsage, 90.0);
++    assert.equal(statsWarning90.isQuotaWarning, true);
++
++    // 8 devices with quota = 10 (80% usage) -> warning false
++    const mock8 = Array.from({ length: 8 }, (_, i) => ({
++      ...sampleDevices[0]!,
++      id: `mock-${i}`,
++      onlineStatus: 'ONLINE' as const,
++    }));
++    const statsWarning80 = calculateDeviceStats(mock8, 10);
++    assert.equal(statsWarning80.quotaUsage, 80.0);
++    assert.equal(statsWarning80.isQuotaWarning, false);
++  });
++
++  it('filterDevices filters across keyword, project, onlineStatus, firmwareVersion, and lifecycle status', () => {
++    // 1. Keyword search by deviceNo
++    const byDevNo = filterDevices(sampleDevices, { keyword: 'DEV_TEST_002' });
++    assert.equal(byDevNo.length, 1);
++    assert.equal(byDevNo[0]?.deviceNo, 'DEV_TEST_002');
++
++    // 2. Keyword search by IMEI
++    const byImei = filterDevices(sampleDevices, { keyword: '868123045678903' });
++    assert.equal(byImei.length, 1);
++    assert.equal(byImei[0]?.id, 'dev-003');
++
++    // 3. Keyword search by ICCID
++    const byIccid = filterDevices(sampleDevices, { keyword: '89860401123456789015' });
++    assert.equal(byIccid.length, 1);
++    assert.equal(byIccid[0]?.id, 'dev-004');
++
++    // 4. Keyword search by license plate
++    const byPlate = filterDevices(sampleDevices, { keyword: '88888' });
++    assert.equal(byPlate.length, 1);
++    assert.equal(byPlate[0]?.boundVehiclePlate, '粤B·88888');
++
++    // 5. Keyword search by VIN
++    const byVin = filterDevices(sampleDevices, { keyword: 'LFPH2E023N10004' });
++    assert.equal(byVin.length, 1);
++    assert.equal(byVin[0]?.boundVin, 'LFPH2E023N10004');
++
++    // 6. Project filter
++    const byProject = filterDevices(sampleDevices, { projectId: 'proj-sz-01' });
++    assert.equal(byProject.length, 2);
++
++    // 7. Online status filter
++    const onlineDevs = filterDevices(sampleDevices, { onlineStatus: 'ONLINE' });
++    assert.equal(onlineDevs.length, 2);
++    const alarmingDevs = filterDevices(sampleDevices, { onlineStatus: 'ALARMING' });
++    assert.equal(alarmingDevs.length, 1);
++    assert.equal(alarmingDevs[0]?.id, 'dev-003');
++
++    // 8. Firmware version filter
++    const v210Devs = filterDevices(sampleDevices, { firmwareVersion: 'v2.1.0' });
++    assert.equal(v210Devs.length, 2);
++
++    // 9. Lifecycle status filter
++    const activeDevs = filterDevices(sampleDevices, { status: 'ACTIVE' });
++    assert.equal(activeDevs.length, 3);
++    const decommissionedDevs = filterDevices(sampleDevices, { status: 'DECOMMISSIONED' });
++    assert.equal(decommissionedDevs.length, 1);
++    assert.equal(decommissionedDevs[0]?.id, 'dev-005');
++
++    // 10. Multi-dimensional combined filter
++    const combined = filterDevices(sampleDevices, {
++      projectId: 'proj-sz-01',
++      onlineStatus: 'ONLINE',
++      status: 'ACTIVE',
++      firmwareVersion: 'v2.1.0',
++    });
++    assert.equal(combined.length, 1);
++    assert.equal(combined[0]?.id, 'dev-001');
++
++    // 11. Empty filter returns all devices
++    const all = filterDevices(sampleDevices, {});
++    assert.equal(all.length, sampleDevices.length);
++  });
++
++  it('getSignalQuality maps RSRP values to 4G bar steps, labels, and theme colors', () => {
++    // >= -85 dBm: 4 bars, excellent (green)
++    const sig4 = getSignalQuality(-75);
++    assert.equal(sig4.bars, 4);
++    assert.equal(sig4.label, '极佳');
++    assert.equal(sig4.color, '#52c41a');
++
++    const sig4Border = getSignalQuality(-85);
++    assert.equal(sig4Border.bars, 4);
++
++    // -86 ~ -95 dBm: 3 bars, good (blue)
++    const sig3 = getSignalQuality(-90);
++    assert.equal(sig3.bars, 3);
++    assert.equal(sig3.label, '良好');
++    assert.equal(sig3.color, '#1677ff');
++
++    const sig3Border = getSignalQuality(-95);
++    assert.equal(sig3Border.bars, 3);
++
++    // -96 ~ -105 dBm: 2 bars, moderate (orange)
++    const sig2 = getSignalQuality(-100);
++    assert.equal(sig2.bars, 2);
++    assert.equal(sig2.label, '一般');
++    assert.equal(sig2.color, '#faad14');
++
++    const sig2Border = getSignalQuality(-105);
++    assert.equal(sig2Border.bars, 2);
++
++    // < -105 dBm: 1 bar, poor (red)
++    const sig1 = getSignalQuality(-112);
++    assert.equal(sig1.bars, 1);
++    assert.equal(sig1.label, '极差');
++    assert.equal(sig1.color, '#ff4d4f');
++
++    // Missing / null / undefined RSRP: 0 bars (gray)
++    const sig0 = getSignalQuality(undefined);
++    assert.equal(sig0.bars, 0);
++    assert.equal(sig0.label, '无信号');
++    assert.equal(sig0.color, '#8c8c8c');
++  });
++
++  it('getOnlineStatusMeta and getLifecycleStatusMeta provide correct tags and badge colors', () => {
++    const metaOnline = getOnlineStatusMeta('ONLINE');
++    assert.equal(metaOnline.label, '在线');
++    assert.equal(metaOnline.badgeColor, '#52c41a');
++
++    const metaOffline = getOnlineStatusMeta('OFFLINE');
++    assert.equal(metaOffline.label, '离线');
++    assert.equal(metaOffline.badgeColor, '#8c8c8c');
++
++    const metaAlarm = getOnlineStatusMeta('ALARMING');
++    assert.equal(metaAlarm.label, '告警');
++    assert.equal(metaAlarm.badgeColor, '#ff4d4f');
++
++    const lifeActive = getLifecycleStatusMeta('ACTIVE');
++    assert.equal(lifeActive.label, '正常启用');
++
++    const lifeInactive = getLifecycleStatusMeta('INACTIVE');
++    assert.equal(lifeInactive.label, '已停用');
++
++    const lifeDecom = getLifecycleStatusMeta('DECOMMISSIONED');
++    assert.equal(lifeDecom.label, '已报废');
++  });
++
++  it('isValidStatusTransition validates lifecycle state transitions correctly', () => {
++    // ACTIVE can transition to INACTIVE or DECOMMISSIONED
++    assert.equal(isValidStatusTransition('ACTIVE', 'INACTIVE'), true);
++    assert.equal(isValidStatusTransition('ACTIVE', 'DECOMMISSIONED'), true);
++    assert.equal(isValidStatusTransition('ACTIVE', 'ACTIVE'), true);
++
++    // INACTIVE can transition to ACTIVE or DECOMMISSIONED
++    assert.equal(isValidStatusTransition('INACTIVE', 'ACTIVE'), true);
++    assert.equal(isValidStatusTransition('INACTIVE', 'DECOMMISSIONED'), true);
++    assert.equal(isValidStatusTransition('INACTIVE', 'INACTIVE'), true);
++
++    // DECOMMISSIONED is a terminal state; cannot transition back to ACTIVE or INACTIVE
++    assert.equal(isValidStatusTransition('DECOMMISSIONED', 'ACTIVE'), false);
++    assert.equal(isValidStatusTransition('DECOMMISSIONED', 'INACTIVE'), false);
++    assert.equal(isValidStatusTransition('DECOMMISSIONED', 'DECOMMISSIONED'), true);
++  });
++
++  it('SEED_DEVICES contains production-grade sample entries with diverse projects and plates', () => {
++    assert.ok(SEED_DEVICES.length >= 10);
++
++    // Check presence of bound plates like 粤B·88888 and unbound devices
++    const boundDevice = SEED_DEVICES.find((d) => d.boundVehiclePlate === '粤B·88888');
++    assert.ok(boundDevice, 'Must contain sample device bound to 粤B·88888');
++
++    const unboundDevice = SEED_DEVICES.find((d) => !d.boundVehiclePlate);
++    assert.ok(unboundDevice, 'Must contain sample device with unbound vehicle');
++
++    // All seed IMEIs must be valid 15-digit numbers
++    for (const d of SEED_DEVICES) {
++      assert.ok(validateImei(d.imei), `Device ${d.deviceNo} must have valid 15-digit IMEI`);
++      if (d.iccid) {
++        assert.ok(validateIccid(d.iccid), `Device ${d.deviceNo} must have valid ICCID`);
++      }
++    }
++  });
++
++  it('isApiError differentiates server ApiError instances correctly', () => {
++    const realApiError = new ApiError('IMEI conflict', 409, 'Conflict', { imei: '868123045678901' });
++    assert.equal(isApiError(realApiError), true);
++
++    const genericError = new Error('Network timeout');
++    assert.equal(isApiError(genericError), false);
++
++    const plainObjectLikeApiError = { statusCode: 500, message: 'Server Internal' };
++    assert.equal(isApiError(plainObjectLikeApiError), true);
++
++    assert.equal(isApiError(null), false);
++    assert.equal(isApiError(undefined), false);
++    assert.equal(isApiError('error string'), false);
++  });
++
++  it('device API functions are exported and handle fallback gracefully', async () => {
++    assert.equal(typeof fetchDevicesApi, 'function');
++    assert.equal(typeof createDeviceApi, 'function');
++    assert.equal(typeof updateDeviceStatusApi, 'function');
++    assert.equal(typeof fetchProjectsApi, 'function');
++
++    // Fetch projects falls back to SEED_PROJECTS when backend is offline
++    const projects = await fetchProjectsApi();
++    assert.ok(Array.isArray(projects));
++    assert.ok(projects.length >= 2);
++
++    // Fetch devices falls back to SEED_DEVICES when backend is offline
++    const devices = await fetchDevicesApi();
++    assert.ok(Array.isArray(devices));
++    assert.ok(devices.length >= 10);
++
++    // Create device falls back and returns newly created device
++    const newDeviceInput: CreateDeviceInput = {
++      deviceNo: 'DEV_AUTOTEST_999',
++      imei: '868999045678901',
++      productKey: 'TBOX-G4-STD',
++      projectId: 'proj-sz-01',
++      iccid: '89860401123456789099',
++    };
++    const created = await createDeviceApi(newDeviceInput);
++    assert.equal(created.deviceNo, newDeviceInput.deviceNo);
++    assert.equal(created.imei, newDeviceInput.imei);
++    assert.equal(created.status, 'ACTIVE');
++
++    // Update status falls back and updates status
++    const updated = await updateDeviceStatusApi(created.id, 'INACTIVE');
++    assert.equal(updated.status, 'INACTIVE');
++  });
++});
+diff --git a/apps/web/src/views/device/DeviceListView.tsx b/apps/web/src/views/device/DeviceListView.tsx
+new file mode 100644
+index 0000000..c791724
+--- /dev/null
++++ b/apps/web/src/views/device/DeviceListView.tsx
+@@ -0,0 +1,910 @@
++import React, { useState, useEffect, useMemo, useCallback } from 'react';
++import {
++  Card,
++  Row,
++  Col,
++  Statistic,
++  Table,
++  Button,
++  Input,
++  Select,
++  Tag,
++  Badge,
++  Space,
++  Modal,
++  Form,
++  Popconfirm,
++  message,
++  Typography,
++  Tooltip,
++  Alert,
++  Descriptions,
++} from 'antd';
++import type { TableProps } from 'antd';
++import {
++  DesktopOutlined,
++  CheckCircleOutlined,
++  DisconnectOutlined,
++  AlertOutlined,
++  SearchOutlined,
++  ReloadOutlined,
++  PlusOutlined,
++  UploadOutlined,
++  InfoCircleOutlined,
++  ThunderboltOutlined,
++} from '@ant-design/icons';
++import {
++  type DeviceDto,
++  type DeviceQueryParams,
++  type ProjectDto,
++  type CreateDeviceInput,
++  type DeviceLifecycleStatus,
++  calculateDeviceStats,
++  filterDevices,
++  getSignalQuality,
++  getOnlineStatusMeta,
++  getLifecycleStatusMeta,
++  validateImei,
++  validateIccid,
++  generateDeviceNo,
++  isApiError,
++  PRODUCT_KEY_OPTIONS,
++  SEED_PROJECTS,
++} from './device-core.ts';
++import {
++  fetchDevicesApi,
++  createDeviceApi,
++  updateDeviceStatusApi,
++  fetchProjectsApi,
++} from '../../api/device.ts';
++
++const { Title, Text, Paragraph } = Typography;
++
++/**
++ * 4G 信号 RSRP 阶梯指示器组件
++ */
++const SignalIndicator: React.FC<{ rsrp?: number | null }> = ({ rsrp }) => {
++  const meta = getSignalQuality(rsrp);
++
++  return (
++    <Tooltip title={`4G 信号强度: ${meta.label} (${meta.rsrp !== null ? `${meta.rsrp} dBm` : '无信号'})`}>
++      <Space size={2} align="end" style={{ height: 18, cursor: 'pointer' }}>
++        {[5, 8, 11, 14].map((h, idx) => {
++          const filled = idx < meta.bars;
++          return (
++            <span
++              key={idx}
++              style={{
++                display: 'inline-block',
++                width: 3,
++                height: h,
++                backgroundColor: filled ? meta.color : '#e0e0e0',
++                borderRadius: 1,
++              }}
++            />
++          );
++        })}
++        <span
++          style={{
++            fontSize: 12,
++            marginLeft: 4,
++            color: meta.bars > 0 ? meta.color : '#8c8c8c',
++            fontFamily: 'SFMono-Regular, Consolas, Courier, monospace',
++          }}
++        >
++          {meta.rsrp !== null ? `${meta.rsrp}dBm` : '-'}
++        </span>
++      </Space>
++    </Tooltip>
++  );
++};
++
++export const DeviceListView: React.FC = () => {
++  const [loading, setLoading] = useState(false);
++  const [devices, setDevices] = useState<DeviceDto[]>([]);
++  const [projects, setProjects] = useState<ProjectDto[]>(SEED_PROJECTS);
++
++  // 筛选器状态
++  const [keyword, setKeyword] = useState('');
++  const [projectFilter, setProjectFilter] = useState('ALL');
++  const [onlineStatusFilter, setOnlineStatusFilter] = useState('ALL');
++  const [firmwareVersionFilter, setFirmwareVersionFilter] = useState('ALL');
++  const [statusFilter, setStatusFilter] = useState('ALL');
++
++  // 新建设备模态框状态
++  const [createModalVisible, setCreateModalVisible] = useState(false);
++  const [submittingCreate, setSubmittingCreate] = useState(false);
++  const [createForm] = Form.useForm();
++
++  // 查看详情弹窗状态
++  const [detailModalVisible, setDetailModalVisible] = useState(false);
++  const [selectedDevice, setSelectedDevice] = useState<DeviceDto | null>(null);
++
++  // 分页状态
++  const [currentPage, setCurrentPage] = useState(1);
++  const [pageSize, setPageSize] = useState(10);
++
++  // 加载数据
++  const loadData = useCallback(async () => {
++    setLoading(true);
++    try {
++      const [fetchedDevices, fetchedProjects] = await Promise.allSettled([
++        fetchDevicesApi(),
++        fetchProjectsApi(),
++      ]);
++
++      if (fetchedDevices.status === 'fulfilled') {
++        setDevices(fetchedDevices.value);
++      } else if (isApiError(fetchedDevices.reason)) {
++        message.error(`加载设备失败: ${fetchedDevices.reason.message}`);
++      }
++
++      if (fetchedProjects.status === 'fulfilled') {
++        setProjects(fetchedProjects.value);
++      }
++    } catch (err) {
++      if (isApiError(err)) {
++        message.error(`数据加载异常: ${err.message}`);
++      }
++    } finally {
++      setLoading(false);
++    }
++  }, []);
++
++  useEffect(() => {
++    loadData();
++  }, [loadData]);
++
++  // 计算顶部汇总指标（默认租户设备配额 1000 台）
++  const stats = useMemo(() => {
++    return calculateDeviceStats(devices, 1000);
++  }, [devices]);
++
++  // 计算可筛选固件版本列表
++  const availableFirmwareVersions = useMemo(() => {
++    const versions = new Set<string>();
++    devices.forEach((d) => {
++      if (d.firmwareVersion) {
++        versions.add(d.firmwareVersion);
++      }
++    });
++    return Array.from(versions);
++  }, [devices]);
++
++  // 纯客户端多维组合过滤
++  const filteredDevices = useMemo(() => {
++    const queryParams: DeviceQueryParams = {
++      keyword: keyword.trim() || undefined,
++      projectId: projectFilter !== 'ALL' ? projectFilter : undefined,
++      onlineStatus: onlineStatusFilter !== 'ALL' ? onlineStatusFilter : undefined,
++      firmwareVersion: firmwareVersionFilter !== 'ALL' ? firmwareVersionFilter : undefined,
++      status: statusFilter !== 'ALL' ? statusFilter : undefined,
++    };
++    return filterDevices(devices, queryParams);
++  }, [devices, keyword, projectFilter, onlineStatusFilter, firmwareVersionFilter, statusFilter]);
++
++  // 重置筛选器
++  const handleResetFilters = () => {
++    setKeyword('');
++    setProjectFilter('ALL');
++    setOnlineStatusFilter('ALL');
++    setFirmwareVersionFilter('ALL');
++    setStatusFilter('ALL');
++    setCurrentPage(1);
++  };
++
++  // 批量导入占位提示
++  const handleBatchImportPlaceholder = () => {
++    message.info('Excel 批量导入向导正在进行集成，将在 Sprint 2 Task 2 中完整交付！');
++  };
++
++  // 打开详情
++  const handleViewDetail = (record: DeviceDto) => {
++    setSelectedDevice(record);
++    setDetailModalVisible(true);
++  };
++
++  // 变更设备生命周期状态 (ACTIVE / INACTIVE / DECOMMISSIONED)
++  const handleStatusChange = async (id: string, newStatus: DeviceLifecycleStatus) => {
++    try {
++      const updated = await updateDeviceStatusApi(id, newStatus);
++      message.success(`设备已成功更新为「${getLifecycleStatusMeta(newStatus).label}」`);
++      setDevices((prev) => prev.map((d) => (d.id === id ? updated : d)));
++    } catch (err) {
++      if (isApiError(err)) {
++        message.error(`状态变更失败: ${err.message}`);
++      } else {
++        message.error('操作异常，请稍后重试');
++      }
++    }
++  };
++
++  // 提交新建设备
++  const handleCreateSubmit = async () => {
++    try {
++      const values = await createForm.validateFields();
++      setSubmittingCreate(true);
++
++      const input: CreateDeviceInput = {
++        deviceNo: values.deviceNo,
++        imei: values.imei,
++        productKey: values.productKey,
++        projectId: values.projectId,
++        iccid: values.iccid || undefined,
++        status: 'ACTIVE',
++      };
++
++      const created = await createDeviceApi(input);
++      message.success(`设备 ${created.deviceNo} 建档成功！`);
++      setCreateModalVisible(false);
++      createForm.resetFields();
++      setDevices((prev) => [created, ...prev]);
++    } catch (err) {
++      if (isApiError(err)) {
++        message.error(`建档失败: ${err.message}`);
++      }
++    } finally {
++      setSubmittingCreate(false);
++    }
++  };
++
++  // 表格列定义
++  const columns: TableProps<DeviceDto>['columns'] = [
++    {
++      title: '设备编号',
++      dataIndex: 'deviceNo',
++      key: 'deviceNo',
++      width: 160,
++      render: (val: string, record: DeviceDto) => (
++        <Space direction="vertical" size={0}>
++          <Text
++            copyable={{ tooltips: ['点击复制', '已复制'] }}
++            style={{
++              fontFamily: 'SFMono-Regular, Consolas, Courier, monospace',
++              fontWeight: 600,
++              color: '#1677ff',
++              cursor: 'pointer',
++            }}
++            onClick={() => handleViewDetail(record)}
++          >
++            {val}
++          </Text>
++          <Text type="secondary" style={{ fontSize: 11 }}>
++            {record.productName || record.productKey}
++          </Text>
++        </Space>
++      ),
++    },
++    {
++      title: 'IMEI 硬件标识',
++      dataIndex: 'imei',
++      key: 'imei',
++      width: 170,
++      render: (val: string) => (
++        <Text
++          copyable={{ tooltips: ['点击复制', '已复制'] }}
++          style={{
++            fontFamily: 'SFMono-Regular, Consolas, Courier, monospace',
++            fontSize: 13,
++          }}
++        >
++          {val}
++        </Text>
++      ),
++    },
++    {
++      title: 'ICCID (SIM卡)',
++      dataIndex: 'iccid',
++      key: 'iccid',
++      width: 190,
++      render: (val?: string) =>
++        val ? (
++          <Text
++            copyable={{ tooltips: ['点击复制', '已复制'] }}
++            style={{
++              fontFamily: 'SFMono-Regular, Consolas, Courier, monospace',
++              fontSize: 12,
++            }}
++          >
++            {val}
++          </Text>
++        ) : (
++          <Text type="secondary">-</Text>
++        ),
++    },
++    {
++      title: '所属项目',
++      dataIndex: 'projectName',
++      key: 'projectName',
++      width: 150,
++      ellipsis: true,
++      render: (val?: string, record?: DeviceDto) => (
++        <Tooltip title={val || record?.projectId}>
++          <Text>{val || record?.projectId}</Text>
++        </Tooltip>
++      ),
++    },
++    {
++      title: '绑定车辆',
++      dataIndex: 'boundVehiclePlate',
++      key: 'boundVehiclePlate',
++      width: 130,
++      render: (plate?: string | null, record?: DeviceDto) => {
++        if (plate) {
++          return (
++            <Tooltip title={record?.boundVin ? `VIN: ${record.boundVin}` : undefined}>
++              <Tag color="blue" style={{ fontWeight: 500 }}>
++                {plate}
++              </Tag>
++            </Tooltip>
++          );
++        }
++        return <Tag color="default">未绑定</Tag>;
++      },
++    },
++    {
++      title: '在线状态',
++      dataIndex: 'onlineStatus',
++      key: 'onlineStatus',
++      width: 110,
++      render: (status: string) => {
++        const meta = getOnlineStatusMeta(status);
++        return (
++          <Badge
++            color={meta.badgeColor}
++            text={
++              <Text strong style={{ color: meta.badgeColor, fontSize: 13 }}>
++                {meta.label}
++              </Text>
++            }
++          />
++        );
++      },
++    },
++    {
++      title: '4G 信号强度',
++      dataIndex: 'signalRsrp',
++      key: 'signalRsrp',
++      width: 130,
++      render: (rsrp?: number) => <SignalIndicator rsrp={rsrp} />,
++    },
++    {
++      title: '固件版本',
++      dataIndex: 'firmwareVersion',
++      key: 'firmwareVersion',
++      width: 100,
++      render: (ver: string) => (
++        <Tag color="cyan" style={{ fontFamily: 'monospace' }}>
++          {ver}
++        </Tag>
++      ),
++    },
++    {
++      title: '资产状态',
++      dataIndex: 'status',
++      key: 'status',
++      width: 100,
++      render: (status: DeviceLifecycleStatus) => {
++        const meta = getLifecycleStatusMeta(status);
++        return <Tag color={meta.color}>{meta.label}</Tag>;
++      },
++    },
++    {
++      title: '最后心跳时间',
++      dataIndex: 'lastHeartbeatAt',
++      key: 'lastHeartbeatAt',
++      width: 150,
++      render: (date?: string) =>
++        date ? (
++          <Text style={{ fontSize: 12, fontFamily: 'monospace' }}>{date}</Text>
++        ) : (
++          <Text type="secondary" style={{ fontSize: 12 }}>
++            -
++          </Text>
++        ),
++    },
++    {
++      title: '操作',
++      key: 'actions',
++      width: 170,
++      fixed: 'right',
++      render: (_, record: DeviceDto) => {
++        return (
++          <Space size="small">
++            <Button
++              type="link"
++              size="small"
++              onClick={() => handleViewDetail(record)}
++            >
++              详情
++            </Button>
++
++            {record.status === 'ACTIVE' && (
++              <>
++                <Popconfirm
++                  title="确认停用该设备？"
++                  description="停用后终端将无法接入并停止心跳处理"
++                  okText="停用"
++                  cancelText="取消"
++                  onConfirm={() => handleStatusChange(record.id, 'INACTIVE')}
++                >
++                  <Button type="link" size="small" danger>
++                    停用
++                  </Button>
++                </Popconfirm>
++
++                <Popconfirm
++                  title="确认报废该设备？"
++                  description="报废为不可逆操作，该硬件将永久注销"
++                  okText="报废"
++                  cancelText="取消"
++                  okButtonProps={{ danger: true }}
++                  onConfirm={() => handleStatusChange(record.id, 'DECOMMISSIONED')}
++                >
++                  <Button type="link" size="small" style={{ color: '#cf1322' }}>
++                    报废
++                  </Button>
++                </Popconfirm>
++              </>
++            )}
++
++            {record.status === 'INACTIVE' && (
++              <>
++                <Popconfirm
++                  title="确认启用该设备？"
++                  description="启用后将允许终端重新上线通讯"
++                  okText="启用"
++                  cancelText="取消"
++                  onConfirm={() => handleStatusChange(record.id, 'ACTIVE')}
++                >
++                  <Button type="link" size="small" style={{ color: '#52c41a' }}>
++                    启用
++                  </Button>
++                </Popconfirm>
++
++                <Popconfirm
++                  title="确认报废该设备？"
++                  description="报废为不可逆操作，该硬件将永久注销"
++                  okText="报废"
++                  cancelText="取消"
++                  okButtonProps={{ danger: true }}
++                  onConfirm={() => handleStatusChange(record.id, 'DECOMMISSIONED')}
++                >
++                  <Button type="link" size="small" style={{ color: '#cf1322' }}>
++                    报废
++                  </Button>
++                </Popconfirm>
++              </>
++            )}
++
++            {record.status === 'DECOMMISSIONED' && (
++              <Text type="secondary" style={{ fontSize: 12 }}>
++                已归档
++              </Text>
++            )}
++          </Space>
++        );
++      },
++    },
++  ];
++
++  return (
++    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
++      {/* 配额超限预警 Banner (>= 90% 触发) */}
++      {stats.isQuotaWarning && (
++        <Alert
++          type="warning"
++          showIcon
++          closable
++          message="租户设备配额即将达到上限"
++          description={`租户设备配额已占用 ${stats.quotaUsed}/${stats.quotaTotal} (${stats.quotaUsage}%)，即将达到租户许可上限，请及时联系商务人员进行配额扩容！`}
++          style={{ borderRadius: 8, boxShadow: '0 2px 6px rgba(250, 173, 20, 0.15)' }}
++        />
++      )}
++
++      {/* 顶部指标统计卡片 (4 卡布局) */}
++      <Row gutter={[16, 16]}>
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{
++              borderRadius: 8,
++              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++            }}
++          >
++            <Statistic
++              title="设备总数"
++              value={stats.totalCount}
++              prefix={<DesktopOutlined style={{ color: '#1677ff' }} />}
++              suffix={<Text type="secondary" style={{ fontSize: 12 }}>台</Text>}
++            />
++          </Card>
++        </Col>
++
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{
++              borderRadius: 8,
++              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++            }}
++          >
++            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
++              <Statistic
++                title="在线设备"
++                value={stats.onlineCount}
++                prefix={<CheckCircleOutlined style={{ color: '#52c41a' }} />}
++                valueStyle={{ color: '#52c41a' }}
++                suffix={<Text type="secondary" style={{ fontSize: 12 }}>台</Text>}
++              />
++              <Tag color="success" style={{ fontWeight: 600 }}>
++                在线率 {stats.onlineRate}%
++              </Tag>
++            </div>
++          </Card>
++        </Col>
++
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{
++              borderRadius: 8,
++              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++            }}
++          >
++            <Statistic
++              title="离线设备"
++              value={stats.offlineCount}
++              prefix={<DisconnectOutlined style={{ color: '#8c8c8c' }} />}
++              valueStyle={{ color: '#8c8c8c' }}
++              suffix={<Text type="secondary" style={{ fontSize: 12 }}>台</Text>}
++            />
++          </Card>
++        </Col>
++
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{
++              borderRadius: 8,
++              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++            }}
++          >
++            <Statistic
++              title="异常告警设备"
++              value={stats.alarmingCount}
++              prefix={<AlertOutlined style={{ color: '#ff4d4f' }} />}
++              valueStyle={{ color: '#ff4d4f' }}
++              suffix={<Text type="secondary" style={{ fontSize: 12 }}>台</Text>}
++            />
++          </Card>
++        </Col>
++      </Row>
++
++      {/* 筛选与操作工具栏 */}
++      <Card
++        bordered={false}
++        style={{
++          borderRadius: 8,
++          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++        }}
++      >
++        <Row gutter={[16, 16]} justify="space-between" align="middle">
++          <Col xs={24} lg={18}>
++            <Space wrap size="middle">
++              <Input
++                placeholder="搜索设备号 / IMEI / ICCID / 车牌 / VIN..."
++                prefix={<SearchOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />}
++                value={keyword}
++                onChange={(e) => setKeyword(e.target.value)}
++                style={{ width: 280 }}
++                allowClear
++              />
++
++              <Select
++                value={projectFilter}
++                onChange={setProjectFilter}
++                style={{ width: 180 }}
++                options={[
++                  { label: '全部项目', value: 'ALL' },
++                  ...projects.map((p) => ({ label: p.name, value: p.id })),
++                ]}
++              />
++
++              <Select
++                value={onlineStatusFilter}
++                onChange={setOnlineStatusFilter}
++                style={{ width: 140 }}
++                options={[
++                  { label: '全部在线状态', value: 'ALL' },
++                  { label: '🟢 在线 (ONLINE)', value: 'ONLINE' },
++                  { label: '⚪ 离线 (OFFLINE)', value: 'OFFLINE' },
++                  { label: '🔴 告警 (ALARMING)', value: 'ALARMING' },
++                ]}
++              />
++
++              <Select
++                value={firmwareVersionFilter}
++                onChange={setFirmwareVersionFilter}
++                style={{ width: 130 }}
++                options={[
++                  { label: '全部版本', value: 'ALL' },
++                  ...availableFirmwareVersions.map((v) => ({ label: v, value: v })),
++                ]}
++              />
++
++              <Select
++                value={statusFilter}
++                onChange={setStatusFilter}
++                style={{ width: 130 }}
++                options={[
++                  { label: '全部生命周期', value: 'ALL' },
++                  { label: '正常启用', value: 'ACTIVE' },
++                  { label: '已停用', value: 'INACTIVE' },
++                  { label: '已报废', value: 'DECOMMISSIONED' },
++                ]}
++              />
++
++              <Button icon={<ReloadOutlined />} onClick={handleResetFilters}>
++                重置
++              </Button>
++            </Space>
++          </Col>
++
++          <Col xs={24} lg={6} style={{ textAlign: 'right' }}>
++            <Space wrap>
++              <Button
++                type="primary"
++                icon={<PlusOutlined />}
++                onClick={() => {
++                  createForm.resetFields();
++                  createForm.setFieldsValue({
++                    deviceNo: generateDeviceNo(),
++                    productKey: 'TBOX-G4-STD',
++                    projectId: projects[0]?.id || 'proj-sz-01',
++                  });
++                  setCreateModalVisible(true);
++                }}
++              >
++                新建设备
++              </Button>
++
++              <Tooltip title="Excel 批量导入向导（将在 Task 2 完整接入）">
++                <Button icon={<UploadOutlined />} onClick={handleBatchImportPlaceholder}>
++                  批量导入
++                </Button>
++              </Tooltip>
++
++              <Button icon={<ReloadOutlined />} onClick={loadData}>
++                刷新
++              </Button>
++            </Space>
++          </Col>
++        </Row>
++      </Card>
++
++      {/* 设备台账数据表格 */}
++      <Card
++        bordered={false}
++        style={{
++          borderRadius: 8,
++          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++        }}
++      >
++        <Table<DeviceDto>
++          rowKey="id"
++          columns={columns}
++          dataSource={filteredDevices}
++          loading={loading}
++          scroll={{ x: 1400 }}
++          pagination={{
++            current: currentPage,
++            pageSize,
++            total: filteredDevices.length,
++            showSizeChanger: true,
++            pageSizeOptions: ['10', '20', '50'],
++            showTotal: (total) => `共 ${total} 台设备 (在线率 ${stats.onlineRate}%)`,
++            onChange: (page, size) => {
++              setCurrentPage(page);
++              setPageSize(size);
++            },
++          }}
++        />
++      </Card>
++
++      {/* 单个设备建档模态框 */}
++      <Modal
++        title="新建设备资产档案"
++        open={createModalVisible}
++        onOk={handleCreateSubmit}
++        onCancel={() => setCreateModalVisible(false)}
++        confirmLoading={submittingCreate}
++        okText="立即建档"
++        cancelText="取消"
++        destroyOnClose
++        width={560}
++      >
++        <Form form={createForm} layout="vertical" style={{ marginTop: 16 }}>
++          <Form.Item
++            label="设备编号"
++            name="deviceNo"
++            rules={[{ required: true, message: '请输入或自动生成设备编号' }]}
++            extra="支持自动生成唯一序列号规范编号"
++          >
++            <Input
++              placeholder="例如: DEV_10020"
++              addonAfter={
++                <Button
++                  type="link"
++                  size="small"
++                  icon={<ThunderboltOutlined />}
++                  onClick={() => createForm.setFieldValue('deviceNo', generateDeviceNo())}
++                  style={{ padding: 0 }}
++                >
++                  生成序列号
++                </Button>
++              }
++            />
++          </Form.Item>
++
++          <Form.Item
++            label="IMEI 硬件识别码"
++            name="imei"
++            rules={[
++              { required: true, message: '请输入15位纯数字 IMEI 识别码' },
++              {
++                validator: async (_, value) => {
++                  if (value && !validateImei(value)) {
++                    throw new Error('IMEI 格式错误，必须为严格 15 位数字');
++                  }
++                },
++              },
++            ]}
++          >
++            <Input placeholder="请输入15位设备硬件 IMEI (如 868123045678999)" maxLength={15} />
++          </Form.Item>
++
++          <Form.Item
++            label="产品型号 (ProductKey)"
++            name="productKey"
++            rules={[{ required: true, message: '请选择产品型号' }]}
++          >
++            <Select options={PRODUCT_KEY_OPTIONS} />
++          </Form.Item>
++
++          <Form.Item
++            label="归属项目"
++            name="projectId"
++            rules={[{ required: true, message: '请选择归属项目' }]}
++          >
++            <Select
++              options={projects.map((p) => ({
++                label: `${p.name} (${p.code})`,
++                value: p.id,
++              }))}
++            />
++          </Form.Item>
++
++          <Form.Item
++            label="ICCID (SIM卡识别码，选填)"
++            name="iccid"
++            rules={[
++              {
++                validator: async (_, value) => {
++                  if (value && !validateIccid(value)) {
++                    throw new Error('ICCID 格式错误，必须为 19~20 位字母数字');
++                  }
++                },
++              },
++            ]}
++          >
++            <Input placeholder="选填，如 89860401123456789012" maxLength={20} />
++          </Form.Item>
++        </Form>
++      </Modal>
++
++      {/* 设备详情简要预览模态框 (Task 3 接入 640px 专属详情抽屉) */}
++      <Modal
++        title={
++          <Space>
++            <InfoCircleOutlined style={{ color: '#1677ff' }} />
++            <span>设备资产详情预览</span>
++            {selectedDevice && (
++              <Tag color="blue">{selectedDevice.deviceNo}</Tag>
++            )}
++          </Space>
++        }
++        open={detailModalVisible}
++        onCancel={() => setDetailModalVisible(false)}
++        footer={[
++          <Button key="close" type="primary" onClick={() => setDetailModalVisible(false)}>
++            关闭
++          </Button>,
++        ]}
++        width={680}
++      >
++        {selectedDevice && (
++          <div style={{ marginTop: 16 }}>
++            <Descriptions bordered size="small" column={2}>
++              <Descriptions.Item label="设备编号">
++                <Text copyable style={{ fontFamily: 'monospace', fontWeight: 600 }}>
++                  {selectedDevice.deviceNo}
++                </Text>
++              </Descriptions.Item>
++              <Descriptions.Item label="在线状态">
++                {(() => {
++                  const meta = getOnlineStatusMeta(selectedDevice.onlineStatus);
++                  return <Badge color={meta.badgeColor} text={meta.label} />;
++                })()}
++              </Descriptions.Item>
++              <Descriptions.Item label="IMEI">
++                <Text copyable style={{ fontFamily: 'monospace' }}>
++                  {selectedDevice.imei}
++                </Text>
++              </Descriptions.Item>
++              <Descriptions.Item label="ICCID">
++                <Text copyable style={{ fontFamily: 'monospace' }}>
++                  {selectedDevice.iccid || '-'}
++                </Text>
++              </Descriptions.Item>
++              <Descriptions.Item label="硬件型号">
++                {selectedDevice.productName || selectedDevice.productKey}
++              </Descriptions.Item>
++              <Descriptions.Item label="所属项目">
++                {selectedDevice.projectName || selectedDevice.projectId}
++              </Descriptions.Item>
++              <Descriptions.Item label="绑定车牌">
++                {selectedDevice.boundVehiclePlate ? (
++                  <Tag color="blue">{selectedDevice.boundVehiclePlate}</Tag>
++                ) : (
++                  <Tag color="default">未绑定</Tag>
++                )}
++              </Descriptions.Item>
++              <Descriptions.Item label="绑定 VIN">
++                {selectedDevice.boundVin || '-'}
++              </Descriptions.Item>
++              <Descriptions.Item label="固件版本">
++                <Tag color="cyan">{selectedDevice.firmwareVersion}</Tag>
++              </Descriptions.Item>
++              <Descriptions.Item label="4G 信号 RSRP">
++                <SignalIndicator rsrp={selectedDevice.signalRsrp} />
++              </Descriptions.Item>
++              <Descriptions.Item label="主电瓶电压">
++                {selectedDevice.mainVoltage ? `${selectedDevice.mainVoltage} V` : '-'}
++              </Descriptions.Item>
++              <Descriptions.Item label="备用电池百分比">
++                {selectedDevice.backupBatteryPercent !== undefined
++                  ? `${selectedDevice.backupBatteryPercent} %`
++                  : '-'}
++              </Descriptions.Item>
++              <Descriptions.Item label="芯片温度">
++                {selectedDevice.temperature !== undefined ? `${selectedDevice.temperature} °C` : '-'}
++              </Descriptions.Item>
++              <Descriptions.Item label="生命周期状态">
++                <Tag color={getLifecycleStatusMeta(selectedDevice.status).color}>
++                  {getLifecycleStatusMeta(selectedDevice.status).label}
++                </Tag>
++              </Descriptions.Item>
++              <Descriptions.Item label="激活时间">
++                {selectedDevice.activatedAt || '-'}
++              </Descriptions.Item>
++              <Descriptions.Item label="最后心跳时间">
++                {selectedDevice.lastHeartbeatAt || '-'}
++              </Descriptions.Item>
++            </Descriptions>
++
++            <Alert
++              style={{ marginTop: 16 }}
++              type="info"
++              showIcon
++              message="设备详情 640px 滑出抽屉与远程参数配置面板"
++              description="该设备的三标签页实时工况监控与远程参数配置（心跳周期/APN/重启指令）将在 Sprint 2 Task 3 中完整交付。"
++            />
++          </div>
++        )}
++      </Modal>
++    </div>
++  );
++};
++
++export default DeviceListView;
+diff --git a/apps/web/src/views/device/device-core.ts b/apps/web/src/views/device/device-core.ts
+new file mode 100644
+index 0000000..a636d84
+--- /dev/null
++++ b/apps/web/src/views/device/device-core.ts
+@@ -0,0 +1,606 @@
++import { ApiError } from '../../api/client.ts';
++
++/**
++ * IMEI 15位纯数字正则表达式
++ */
++export const IMEI_REGEX = /^\d{15}$/;
++
++/**
++ * 校验 IMEI 硬件标识（严格 15 位数字）
++ */
++export function validateImei(imei: string): boolean {
++  if (!imei || typeof imei !== 'string') return false;
++  return IMEI_REGEX.test(imei);
++}
++
++/**
++ * ICCID 19~20 位字母数字正则表达式
++ */
++export const ICCID_REGEX = /^[a-zA-Z0-9]{19,20}$/;
++
++/**
++ * 校验 ICCID SIM卡识别码（19~20位字母数字）
++ */
++export function validateIccid(iccid: string): boolean {
++  if (!iccid || typeof iccid !== 'string') return false;
++  return ICCID_REGEX.test(iccid);
++}
++
++/**
++ * 自动生成唯一规范设备编号（如 DEV_1712891234567_890）
++ */
++export function generateDeviceNo(prefix = 'DEV_'): string {
++  const timestamp = Date.now().toString().slice(-6);
++  const randomSuffix = Math.floor(1000 + Math.random() * 9000);
++  return `${prefix}${timestamp}${randomSuffix}`;
++}
++
++export type OnlineStatus = 'ONLINE' | 'OFFLINE' | 'ALARMING' | 'UPGRADING' | 'UNACTIVATED';
++
++export type DeviceLifecycleStatus = 'ACTIVE' | 'INACTIVE' | 'DECOMMISSIONED';
++
++export interface DeviceDto {
++  id: string;
++  deviceNo: string;
++  imei: string;
++  iccid?: string;
++  productKey: string;
++  productName?: string;
++  projectId: string;
++  projectName?: string;
++  tenantId?: string;
++  boundVehiclePlate?: string | null;
++  boundVin?: string | null;
++  onlineStatus: OnlineStatus;
++  signalRsrp?: number;
++  firmwareVersion: string;
++  status: DeviceLifecycleStatus;
++  activatedAt?: string;
++  lastHeartbeatAt?: string;
++  createdAt?: string;
++  updatedAt?: string;
++  mainVoltage?: number;
++  backupBatteryPercent?: number;
++  temperature?: number;
++}
++
++export interface DeviceQueryParams {
++  keyword?: string;
++  projectId?: string;
++  onlineStatus?: string;
++  firmwareVersion?: string;
++  status?: string;
++  page?: number;
++  pageSize?: number;
++}
++
++export interface DeviceStatsDto {
++  totalCount: number;
++  onlineCount: number;
++  onlineRate: number;
++  offlineCount: number;
++  alarmingCount: number;
++  quotaUsage: number;
++  isQuotaWarning: boolean;
++  quotaTotal: number;
++  quotaUsed: number;
++}
++
++export interface ProjectDto {
++  id: string;
++  name: string;
++  code: string;
++  tenantId?: string;
++  deviceCount?: number;
++}
++
++export interface CreateDeviceInput {
++  deviceNo: string;
++  imei: string;
++  productKey: string;
++  projectId: string;
++  iccid?: string;
++  status?: DeviceLifecycleStatus;
++}
++
++/**
++ * 统计设备核心指标（总数、在线数、在线率%、离线数、告警数、配额占用比%、配额预警标志）
++ */
++export function calculateDeviceStats(devices: DeviceDto[], quotaTotal = 1000): DeviceStatsDto {
++  const totalCount = devices.length;
++  const onlineCount = devices.filter((d) => d.onlineStatus === 'ONLINE').length;
++  const offlineCount = devices.filter((d) => d.onlineStatus === 'OFFLINE').length;
++  const alarmingCount = devices.filter((d) => d.onlineStatus === 'ALARMING').length;
++
++  const onlineRate = totalCount === 0 ? 0 : Number(((onlineCount / totalCount) * 100).toFixed(1));
++  const quotaUsage = quotaTotal > 0 ? Number(((totalCount / quotaTotal) * 100).toFixed(1)) : 0;
++  const isQuotaWarning = quotaUsage >= 90;
++
++  return {
++    totalCount,
++    onlineCount,
++    onlineRate,
++    offlineCount,
++    alarmingCount,
++    quotaUsage,
++    isQuotaWarning,
++    quotaTotal,
++    quotaUsed: totalCount,
++  };
++}
++
++/**
++ * 多维组合过滤纯函数
++ */
++export function filterDevices(devices: DeviceDto[], params?: DeviceQueryParams): DeviceDto[] {
++  if (!params) return [...devices];
++
++  const { keyword, projectId, onlineStatus, firmwareVersion, status } = params;
++  const normalizedKeyword = keyword?.trim().toLowerCase();
++
++  return devices.filter((device) => {
++    // 关键字多字段模糊搜索 (deviceNo / imei / iccid / plate / vin)
++    if (normalizedKeyword) {
++      const matchDeviceNo = device.deviceNo.toLowerCase().includes(normalizedKeyword);
++      const matchImei = device.imei.toLowerCase().includes(normalizedKeyword);
++      const matchIccid = device.iccid ? device.iccid.toLowerCase().includes(normalizedKeyword) : false;
++      const matchPlate = device.boundVehiclePlate
++        ? device.boundVehiclePlate.toLowerCase().includes(normalizedKeyword)
++        : false;
++      const matchVin = device.boundVin ? device.boundVin.toLowerCase().includes(normalizedKeyword) : false;
++
++      if (!matchDeviceNo && !matchImei && !matchIccid && !matchPlate && !matchVin) {
++        return false;
++      }
++    }
++
++    // 项目过滤
++    if (projectId && projectId !== 'ALL' && device.projectId !== projectId) {
++      return false;
++    }
++
++    // 在线状态过滤
++    if (onlineStatus && onlineStatus !== 'ALL' && device.onlineStatus !== onlineStatus) {
++      return false;
++    }
++
++    // 固件版本号过滤
++    if (firmwareVersion && firmwareVersion !== 'ALL' && device.firmwareVersion !== firmwareVersion) {
++      return false;
++    }
++
++    // 生命周期状态过滤
++    if (status && status !== 'ALL' && device.status !== status) {
++      return false;
++    }
++
++    return true;
++  });
++}
++
++export interface SignalQualityMeta {
++  bars: number;
++  label: string;
++  color: string;
++  rsrp: number | null;
++}
++
++/**
++ * 4G 信号 RSRP 映射 (dBm 阶梯条形指示器)
++ * ≥ -85 dBm: 4格 极佳 绿色 (#52c41a)
++ * -86 ~ -95 dBm: 3格 良好 蓝色 (#1677ff)
++ * -96 ~ -105 dBm: 2格 一般 橙色 (#faad14)
++ * < -105 dBm: 1格 极差 红色 (#ff4d4f)
++ * 未知 / 空: 0格 无信号 灰色 (#8c8c8c)
++ */
++export function getSignalQuality(rsrp?: number | null): SignalQualityMeta {
++  if (rsrp === undefined || rsrp === null || Number.isNaN(rsrp)) {
++    return {
++      bars: 0,
++      label: '无信号',
++      color: '#8c8c8c',
++      rsrp: null,
++    };
++  }
++
++  if (rsrp >= -85) {
++    return {
++      bars: 4,
++      label: '极佳',
++      color: '#52c41a',
++      rsrp,
++    };
++  }
++
++  if (rsrp >= -95) {
++    return {
++      bars: 3,
++      label: '良好',
++      color: '#1677ff',
++      rsrp,
++    };
++  }
++
++  if (rsrp >= -105) {
++    return {
++      bars: 2,
++      label: '一般',
++      color: '#faad14',
++      rsrp,
++    };
++  }
++
++  return {
++    bars: 1,
++    label: '极差',
++    color: '#ff4d4f',
++    rsrp,
++  };
++}
++
++/**
++ * 获取在线状态徽标和标签元信息
++ */
++export function getOnlineStatusMeta(status: string): { label: string; color: string; badgeColor: string } {
++  switch (status) {
++    case 'ONLINE':
++      return { label: '在线', color: 'success', badgeColor: '#52c41a' };
++    case 'OFFLINE':
++      return { label: '离线', color: 'default', badgeColor: '#8c8c8c' };
++    case 'ALARMING':
++      return { label: '告警', color: 'error', badgeColor: '#ff4d4f' };
++    case 'UPGRADING':
++      return { label: '升级中', color: 'processing', badgeColor: '#1677ff' };
++    case 'UNACTIVATED':
++      return { label: '未激活', color: 'default', badgeColor: '#d9d9d9' };
++    default:
++      return { label: status, color: 'default', badgeColor: '#8c8c8c' };
++  }
++}
++
++/**
++ * 获取生命周期状态元信息
++ */
++export function getLifecycleStatusMeta(status: DeviceLifecycleStatus): { label: string; color: string } {
++  switch (status) {
++    case 'ACTIVE':
++      return { label: '正常启用', color: 'green' };
++    case 'INACTIVE':
++      return { label: '已停用', color: 'warning' };
++    case 'DECOMMISSIONED':
++      return { label: '已报废', color: 'red' };
++    default:
++      return { label: status, color: 'default' };
++  }
++}
++
++/**
++ * 校验生命周期状态流转合法性
++ * - DECOMMISSIONED 为终态，不可再逆向转换为 ACTIVE 或 INACTIVE
++ * - ACTIVE 和 INACTIVE 之间可自由启停
++ * - ACTIVE / INACTIVE 均可流转为 DECOMMISSIONED
++ */
++export function isValidStatusTransition(
++  current: DeviceLifecycleStatus,
++  next: DeviceLifecycleStatus
++): boolean {
++  if (current === next) return true;
++  if (current === 'DECOMMISSIONED') {
++    return false;
++  }
++  return true;
++}
++
++/**
++ * 判断捕获的异常是否为带有 HTTP 状态码的后端业务 ApiError
++ */
++export function isApiError(err: unknown): err is ApiError {
++  if (err instanceof ApiError) return true;
++  if (typeof err === 'object' && err !== null) {
++    const candidate = err as Record<string, unknown>;
++    return typeof candidate.statusCode === 'number' && typeof candidate.message === 'string';
++  }
++  return false;
++}
++
++/**
++ * 预设项目种子数据
++ */
++export const SEED_PROJECTS: ProjectDto[] = [
++  { id: 'proj-sz-01', name: '深圳极速智慧车队', code: 'SZ_SPEED_01', deviceCount: 520 },
++  { id: 'proj-gz-02', name: '广州网约出行运营二期', code: 'GZ_RIDE_02', deviceCount: 310 },
++  { id: 'proj-sh-03', name: '上海城际新能源干线', code: 'SH_LOGIS_03', deviceCount: 280 },
++  { id: 'proj-bj-04', name: '北方冷链特种运输项目', code: 'BJ_COLD_04', deviceCount: 150 },
++];
++
++/**
++ * 预设产品型号字典
++ */
++export const PRODUCT_KEY_OPTIONS = [
++  { label: '4G 智慧车载终端 (标准版) - TBOX-G4-STD', value: 'TBOX-G4-STD' },
++  { label: '5G 高性能车载终端 (旗舰版) - TBOX-G5-PRO', value: 'TBOX-G5-PRO' },
++  { label: 'OBD-II 即插即用诊断仪 - OBD-II-PLUS', value: 'OBD-II-PLUS' },
++  { label: '新能源双路CAN控制器 - TCU-EV-100', value: 'TCU-EV-100' },
++];
++
++/**
++ * 真实多样化的设备台账种子数据
++ */
++export const SEED_DEVICES: DeviceDto[] = [
++  {
++    id: 'dev-10001',
++    deviceNo: 'DEV_10001',
++    imei: '868123045678901',
++    iccid: '89860401123456789012',
++    productKey: 'TBOX-G4-STD',
++    productName: '4G 智慧车载终端 (标准版)',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: '粤B·88888',
++    boundVin: 'LFPH2E023N10001',
++    onlineStatus: 'ONLINE',
++    signalRsrp: -76,
++    firmwareVersion: 'v2.1.0',
++    status: 'ACTIVE',
++    activatedAt: '2026-03-01 10:00:00',
++    lastHeartbeatAt: '2026-10-12 10:45:00',
++    createdAt: '2026-03-01 09:00:00',
++    mainVoltage: 13.8,
++    backupBatteryPercent: 95,
++    temperature: 32,
++  },
++  {
++    id: 'dev-10002',
++    deviceNo: 'DEV_10002',
++    imei: '868123045678902',
++    iccid: '89860401123456789013',
++    productKey: 'TBOX-G5-PRO',
++    productName: '5G 高性能车载终端 (旗舰版)',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: '粤B·66666',
++    boundVin: 'LFPH2E023N10002',
++    onlineStatus: 'ONLINE',
++    signalRsrp: -82,
++    firmwareVersion: 'v2.1.0',
++    status: 'ACTIVE',
++    activatedAt: '2026-03-02 11:00:00',
++    lastHeartbeatAt: '2026-10-12 10:44:30',
++    createdAt: '2026-03-02 09:30:00',
++    mainVoltage: 14.1,
++    backupBatteryPercent: 98,
++    temperature: 34,
++  },
++  {
++    id: 'dev-10003',
++    deviceNo: 'DEV_10003',
++    imei: '868123045678903',
++    iccid: '89860401123456789014',
++    productKey: 'OBD-II-PLUS',
++    productName: 'OBD-II 即插即用诊断仪',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: null,
++    boundVin: null,
++    onlineStatus: 'OFFLINE',
++    signalRsrp: undefined,
++    firmwareVersion: 'v2.0.8',
++    status: 'ACTIVE',
++    activatedAt: '2026-03-05 14:00:00',
++    lastHeartbeatAt: '2026-10-11 18:20:00',
++    createdAt: '2026-03-05 13:00:00',
++    mainVoltage: 12.2,
++    backupBatteryPercent: 60,
++    temperature: 26,
++  },
++  {
++    id: 'dev-10004',
++    deviceNo: 'DEV_10004',
++    imei: '868123045678904',
++    iccid: '89860401123456789015',
++    productKey: 'TBOX-G4-STD',
++    productName: '4G 智慧车载终端 (标准版)',
++    projectId: 'proj-gz-02',
++    projectName: '广州网约出行运营二期',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: '粤A·99887',
++    boundVin: 'LFPH2E023N10004',
++    onlineStatus: 'ALARMING',
++    signalRsrp: -108,
++    firmwareVersion: 'v2.0.8',
++    status: 'ACTIVE',
++    activatedAt: '2026-03-10 09:00:00',
++    lastHeartbeatAt: '2026-10-12 10:40:15',
++    createdAt: '2026-03-10 08:30:00',
++    mainVoltage: 10.8,
++    backupBatteryPercent: 15,
++    temperature: 48,
++  },
++  {
++    id: 'dev-10005',
++    deviceNo: 'DEV_10005',
++    imei: '868123045678905',
++    iccid: '89860401123456789016',
++    productKey: 'TCU-EV-100',
++    productName: '新能源双路CAN控制器',
++    projectId: 'proj-gz-02',
++    projectName: '广州网约出行运营二期',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: '粤A·12345',
++    boundVin: 'LFPH2E023N10005',
++    onlineStatus: 'ONLINE',
++    signalRsrp: -90,
++    firmwareVersion: 'v2.1.0',
++    status: 'ACTIVE',
++    activatedAt: '2026-03-12 16:30:00',
++    lastHeartbeatAt: '2026-10-12 10:46:10',
++    createdAt: '2026-03-12 15:00:00',
++    mainVoltage: 13.5,
++    backupBatteryPercent: 92,
++    temperature: 31,
++  },
++  {
++    id: 'dev-10006',
++    deviceNo: 'DEV_10006',
++    imei: '868123045678906',
++    iccid: '89860401123456789017',
++    productKey: 'TBOX-G4-STD',
++    productName: '4G 智慧车载终端 (标准版)',
++    projectId: 'proj-sh-03',
++    projectName: '上海城际新能源干线',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: '沪A·E5678',
++    boundVin: 'LFPH2E023N10006',
++    onlineStatus: 'ONLINE',
++    signalRsrp: -98,
++    firmwareVersion: 'v2.1.0',
++    status: 'ACTIVE',
++    activatedAt: '2026-03-15 10:15:00',
++    lastHeartbeatAt: '2026-10-12 10:45:50',
++    createdAt: '2026-03-15 09:00:00',
++    mainVoltage: 13.9,
++    backupBatteryPercent: 90,
++    temperature: 30,
++  },
++  {
++    id: 'dev-10007',
++    deviceNo: 'DEV_10007',
++    imei: '868123045678907',
++    iccid: '89860401123456789018',
++    productKey: 'TBOX-G5-PRO',
++    productName: '5G 高性能车载终端 (旗舰版)',
++    projectId: 'proj-sh-03',
++    projectName: '上海城际新能源干线',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: '沪B·87654',
++    boundVin: 'LFPH2E023N10007',
++    onlineStatus: 'OFFLINE',
++    signalRsrp: -112,
++    firmwareVersion: 'v2.0.7',
++    status: 'INACTIVE',
++    activatedAt: '2026-02-18 14:00:00',
++    lastHeartbeatAt: '2026-10-09 11:30:00',
++    createdAt: '2026-02-18 10:00:00',
++    mainVoltage: 11.9,
++    backupBatteryPercent: 40,
++    temperature: 24,
++  },
++  {
++    id: 'dev-10008',
++    deviceNo: 'DEV_10008',
++    imei: '868123045678908',
++    iccid: '89860401123456789019',
++    productKey: 'OBD-II-PLUS',
++    productName: 'OBD-II 即插即用诊断仪',
++    projectId: 'proj-bj-04',
++    projectName: '北方冷链特种运输项目',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: null,
++    boundVin: null,
++    onlineStatus: 'OFFLINE',
++    signalRsrp: undefined,
++    firmwareVersion: 'v2.0.8',
++    status: 'INACTIVE',
++    activatedAt: '2026-01-20 09:30:00',
++    lastHeartbeatAt: '2026-09-30 15:10:00',
++    createdAt: '2026-01-20 09:00:00',
++    mainVoltage: 12.0,
++    backupBatteryPercent: 55,
++    temperature: 22,
++  },
++  {
++    id: 'dev-10009',
++    deviceNo: 'DEV_10009',
++    imei: '868123045678909',
++    iccid: '89860401123456789020',
++    productKey: 'TCU-EV-100',
++    productName: '新能源双路CAN控制器',
++    projectId: 'proj-bj-04',
++    projectName: '北方冷链特种运输项目',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: '京A·88888',
++    boundVin: 'LFPH2E023N10009',
++    onlineStatus: 'ONLINE',
++    signalRsrp: -72,
++    firmwareVersion: 'v2.1.0',
++    status: 'ACTIVE',
++    activatedAt: '2026-03-25 10:00:00',
++    lastHeartbeatAt: '2026-10-12 10:46:00',
++    createdAt: '2026-03-25 09:30:00',
++    mainVoltage: 14.2,
++    backupBatteryPercent: 99,
++    temperature: 28,
++  },
++  {
++    id: 'dev-10010',
++    deviceNo: 'DEV_10010',
++    imei: '868123045678910',
++    iccid: '89860401123456789021',
++    productKey: 'TBOX-G4-STD',
++    productName: '4G 智慧车载终端 (标准版)',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: null,
++    boundVin: null,
++    onlineStatus: 'OFFLINE',
++    signalRsrp: -120,
++    firmwareVersion: 'v1.9.0',
++    status: 'DECOMMISSIONED',
++    activatedAt: '2025-09-01 10:00:00',
++    lastHeartbeatAt: '2025-12-31 23:59:00',
++    createdAt: '2025-09-01 09:00:00',
++    mainVoltage: 0.0,
++    backupBatteryPercent: 0,
++    temperature: 20,
++  },
++  {
++    id: 'dev-10011',
++    deviceNo: 'DEV_10011',
++    imei: '868123045678911',
++    iccid: '89860401123456789022',
++    productKey: 'TBOX-G4-STD',
++    productName: '4G 智慧车载终端 (标准版)',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: '粤B·11223',
++    boundVin: 'LFPH2E023N10011',
++    onlineStatus: 'ONLINE',
++    signalRsrp: -84,
++    firmwareVersion: 'v2.1.0',
++    status: 'ACTIVE',
++    activatedAt: '2026-04-01 10:00:00',
++    lastHeartbeatAt: '2026-10-12 10:44:00',
++    createdAt: '2026-04-01 09:30:00',
++    mainVoltage: 13.7,
++    backupBatteryPercent: 91,
++    temperature: 33,
++  },
++  {
++    id: 'dev-10012',
++    deviceNo: 'DEV_10012',
++    imei: '868123045678912',
++    iccid: '89860401123456789023',
++    productKey: 'TBOX-G5-PRO',
++    productName: '5G 高性能车载终端 (旗舰版)',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: '粤B·33445',
++    boundVin: 'LFPH2E023N10012',
++    onlineStatus: 'ONLINE',
++    signalRsrp: -89,
++    firmwareVersion: 'v2.1.0',
++    status: 'ACTIVE',
++    activatedAt: '2026-04-05 11:30:00',
++    lastHeartbeatAt: '2026-10-12 10:45:20',
++    createdAt: '2026-04-05 10:00:00',
++    mainVoltage: 13.9,
++    backupBatteryPercent: 94,
++    temperature: 31,
++  },
++];
+diff --git a/apps/web/src/views/device/index.ts b/apps/web/src/views/device/index.ts
+new file mode 100644
+index 0000000..69d2943
+--- /dev/null
++++ b/apps/web/src/views/device/index.ts
+@@ -0,0 +1,3 @@
++export * from './device-core.ts';
++export { DeviceListView } from './DeviceListView.tsx';
++export { default } from './DeviceListView.tsx';

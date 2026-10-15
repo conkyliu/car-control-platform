@@ -1,0 +1,1646 @@
+diff --git a/apps/web/src/api/device.ts b/apps/web/src/api/device.ts
+index cc38f94..55c9d00 100644
+--- a/apps/web/src/api/device.ts
++++ b/apps/web/src/api/device.ts
+@@ -36,6 +36,14 @@ export type {
+ let inMemoryDevices: DeviceDto[] = [...SEED_DEVICES];
+ let inMemoryProjects: ProjectDto[] = [...SEED_PROJECTS];
+ 
++export function getInMemoryDevices(): DeviceDto[] {
++  return inMemoryDevices;
++}
++
++export function setInMemoryDevices(devices: DeviceDto[]): void {
++  inMemoryDevices = devices;
++}
++
+ /**
+  * 拉取设备资产列表 API
+  * 遵循 isApiError 模式：真实服务端异常抛出中断并提示，离线/开发环境平滑降级至种子数据
+diff --git a/apps/web/src/api/vehicle.ts b/apps/web/src/api/vehicle.ts
+index ea91222..8049dc5 100644
+--- a/apps/web/src/api/vehicle.ts
++++ b/apps/web/src/api/vehicle.ts
+@@ -13,7 +13,12 @@ import {
+   SEED_MODELS,
+   SEED_VEHICLES,
+ } from '../views/vehicle/vehicle-core.ts';
+-import { SEED_PROJECTS } from '../views/device/device-core.ts';
++import { SEED_PROJECTS, type DeviceDto } from '../views/device/device-core.ts';
++import { getInMemoryDevices, setInMemoryDevices } from './device.ts';
++import {
++  validateBindingPair,
++  applyBindingChange,
++} from '../views/vehicle/vehicle-bind-core.ts';
+ 
+ export type {
+   VehicleDto,
+@@ -41,6 +46,14 @@ let inMemoryVehicles: VehicleDto[] = [...SEED_VEHICLES];
+ let inMemoryBrands: BrandDto[] = [...SEED_BRANDS];
+ let inMemoryModels: ModelDto[] = [...SEED_MODELS];
+ 
++export function getInMemoryVehicles(): VehicleDto[] {
++  return inMemoryVehicles;
++}
++
++export function setInMemoryVehicles(vehicles: VehicleDto[]): void {
++  inMemoryVehicles = vehicles;
++}
++
+ /**
+  * 拉取车辆台账档案列表 API
+  * 遵循 isApiError 模式：真实服务端异常抛出中断并提示，离线环境降级至内存数据池
+@@ -220,3 +233,135 @@ export async function fetchModelsApi(brandId?: string): Promise<ModelDto[]> {
+   }
+   return inMemoryModels;
+ }
++
++/**
++ * 绑定或更换车载硬件设备 API
++ * 遵循 isApiError 模式：真实服务端异常抛出中断，离线环境在本地内存池中执行原子双向绑定
++ */
++export async function bindDeviceApi(
++  vehicleId: string,
++  deviceId: string,
++  remark?: string
++): Promise<{ success: boolean; message: string }> {
++  try {
++    const result = await http.post<{ success: boolean; message: string }>(
++      `/vehicles/${encodeURIComponent(vehicleId)}/bind-device`,
++      { deviceId, remark }
++    );
++    if (result && typeof result.success === 'boolean') {
++      return result;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 离线/开发环境降级：更新本地内存状态池
++  const currentDevices = getInMemoryDevices();
++  const vehicle = inMemoryVehicles.find((v) => v.id === vehicleId);
++  const device = currentDevices.find((d) => d.id === deviceId);
++
++  if (!vehicle) {
++    throw new Error(`车辆 ID "${vehicleId}" 未找到`);
++  }
++  if (!device) {
++    throw new Error(`设备 ID "${deviceId}" 未找到`);
++  }
++
++  const validation = validateBindingPair(vehicle, device);
++  if (!validation.valid) {
++    throw new Error(validation.error || '软硬件绑定配对规则校验未通过');
++  }
++
++  const {
++    vehicles: nextVehicles,
++    devices: nextDevices,
++    targetVehicle,
++    targetDevice,
++  } = applyBindingChange(inMemoryVehicles, currentDevices, vehicleId, deviceId, remark);
++
++  inMemoryVehicles = nextVehicles;
++  setInMemoryDevices(nextDevices);
++
++  return {
++    success: true,
++    message: `车辆【${targetVehicle?.plateNumber}】与硬件终端【${targetDevice?.deviceNo}】绑定成功`,
++  };
++}
++
++/**
++ * 解除车辆与车载硬件设备绑定 API
++ * 遵循 isApiError 模式：真实服务端异常抛出中断，离线环境解绑并释放设备回库
++ */
++export async function unbindDeviceApi(
++  vehicleId: string,
++  reason?: string
++): Promise<{ success: boolean; message: string }> {
++  try {
++    const result = await http.post<{ success: boolean; message: string }>(
++      `/vehicles/${encodeURIComponent(vehicleId)}/unbind-device`,
++      { reason }
++    );
++    if (result && typeof result.success === 'boolean') {
++      return result;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 离线/开发环境降级：解绑并释放设备
++  const currentDevices = getInMemoryDevices();
++  const vehicle = inMemoryVehicles.find((v) => v.id === vehicleId);
++  if (!vehicle) {
++    throw new Error(`车辆 ID "${vehicleId}" 未找到`);
++  }
++
++  const prevDeviceId = vehicle.deviceId;
++  const { vehicles: nextVehicles, devices: nextDevices, targetVehicle } = applyBindingChange(
++    inMemoryVehicles,
++    currentDevices,
++    vehicleId,
++    null,
++    reason
++  );
++
++  inMemoryVehicles = nextVehicles;
++  setInMemoryDevices(nextDevices);
++
++  return {
++    success: true,
++    message: `车辆【${targetVehicle?.plateNumber}】软硬件解绑成功，已解除与车载终端 (ID: ${prevDeviceId || '-'}) 的绑定关系`,
++  };
++}
++
++/**
++ * 获取当前租户下空闲可用车载终端 API
++ * 遵循 isApiError 模式：过滤未被占用的 ACTIVE 设备，支持可选 projectId 过滤
++ */
++export async function fetchAvailableDevicesApi(projectId?: string): Promise<DeviceDto[]> {
++  try {
++    const data = await http.get<DeviceDto[]>(
++      '/devices/available',
++      projectId && projectId !== 'ALL' ? { projectId } : undefined
++    );
++    if (Array.isArray(data)) {
++      return data;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 离线/开发环境降级
++  let available = getInMemoryDevices().filter(
++    (d) => d.status === 'ACTIVE' && !d.boundVin && !d.boundVehiclePlate && !d.boundVehicle
++  );
++  if (projectId && projectId !== 'ALL') {
++    available = available.filter((d) => d.projectId === projectId);
++  }
++  return available;
++}
+diff --git a/apps/web/src/test/vehicle-bind.test.ts b/apps/web/src/test/vehicle-bind.test.ts
+new file mode 100644
+index 0000000..bdefc1a
+--- /dev/null
++++ b/apps/web/src/test/vehicle-bind.test.ts
+@@ -0,0 +1,371 @@
++import { describe, it, beforeEach } from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  validateBindingPair,
++  UNBIND_REASONS,
++  UNBIND_REASON_OPTIONS,
++  validateUnbindReason,
++  applyBindingChange,
++  type UnbindReason,
++} from '../views/vehicle/vehicle-bind-core.ts';
++import {
++  bindDeviceApi,
++  unbindDeviceApi,
++  fetchAvailableDevicesApi,
++  getInMemoryVehicles,
++  setInMemoryVehicles,
++} from '../api/vehicle.ts';
++import { getInMemoryDevices, setInMemoryDevices } from '../api/device.ts';
++import { ApiError, http } from '../api/client.ts';
++import type { VehicleDto } from '../views/vehicle/vehicle-core.ts';
++import type { DeviceDto } from '../views/device/device-core.ts';
++
++describe('Vehicle & Device Hardware Binding Management Center (TDD)', () => {
++  const mockVehicle: VehicleDto = {
++    id: 'veh-test-01',
++    vin: 'LFPH2E023N1000999',
++    plateNumber: '粤B·99999',
++    tenantId: 'tenant-001',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    brandId: 'brand-byd',
++    brandName: '比亚迪',
++    modelId: 'model-byd-han',
++    modelName: '汉 EV',
++    deviceId: null,
++    deviceNo: null,
++    deviceOnlineStatus: undefined,
++    status: 'NORMAL',
++    telemetry: {
++      batteryVoltage: 12.6,
++      speed: 0,
++      mileage: 1000,
++    },
++    ownerName: '测试车主',
++    ownerPhone: '13800000000',
++  };
++
++  const mockDevice: DeviceDto = {
++    id: 'dev-test-01',
++    deviceNo: 'DEV_TEST_01',
++    imei: '868123045678999',
++    productKey: 'TBOX-G4-STD',
++    productName: '4G 智慧车载终端 (标准版)',
++    projectId: 'proj-sz-01',
++    projectName: '深圳极速智慧车队',
++    tenantId: 'tenant-001',
++    boundVehiclePlate: null,
++    boundVin: null,
++    onlineStatus: 'ONLINE',
++    signalRsrp: -75,
++    firmwareVersion: 'v2.1.0',
++    status: 'ACTIVE',
++  };
++
++  describe('1. Binding Pre-Validation Rules (validateBindingPair)', () => {
++    it('passes validation when vehicle and device have matching tenant, valid status, and free state', () => {
++      const result = validateBindingPair(mockVehicle, mockDevice);
++      assert.strictEqual(result.valid, true);
++      assert.strictEqual(result.error, undefined);
++      assert.strictEqual(result.warning, undefined);
++    });
++
++    it('intercepts cross-tenant pairing attempts with strict error', () => {
++      const crossTenantDevice: DeviceDto = {
++        ...mockDevice,
++        tenantId: 'tenant-002',
++      };
++      const result = validateBindingPair(mockVehicle, crossTenantDevice);
++      assert.strictEqual(result.valid, false);
++      assert.match(result.error || '', /跨租户拦截/);
++    });
++
++    it('intercepts pairing when vehicle is in terminal SCRAPPED status', () => {
++      const scrappedVehicle: VehicleDto = {
++        ...mockVehicle,
++        status: 'SCRAPPED',
++      };
++      const result = validateBindingPair(scrappedVehicle, mockDevice);
++      assert.strictEqual(result.valid, false);
++      assert.match(result.error || '', /报废车辆/);
++    });
++
++    it('intercepts pairing when target device is DECOMMISSIONED', () => {
++      const decommissionedDevice: DeviceDto = {
++        ...mockDevice,
++        status: 'DECOMMISSIONED',
++      };
++      const result = validateBindingPair(mockVehicle, decommissionedDevice);
++      assert.strictEqual(result.valid, false);
++      assert.match(result.error || '', /报废设备/);
++    });
++
++    it('intercepts pairing when target device is already occupied by another vehicle', () => {
++      const occupiedDevice: DeviceDto = {
++        ...mockDevice,
++        boundVehiclePlate: '粤A·12345',
++        boundVin: 'LFPH2E023N1000888',
++      };
++      const result = validateBindingPair(mockVehicle, occupiedDevice);
++      assert.strictEqual(result.valid, false);
++      assert.match(result.error || '', /设备占用冲突/);
++      assert.match(result.error || '', /粤A·12345/);
++      assert.match(result.error || '', /LFPH2E023N1000888/);
++    });
++
++    it('generates friendly warning when vehicle project and device project do not match', () => {
++      const crossProjectDevice: DeviceDto = {
++        ...mockDevice,
++        projectId: 'proj-gz-02',
++        projectName: '广州网约出行运营二期',
++      };
++      const result = validateBindingPair(mockVehicle, crossProjectDevice);
++      assert.strictEqual(result.valid, true);
++      assert.strictEqual(result.error, undefined);
++      assert.ok(result.warning);
++      assert.match(result.warning || '', /项目归属提示/);
++      assert.match(result.warning || '', /深圳极速智慧车队/);
++      assert.match(result.warning || '', /广州网约出行运营二期/);
++    });
++  });
++
++  describe('2. Unbind Reasons Dictionary & Validation (UNBIND_REASONS)', () => {
++    it('defines all 5 standard unbinding reasons with human-friendly descriptions', () => {
++      const expectedReasons: UnbindReason[] = [
++        'MAINTENANCE',
++        'HARDWARE_UPGRADE',
++        'VEHICLE_SCRAPPED',
++        'OWNERSHIP_TRANSFER',
++        'OTHER',
++      ];
++
++      for (const reason of expectedReasons) {
++        assert.ok(UNBIND_REASONS[reason], `Missing unbind reason: ${reason}`);
++        assert.ok(UNBIND_REASONS[reason].label.length > 0);
++        assert.ok(UNBIND_REASONS[reason].description.length > 0);
++      }
++    });
++
++    it('validates unbind reasons correctly via validateUnbindReason', () => {
++      assert.strictEqual(validateUnbindReason('MAINTENANCE'), true);
++      assert.strictEqual(validateUnbindReason('HARDWARE_UPGRADE'), true);
++      assert.strictEqual(validateUnbindReason('VEHICLE_SCRAPPED'), true);
++      assert.strictEqual(validateUnbindReason('OWNERSHIP_TRANSFER'), true);
++      assert.strictEqual(validateUnbindReason('OTHER'), true);
++
++      assert.strictEqual(validateUnbindReason('INVALID_REASON'), false);
++      assert.strictEqual(validateUnbindReason(''), false);
++      assert.strictEqual(validateUnbindReason(null), false);
++      assert.strictEqual(validateUnbindReason(undefined), false);
++    });
++
++    it('provides UNBIND_REASON_OPTIONS formatted for Ant Design Select', () => {
++      assert.strictEqual(UNBIND_REASON_OPTIONS.length, 5);
++      const first = UNBIND_REASON_OPTIONS[0];
++      assert.ok(first?.value);
++      assert.ok(first?.label);
++      assert.ok(first?.description);
++    });
++  });
++
++  describe('3. Immutable State Pool Synchronization (applyBindingChange)', () => {
++    it('binds an unbound vehicle to an available device atomically', () => {
++      const vehicles = [{ ...mockVehicle }];
++      const devices = [{ ...mockDevice }];
++
++      const result = applyBindingChange(vehicles, devices, mockVehicle.id, mockDevice.id);
++
++      assert.notStrictEqual(result.vehicles, vehicles);
++      assert.notStrictEqual(result.devices, devices);
++
++      const updatedVehicle = result.vehicles.find((v) => v.id === mockVehicle.id);
++      const updatedDevice = result.devices.find((d) => d.id === mockDevice.id);
++
++      assert.ok(updatedVehicle);
++      assert.strictEqual(updatedVehicle?.deviceId, mockDevice.id);
++      assert.strictEqual(updatedVehicle?.deviceNo, mockDevice.deviceNo);
++      assert.strictEqual(updatedVehicle?.deviceOnlineStatus, mockDevice.onlineStatus);
++
++      assert.ok(updatedDevice);
++      assert.strictEqual(updatedDevice?.boundVehiclePlate, mockVehicle.plateNumber);
++      assert.strictEqual(updatedDevice?.boundVin, mockVehicle.vin);
++      assert.strictEqual(updatedDevice?.boundVehicle?.plate, mockVehicle.plateNumber);
++      assert.strictEqual(updatedDevice?.boundVehicle?.vin, mockVehicle.vin);
++    });
++
++    it('unbinds a bound vehicle and releases the device back to available pool', () => {
++      const boundVehicle: VehicleDto = {
++        ...mockVehicle,
++        deviceId: mockDevice.id,
++        deviceNo: mockDevice.deviceNo,
++        deviceOnlineStatus: 'ONLINE',
++      };
++      const boundDevice: DeviceDto = {
++        ...mockDevice,
++        boundVehiclePlate: mockVehicle.plateNumber,
++        boundVin: mockVehicle.vin,
++      };
++
++      const vehicles = [boundVehicle];
++      const devices = [boundDevice];
++
++      const result = applyBindingChange(vehicles, devices, boundVehicle.id, null, 'MAINTENANCE');
++
++      const updatedVehicle = result.vehicles.find((v) => v.id === boundVehicle.id);
++      const updatedDevice = result.devices.find((d) => d.id === boundDevice.id);
++
++      assert.ok(updatedVehicle);
++      assert.strictEqual(updatedVehicle?.deviceId, null);
++      assert.strictEqual(updatedVehicle?.deviceNo, null);
++      assert.strictEqual(updatedVehicle?.deviceOnlineStatus, undefined);
++
++      assert.ok(updatedDevice);
++      assert.strictEqual(updatedDevice?.boundVehiclePlate, null);
++      assert.strictEqual(updatedDevice?.boundVin, null);
++      assert.strictEqual(updatedDevice?.boundVehicle, null);
++    });
++
++    it('rebinds vehicle to a new device by atomically releasing old device and binding new device', () => {
++      const oldDevice: DeviceDto = {
++        ...mockDevice,
++        id: 'dev-old-01',
++        deviceNo: 'DEV_OLD_01',
++        boundVehiclePlate: mockVehicle.plateNumber,
++        boundVin: mockVehicle.vin,
++      };
++      const newDevice: DeviceDto = {
++        ...mockDevice,
++        id: 'dev-new-02',
++        deviceNo: 'DEV_NEW_02',
++        boundVehiclePlate: null,
++        boundVin: null,
++      };
++      const boundVehicle: VehicleDto = {
++        ...mockVehicle,
++        deviceId: oldDevice.id,
++        deviceNo: oldDevice.deviceNo,
++      };
++
++      const vehicles = [boundVehicle];
++      const devices = [oldDevice, newDevice];
++
++      const result = applyBindingChange(vehicles, devices, boundVehicle.id, newDevice.id);
++
++      const updatedVehicle = result.vehicles.find((v) => v.id === boundVehicle.id);
++      const updatedOldDev = result.devices.find((d) => d.id === oldDevice.id);
++      const updatedNewDev = result.devices.find((d) => d.id === newDevice.id);
++
++      assert.strictEqual(updatedVehicle?.deviceId, newDevice.id);
++      assert.strictEqual(updatedVehicle?.deviceNo, newDevice.deviceNo);
++
++      assert.strictEqual(updatedOldDev?.boundVehiclePlate, null);
++      assert.strictEqual(updatedOldDev?.boundVin, null);
++
++      assert.strictEqual(updatedNewDev?.boundVehiclePlate, mockVehicle.plateNumber);
++      assert.strictEqual(updatedNewDev?.boundVin, mockVehicle.vin);
++    });
++
++    it('throws error when vehicleId does not exist in pool', () => {
++      assert.throws(
++        () => applyBindingChange([], [], 'non-existent-veh', mockDevice.id),
++        /车辆 ID "non-existent-veh" 未找到/
++      );
++    });
++
++    it('throws error when newDeviceId does not exist in pool', () => {
++      assert.throws(
++        () => applyBindingChange([mockVehicle], [], mockVehicle.id, 'non-existent-dev'),
++        /设备 ID "non-existent-dev" 未找到/
++      );
++    });
++  });
++
++  describe('4. API Client Methods & Offline Fallback (bindDeviceApi, unbindDeviceApi, fetchAvailableDevicesApi)', () => {
++    beforeEach(() => {
++      setInMemoryVehicles([{ ...mockVehicle }]);
++      setInMemoryDevices([{ ...mockDevice }]);
++    });
++
++    it('fetchAvailableDevicesApi retrieves unbound active devices and filters by projectId', async () => {
++      const dev1: DeviceDto = { ...mockDevice, id: 'dev-free-01', projectId: 'proj-sz-01' };
++      const dev2: DeviceDto = { ...mockDevice, id: 'dev-free-02', projectId: 'proj-gz-02' };
++      const devOccupied: DeviceDto = {
++        ...mockDevice,
++        id: 'dev-occ-03',
++        projectId: 'proj-sz-01',
++        boundVehiclePlate: '粤B·11111',
++      };
++      setInMemoryDevices([dev1, dev2, devOccupied]);
++
++      const allAvailable = await fetchAvailableDevicesApi();
++      assert.strictEqual(allAvailable.length, 2);
++      assert.ok(allAvailable.some((d) => d.id === 'dev-free-01'));
++      assert.ok(allAvailable.some((d) => d.id === 'dev-free-02'));
++      assert.ok(!allAvailable.some((d) => d.id === 'dev-occ-03'));
++
++      const szAvailable = await fetchAvailableDevicesApi('proj-sz-01');
++      assert.strictEqual(szAvailable.length, 1);
++      assert.strictEqual(szAvailable[0]?.id, 'dev-free-01');
++    });
++
++    it('bindDeviceApi updates in-memory vehicle and device atomically in offline fallback', async () => {
++      const res = await bindDeviceApi(mockVehicle.id, mockDevice.id, '产线PDI加装');
++      assert.strictEqual(res.success, true);
++      assert.match(res.message, /绑定成功/);
++
++      const vehicles = getInMemoryVehicles();
++      const devices = getInMemoryDevices();
++
++      const v = vehicles.find((item) => item.id === mockVehicle.id);
++      const d = devices.find((item) => item.id === mockDevice.id);
++
++      assert.strictEqual(v?.deviceId, mockDevice.id);
++      assert.strictEqual(v?.deviceNo, mockDevice.deviceNo);
++      assert.strictEqual(d?.boundVehiclePlate, mockVehicle.plateNumber);
++      assert.strictEqual(d?.boundVin, mockVehicle.vin);
++    });
++
++    it('unbindDeviceApi clears pairing and releases device in offline fallback', async () => {
++      // First bind
++      await bindDeviceApi(mockVehicle.id, mockDevice.id);
++
++      // Then unbind
++      const res = await unbindDeviceApi(mockVehicle.id, 'MAINTENANCE');
++      assert.strictEqual(res.success, true);
++      assert.match(res.message, /解绑成功/);
++
++      const vehicles = getInMemoryVehicles();
++      const devices = getInMemoryDevices();
++
++      const v = vehicles.find((item) => item.id === mockVehicle.id);
++      const d = devices.find((item) => item.id === mockDevice.id);
++
++      assert.strictEqual(v?.deviceId, null);
++      assert.strictEqual(v?.deviceNo, null);
++      assert.strictEqual(d?.boundVehiclePlate, null);
++      assert.strictEqual(d?.boundVin, null);
++    });
++
++    it('does not swallow ApiError thrown by server request', async () => {
++      const origPost = http.post;
++      http.post = async () => {
++        throw new ApiError('设备硬件校验失败：该设备处于物理黑名单', 422);
++      };
++
++      try {
++        await assert.rejects(
++          async () => {
++            await bindDeviceApi(mockVehicle.id, mockDevice.id);
++          },
++          (err: any) => {
++            assert.strictEqual(err.statusCode, 422);
++            assert.match(err.message, /物理黑名单/);
++            return true;
++          }
++        );
++      } finally {
++        http.post = origPost;
++      }
++    });
++  });
++});
+diff --git a/apps/web/src/views/vehicle/VehicleBindModal.tsx b/apps/web/src/views/vehicle/VehicleBindModal.tsx
+new file mode 100644
+index 0000000..b0ef8a9
+--- /dev/null
++++ b/apps/web/src/views/vehicle/VehicleBindModal.tsx
+@@ -0,0 +1,738 @@
++import React, { useState, useEffect, useMemo, useCallback } from 'react';
++import {
++  Modal,
++  Card,
++  Typography,
++  Tag,
++  Badge,
++  Space,
++  Button,
++  Radio,
++  Select,
++  Input,
++  Form,
++  Alert,
++  Tabs,
++  Descriptions,
++  Popconfirm,
++  Spin,
++  message,
++  Divider,
++} from 'antd';
++import {
++  LinkOutlined,
++  DisconnectOutlined,
++  SwapOutlined,
++  CarOutlined,
++  CheckCircleOutlined,
++  ExclamationCircleOutlined,
++  ScanOutlined,
++  BarcodeOutlined,
++  WifiOutlined,
++  SafetyCertificateOutlined,
++  InfoCircleOutlined,
++} from '@ant-design/icons';
++import type { VehicleDto } from './vehicle-core.ts';
++import {
++  type DeviceDto,
++  getOnlineStatusMeta,
++  getSignalQuality,
++} from '../device/device-core.ts';
++import {
++  validateBindingPair,
++  UNBIND_REASONS,
++  UNBIND_REASON_OPTIONS,
++  type UnbindReason,
++} from './vehicle-bind-core.ts';
++import {
++  bindDeviceApi,
++  unbindDeviceApi,
++  fetchAvailableDevicesApi,
++} from '../../api/vehicle.ts';
++import { fetchDeviceDetailApi } from '../../api/device.ts';
++import { isApiError } from './vehicle-core.ts';
++
++const { Text, Paragraph } = Typography;
++
++export interface VehicleBindModalProps {
++  open: boolean;
++  vehicle: VehicleDto | null;
++  onClose: () => void;
++  onSuccess: () => void;
++}
++
++export const VehicleBindModal: React.FC<VehicleBindModalProps> = ({
++  open,
++  vehicle,
++  onClose,
++  onSuccess,
++}) => {
++  // 设备数据与检索
++  const [loadingDevices, setLoadingDevices] = useState(false);
++  const [availableDevices, setAvailableDevices] = useState<DeviceDto[]>([]);
++  const [currentDevice, setCurrentDevice] = useState<DeviceDto | null>(null);
++
++  // 模式 1：首次绑定向导状态
++  const [inputMode, setInputMode] = useState<'SELECT' | 'MANUAL'>('SELECT');
++  const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
++  const [manualCode, setManualCode] = useState('');
++  const [bindRemark, setBindRemark] = useState('');
++  const [bindingLoading, setBindingLoading] = useState(false);
++
++  // 模式 2：换绑与解绑状态
++  const [activeTab, setActiveTab] = useState<'rebind' | 'unbind'>('rebind');
++  const [rebindDeviceId, setRebindDeviceId] = useState<string | null>(null);
++  const [rebindRemark, setRebindRemark] = useState('');
++  const [rebindLoading, setRebindLoading] = useState(false);
++
++  const [unbindReason, setUnbindReason] = useState<UnbindReason | undefined>(undefined);
++  const [unbindRemark, setUnbindRemark] = useState('');
++  const [unbindLoading, setUnbindLoading] = useState(false);
++
++  // 判断是否为已绑定模式
++  const isBoundMode = Boolean(vehicle?.deviceId);
++
++  // 加载可用空闲设备与当前绑定设备
++  const loadModalData = useCallback(async () => {
++    if (!open || !vehicle) return;
++    setLoadingDevices(true);
++    try {
++      const freeDevices = await fetchAvailableDevicesApi();
++      setAvailableDevices(freeDevices);
++
++      if (vehicle.deviceId) {
++        try {
++          const detail = await fetchDeviceDetailApi(vehicle.deviceId);
++          setCurrentDevice(detail);
++        } catch {
++          // 降级使用基础设备信息
++          setCurrentDevice({
++            id: vehicle.deviceId,
++            deviceNo: vehicle.deviceNo || vehicle.deviceId,
++            imei: '868123045678901',
++            productKey: 'TBOX-G4-STD',
++            productName: '4G 智慧车载终端 (标准版)',
++            projectId: vehicle.projectId,
++            projectName: vehicle.projectName,
++            onlineStatus: vehicle.deviceOnlineStatus || 'ONLINE',
++            firmwareVersion: 'v2.1.0',
++            status: 'ACTIVE',
++          });
++        }
++      } else {
++        setCurrentDevice(null);
++      }
++    } catch (err) {
++      if (isApiError(err)) {
++        message.error(`拉取可用设备列表失败: ${err.message}`);
++      }
++    } finally {
++      setLoadingDevices(false);
++    }
++  }, [open, vehicle]);
++
++  useEffect(() => {
++    if (open) {
++      setSelectedDeviceId(null);
++      setManualCode('');
++      setBindRemark('');
++      setRebindDeviceId(null);
++      setRebindRemark('');
++      setUnbindReason(undefined);
++      setUnbindRemark('');
++      setActiveTab('rebind');
++      setInputMode('SELECT');
++      loadModalData();
++    }
++  }, [open, loadModalData]);
++
++  // 首次绑定：选中的目标设备对象
++  const selectedDevice = useMemo(() => {
++    if (!selectedDeviceId) return null;
++    return availableDevices.find((d) => d.id === selectedDeviceId) || null;
++  }, [selectedDeviceId, availableDevices]);
++
++  // 首次绑定：校验结果
++  const bindValidation = useMemo(() => {
++    if (!vehicle || !selectedDevice) return { valid: false };
++    return validateBindingPair(vehicle, selectedDevice);
++  }, [vehicle, selectedDevice]);
++
++  // 换绑：选中的目标设备对象与校验结果
++  const rebindDevice = useMemo(() => {
++    if (!rebindDeviceId) return null;
++    return availableDevices.find((d) => d.id === rebindDeviceId) || null;
++  }, [rebindDeviceId, availableDevices]);
++
++  const rebindValidation = useMemo(() => {
++    if (!vehicle || !rebindDevice) return { valid: false };
++    return validateBindingPair(vehicle, rebindDevice);
++  }, [vehicle, rebindDevice]);
++
++  // 手动 / 扫码检索设备
++  const handleManualSearch = (codeToSearch?: string) => {
++    const query = (codeToSearch ?? manualCode).trim().toLowerCase();
++    if (!query) {
++      message.warning('请输入车载终端编号 (DEV_*) 或 15 位 IMEI');
++      return;
++    }
++
++    const matched = availableDevices.find(
++      (d) =>
++        d.deviceNo.toLowerCase().includes(query) ||
++        d.imei.toLowerCase().includes(query)
++    );
++
++    if (matched) {
++      setSelectedDeviceId(matched.id);
++      message.success(`成功匹配到空闲终端【${matched.deviceNo}】`);
++    } else {
++      message.warning(`未在空闲设备库中检索到包含 "${query}" 的可用设备`);
++    }
++  };
++
++  // 模拟扫码录入
++  const handleSimulateScan = () => {
++    if (availableDevices.length === 0) {
++      message.info('当前暂无空闲可用设备可供模拟扫码');
++      return;
++    }
++    const sample = availableDevices[0]!;
++    setManualCode(sample.imei);
++    setSelectedDeviceId(sample.id);
++    message.success(`模拟扫码识别成功：IMEI ${sample.imei}`);
++  };
++
++  // 执行首次绑定
++  const handleConfirmBind = async () => {
++    if (!vehicle || !selectedDeviceId || !bindValidation.valid) return;
++    setBindingLoading(true);
++    try {
++      const res = await bindDeviceApi(vehicle.id, selectedDeviceId, bindRemark.trim());
++      message.success(res.message || '车辆与硬件终端绑定成功！');
++      onSuccess();
++      onClose();
++    } catch (err: any) {
++      message.error(err.message || '绑定失败，请稍后重试');
++    } finally {
++      setBindingLoading(false);
++    }
++  };
++
++  // 执行换绑
++  const handleConfirmRebind = async () => {
++    if (!vehicle || !rebindDeviceId || !rebindValidation.valid) return;
++    setRebindLoading(true);
++    try {
++      const res = await bindDeviceApi(vehicle.id, rebindDeviceId, rebindRemark.trim());
++      message.success(res.message || '车载硬件换绑成功！');
++      onSuccess();
++      onClose();
++    } catch (err: any) {
++      message.error(err.message || '换绑失败，请稍后重试');
++    } finally {
++      setRebindLoading(false);
++    }
++  };
++
++  // 执行解绑
++  const handleConfirmUnbind = async () => {
++    if (!vehicle || !unbindReason) {
++      message.warning('请选择解除绑定的业务原因');
++      return;
++    }
++    setUnbindLoading(true);
++    try {
++      const fullReason = `${unbindReason}${unbindRemark ? `: ${unbindRemark.trim()}` : ''}`;
++      const res = await unbindDeviceApi(vehicle.id, fullReason);
++      message.success(res.message || '车辆与硬件设备解绑成功！');
++      onSuccess();
++      onClose();
++    } catch (err: any) {
++      message.error(err.message || '解绑失败，请稍后重试');
++    } finally {
++      setUnbindLoading(false);
++    }
++  };
++
++  if (!vehicle) return null;
++
++  return (
++    <Modal
++      open={open}
++      onCancel={onClose}
++      width={620}
++      centered
++      destroyOnClose
++      title={
++        <Space size={8}>
++          {isBoundMode ? (
++            <SwapOutlined style={{ color: '#1677ff', fontSize: 18 }} />
++          ) : (
++            <LinkOutlined style={{ color: '#1677ff', fontSize: 18 }} />
++          )}
++          <span style={{ fontWeight: 600 }}>
++            {isBoundMode ? '软硬件配对管理中心 (换绑 / 解绑)' : '车辆与车载终端软硬件绑定向导'}
++          </span>
++        </Space>
++      }
++      footer={null}
++    >
++      <Spin spinning={loadingDevices}>
++        <div style={{ display: 'flex', flexDirection: 'column', gap: 16, marginTop: 12 }}>
++          {/* 顶部目标车辆基本档案卡片 */}
++          <Card
++            size="small"
++            style={{
++              background: '#f9fbfd',
++              border: '1px solid #e6f0fa',
++              borderRadius: 8,
++            }}
++          >
++            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
++              <Space size={8} wrap>
++                <Tag color="blue" style={{ fontSize: 14, fontWeight: 700, padding: '2px 8px' }}>
++                  {vehicle.plateNumber}
++                </Tag>
++                <Text code style={{ fontFamily: 'monospace', fontSize: 13 }}>
++                  {vehicle.vin}
++                </Text>
++              </Space>
++              <Tag color={vehicle.deviceId ? 'success' : 'default'} style={{ margin: 0 }}>
++                {vehicle.deviceId ? '已绑定硬件' : '空闲待绑定'}
++              </Tag>
++            </div>
++            <div style={{ marginTop: 8, display: 'flex', gap: 16, fontSize: 12, color: 'rgba(0,0,0,0.65)' }}>
++              <span>品牌车型：<strong>{vehicle.brandName || '-'} · {vehicle.modelName || '-'}</strong></span>
++              <span>归属项目：<strong>{vehicle.projectName || vehicle.projectId || '-'}</strong></span>
++            </div>
++          </Card>
++
++          {/* 模式一：未绑定车辆 -> 首次绑定向导 */}
++          {!isBoundMode && (
++            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
++              {/* 设备输入模式选择 */}
++              <div>
++                <Text strong style={{ fontSize: 13, marginBottom: 8, display: 'block' }}>
++                  选择车载终端录入方式：
++                </Text>
++                <Radio.Group
++                  value={inputMode}
++                  onChange={(e) => setInputMode(e.target.value)}
++                  buttonStyle="solid"
++                >
++                  <Radio.Button value="SELECT">
++                    <Space size={4}>
++                      <LinkOutlined /> 从空闲设备库选择
++                    </Space>
++                  </Radio.Button>
++                  <Radio.Button value="MANUAL">
++                    <Space size={4}>
++                      <ScanOutlined /> 扫码 / 手动输入序列号
++                    </Space>
++                  </Radio.Button>
++                </Radio.Group>
++              </div>
++
++              {/* 方式 A：下拉搜索空闲设备 */}
++              {inputMode === 'SELECT' && (
++                <div>
++                  <Select
++                    showSearch
++                    style={{ width: '100%' }}
++                    placeholder="请选择或搜索空闲可用车载终端 (按设备号 / 15位 IMEI 检索)"
++                    value={selectedDeviceId}
++                    onChange={(val) => setSelectedDeviceId(val)}
++                    filterOption={(input, option) => {
++                      const label = String(option?.label ?? '').toLowerCase();
++                      return label.includes(input.toLowerCase());
++                    }}
++                    options={availableDevices.map((d) => ({
++                      value: d.id,
++                      label: `${d.deviceNo} · IMEI: ${d.imei} [${d.productName || d.productKey}] (${d.projectName || '默认项目'})`,
++                    }))}
++                  />
++                  <div style={{ marginTop: 4, display: 'flex', justifyContent: 'space-between' }}>
++                    <Text type="secondary" style={{ fontSize: 12 }}>
++                      当前租户共有 {availableDevices.length} 台空闲待装车载设备
++                    </Text>
++                    {availableDevices.length === 0 && (
++                      <Text type="danger" style={{ fontSize: 12 }}>
++                        暂无可绑定的空闲设备，请先前往设备中心导入设备
++                      </Text>
++                    )}
++                  </div>
++                </div>
++              )}
++
++              {/* 方式 B：手动输入 / 扫码 */}
++              {inputMode === 'MANUAL' && (
++                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
++                  <Space.Compact style={{ width: '100%' }}>
++                    <Input
++                      placeholder="请输入或扫码录入设备编号 (DEV_*) 或 15位 IMEI"
++                      value={manualCode}
++                      onChange={(e) => setManualCode(e.target.value)}
++                      onPressEnter={() => handleManualSearch()}
++                      prefix={<ScanOutlined style={{ color: '#1677ff' }} />}
++                    />
++                    <Button type="primary" onClick={() => handleManualSearch()}>
++                      检索匹配
++                    </Button>
++                    <Button icon={<BarcodeOutlined />} onClick={handleSimulateScan}>
++                      模拟扫码
++                    </Button>
++                  </Space.Compact>
++                </div>
++              )}
++
++              {/* 选定设备实时工况卡片预览 */}
++              {selectedDevice && (
++                <Card
++                  size="small"
++                  title={
++                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
++                      <Space size={6}>
++                        <Text strong code style={{ fontFamily: 'monospace', fontSize: 14 }}>
++                          {selectedDevice.deviceNo}
++                        </Text>
++                        <Tag color="cyan">{selectedDevice.productName || selectedDevice.productKey}</Tag>
++                      </Space>
++                      <Badge
++                        status={selectedDevice.onlineStatus === 'ONLINE' ? 'success' : 'default'}
++                        text={getOnlineStatusMeta(selectedDevice.onlineStatus).label}
++                      />
++                    </div>
++                  }
++                  style={{ borderRadius: 8, border: '1px solid #d9e8ff' }}
++                >
++                  <Descriptions size="small" column={2}>
++                    <Descriptions.Item label="硬件 IMEI">
++                      <Text copyable style={{ fontFamily: 'monospace' }}>
++                        {selectedDevice.imei}
++                      </Text>
++                    </Descriptions.Item>
++                    <Descriptions.Item label="4G 信号强度">
++                      {(() => {
++                        const sig = getSignalQuality(selectedDevice.signalRsrp);
++                        return (
++                          <Space size={4}>
++                            <WifiOutlined style={{ color: sig.color }} />
++                            <span>{sig.label}</span>
++                            <Text type="secondary" style={{ fontSize: 12 }}>
++                              ({selectedDevice.signalRsrp ? `${selectedDevice.signalRsrp} dBm` : '-'})
++                            </Text>
++                          </Space>
++                        );
++                      })()}
++                    </Descriptions.Item>
++                    <Descriptions.Item label="固件版本">
++                      <Text code>{selectedDevice.firmwareVersion || 'v1.0.0'}</Text>
++                    </Descriptions.Item>
++                    <Descriptions.Item label="设备归属项目">
++                      <span>{selectedDevice.projectName || selectedDevice.projectId || '-'}</span>
++                    </Descriptions.Item>
++                  </Descriptions>
++
++                  {/* 跨项目一致性告警提示 */}
++                  {bindValidation.warning && (
++                    <Alert
++                      type="warning"
++                      showIcon
++                      message={bindValidation.warning}
++                      style={{ marginTop: 8 }}
++                    />
++                  )}
++
++                  {/* 配对规则拦截错误 */}
++                  {!bindValidation.valid && bindValidation.error && (
++                    <Alert
++                      type="error"
++                      showIcon
++                      message={bindValidation.error}
++                      style={{ marginTop: 8 }}
++                    />
++                  )}
++                </Card>
++              )}
++
++              {/* 绑定备注输入 */}
++              <div>
++                <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
++                  绑定操作备注 (选填)：
++                </Text>
++                <Input.TextArea
++                  rows={2}
++                  maxLength={200}
++                  showCount
++                  placeholder="例如：整车交付中心PDI检测完成，加装车载终端"
++                  value={bindRemark}
++                  onChange={(e) => setBindRemark(e.target.value)}
++                />
++              </div>
++
++              {/* 底部按钮栏 */}
++              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 8 }}>
++                <Button onClick={onClose}>取消</Button>
++                <Button
++                  type="primary"
++                  icon={<LinkOutlined />}
++                  loading={bindingLoading}
++                  disabled={!selectedDeviceId || !bindValidation.valid}
++                  onClick={handleConfirmBind}
++                >
++                  确认绑定硬件
++                </Button>
++              </div>
++            </div>
++          )}
++
++          {/* 模式二：已绑定车辆 -> 换绑与解绑工作台 */}
++          {isBoundMode && (
++            <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
++              {/* 当前绑定的设备信息卡片 */}
++              <Card
++                size="small"
++                title={
++                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
++                    <Space size={6}>
++                      <Text strong style={{ fontSize: 13 }}>当前绑定的车载设备</Text>
++                      <Text code style={{ fontFamily: 'monospace', fontWeight: 600 }}>
++                        {currentDevice?.deviceNo || vehicle.deviceNo || vehicle.deviceId}
++                      </Text>
++                    </Space>
++                    <Badge
++                      status={vehicle.deviceOnlineStatus === 'ONLINE' ? 'success' : 'default'}
++                      text={getOnlineStatusMeta(vehicle.deviceOnlineStatus || 'OFFLINE').label}
++                    />
++                  </div>
++                }
++                style={{ borderRadius: 8, background: '#fafafa', border: '1px solid #f0f0f0' }}
++              >
++                <Descriptions size="small" column={2}>
++                  <Descriptions.Item label="硬件 IMEI">
++                    <Text copyable style={{ fontFamily: 'monospace' }}>
++                      {currentDevice?.imei || '-'}
++                    </Text>
++                  </Descriptions.Item>
++                  <Descriptions.Item label="产品型号">
++                    <Tag color="geekblue">{currentDevice?.productName || currentDevice?.productKey || 'T-Box 终端'}</Tag>
++                  </Descriptions.Item>
++                  <Descriptions.Item label="固件版本">
++                    <Text code>{currentDevice?.firmwareVersion || 'v2.1.0'}</Text>
++                  </Descriptions.Item>
++                  <Descriptions.Item label="设备所属项目">
++                    <span>{currentDevice?.projectName || vehicle.projectName || '-'}</span>
++                  </Descriptions.Item>
++                </Descriptions>
++              </Card>
++
++              {/* 换绑与解绑选项卡 */}
++              <Tabs
++                activeKey={activeTab}
++                onChange={(key) => setActiveTab(key as 'rebind' | 'unbind')}
++                items={[
++                  {
++                    key: 'rebind',
++                    label: (
++                      <Space size={4}>
++                        <SwapOutlined />
++                        <span>更换新设备 (换绑)</span>
++                      </Space>
++                    ),
++                    children: (
++                      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
++                        <Alert
++                          type="info"
++                          showIcon
++                          message="换绑说明"
++                          description="更换新设备后，原设备将自动解除占用并归还为空闲可用状态，车辆将立即与新设备建立遥测会话。"
++                        />
++
++                        <div>
++                          <Text strong style={{ fontSize: 13, marginBottom: 6, display: 'block' }}>
++                            选择替换接入的新设备：
++                          </Text>
++                          <Select
++                            showSearch
++                            style={{ width: '100%' }}
++                            placeholder="请选择空闲可用的新车载终端"
++                            value={rebindDeviceId}
++                            onChange={(val) => setRebindDeviceId(val)}
++                            filterOption={(input, option) => {
++                              const label = String(option?.label ?? '').toLowerCase();
++                              return label.includes(input.toLowerCase());
++                            }}
++                            options={availableDevices
++                              .filter((d) => d.id !== vehicle.deviceId)
++                              .map((d) => ({
++                                value: d.id,
++                                label: `${d.deviceNo} · IMEI: ${d.imei} [${d.productName || d.productKey}]`,
++                              }))}
++                          />
++                        </div>
++
++                        {/* 新设备工况预览 */}
++                        {rebindDevice && (
++                          <Card
++                            size="small"
++                            style={{ borderRadius: 8, border: '1px dashed #1677ff' }}
++                          >
++                            <Descriptions size="small" column={2}>
++                              <Descriptions.Item label="新设备编号">
++                                <Text strong code style={{ fontFamily: 'monospace' }}>
++                                  {rebindDevice.deviceNo}
++                                </Text>
++                              </Descriptions.Item>
++                              <Descriptions.Item label="在线工况">
++                                <Badge
++                                  status={rebindDevice.onlineStatus === 'ONLINE' ? 'success' : 'default'}
++                                  text={getOnlineStatusMeta(rebindDevice.onlineStatus).label}
++                                />
++                              </Descriptions.Item>
++                              <Descriptions.Item label="固件版本">
++                                <Text code>{rebindDevice.firmwareVersion || 'v1.0.0'}</Text>
++                              </Descriptions.Item>
++                              <Descriptions.Item label="所属项目">
++                                <span>{rebindDevice.projectName || '默认项目'}</span>
++                              </Descriptions.Item>
++                            </Descriptions>
++
++                            {rebindValidation.warning && (
++                              <Alert
++                                type="warning"
++                                showIcon
++                                message={rebindValidation.warning}
++                                style={{ marginTop: 8 }}
++                              />
++                            )}
++
++                            {!rebindValidation.valid && rebindValidation.error && (
++                              <Alert
++                                type="error"
++                                showIcon
++                                message={rebindValidation.error}
++                                style={{ marginTop: 8 }}
++                              />
++                            )}
++                          </Card>
++                        )}
++
++                        <div>
++                          <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
++                            换绑说明备注 (选填)：
++                          </Text>
++                          <Input.TextArea
++                            rows={2}
++                            maxLength={200}
++                            showCount
++                            placeholder="例如：原设备硬件通讯模组损坏，更换备件终端"
++                            value={rebindRemark}
++                            onChange={(e) => setRebindRemark(e.target.value)}
++                          />
++                        </div>
++
++                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
++                          <Button onClick={onClose}>取消</Button>
++                          <Button
++                            type="primary"
++                            icon={<SwapOutlined />}
++                            loading={rebindLoading}
++                            disabled={!rebindDeviceId || !rebindValidation.valid}
++                            onClick={handleConfirmRebind}
++                          >
++                            确认换绑并激活
++                          </Button>
++                        </div>
++                      </div>
++                    ),
++                  },
++                  {
++                    key: 'unbind',
++                    label: (
++                      <Space size={4}>
++                        <DisconnectOutlined style={{ color: '#ff4d4f' }} />
++                        <span style={{ color: '#ff4d4f' }}>解除软硬件绑定 (解绑)</span>
++                      </Space>
++                    ),
++                    children: (
++                      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
++                        <Alert
++                          type="error"
++                          showIcon
++                          message="高危风险警示"
++                          description="解除绑定后，平台将立即停止对该车辆的远程车控（开关锁/空调/鸣笛）与实时遥测数据接收！原车载终端将释放回归空闲资产库。"
++                          style={{ borderRadius: 6 }}
++                        />
++
++                        <div>
++                          <Text strong style={{ fontSize: 13, marginBottom: 6, display: 'block' }}>
++                            <span style={{ color: '#ff4d4f' }}>*</span> 请选择解绑业务归因 (必填)：
++                          </Text>
++                          <Select
++                            style={{ width: '100%' }}
++                            placeholder="请选择解绑原因"
++                            value={unbindReason}
++                            onChange={(val) => setUnbindReason(val)}
++                            options={UNBIND_REASON_OPTIONS.map((item) => ({
++                              value: item.value,
++                              label: `${item.label} (${item.description})`,
++                            }))}
++                          />
++                        </div>
++
++                        <div>
++                          <Text type="secondary" style={{ fontSize: 12, marginBottom: 4, display: 'block' }}>
++                            详细业务情况说明 (选填)：
++                          </Text>
++                          <Input.TextArea
++                            rows={2}
++                            maxLength={200}
++                            showCount
++                            placeholder="请输入解绑工单编号、现场维修负责人或详细处理说明"
++                            value={unbindRemark}
++                            onChange={(e) => setUnbindRemark(e.target.value)}
++                          />
++                        </div>
++
++                        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 4 }}>
++                          <Button onClick={onClose}>取消</Button>
++                          <Popconfirm
++                            title="高危操作二次确认"
++                            description={
++                              <div style={{ maxWidth: 320 }}>
++                                确认解除车辆 <strong>{vehicle.plateNumber}</strong> 与设备{' '}
++                                <strong>{vehicle.deviceNo || vehicle.deviceId}</strong> 的软硬件绑定吗？
++                                <div style={{ color: '#ff4d4f', marginTop: 4, fontSize: 12 }}>
++                                  解除后将无法进行远程控车与实时位置追踪。
++                                </div>
++                              </div>
++                            }
++                            okText="确认解除绑定"
++                            cancelText="取消"
++                            okButtonProps={{ danger: true, loading: unbindLoading }}
++                            onConfirm={handleConfirmUnbind}
++                          >
++                            <Button
++                              danger
++                              type="primary"
++                              icon={<DisconnectOutlined />}
++                              loading={unbindLoading}
++                              disabled={!unbindReason}
++                            >
++                              解除软硬件绑定
++                            </Button>
++                          </Popconfirm>
++                        </div>
++                      </div>
++                    ),
++                  },
++                ]}
++              />
++            </div>
++          )}
++        </div>
++      </Spin>
++    </Modal>
++  );
++};
+diff --git a/apps/web/src/views/vehicle/VehicleListView.tsx b/apps/web/src/views/vehicle/VehicleListView.tsx
+index 549a897..dabde57 100644
+--- a/apps/web/src/views/vehicle/VehicleListView.tsx
++++ b/apps/web/src/views/vehicle/VehicleListView.tsx
+@@ -65,6 +65,7 @@ import {
+ import { fetchProjectsApi, fetchDevicesApi, type ProjectDto, type DeviceDto } from '../../api/device.ts';
+ import { SEED_PROJECTS } from '../device/device-core.ts';
+ import { useTenantStore } from '../../store/useTenantStore.ts';
++import { VehicleBindModal } from './VehicleBindModal.tsx';
+ 
+ const { Text } = Typography;
+ 
+@@ -90,6 +91,7 @@ export const VehicleListView: React.FC = () => {
+   const [createModalOpen, setCreateModalOpen] = useState(false);
+   const [detailModalOpen, setDetailModalOpen] = useState(false);
+   const [statusModalOpen, setStatusModalOpen] = useState(false);
++  const [bindModalOpen, setBindModalOpen] = useState(false);
+   const [selectedVehicle, setSelectedVehicle] = useState<VehicleDto | null>(null);
+   const [targetStatus, setTargetStatus] = useState<VehicleStatus>('NORMAL');
+ 
+@@ -483,12 +485,11 @@ export const VehicleListView: React.FC = () => {
+               type="link"
+               size="small"
+               onClick={() => {
+-                message.info(
+-                  `车辆【${record.plateNumber}】软硬件绑定管理将在后续硬件绑定中心 (Task 5) 提供联动！`
+-                );
++                setSelectedVehicle(record);
++                setBindModalOpen(true);
+               }}
+             >
+-              {record.deviceId ? '换绑' : '绑定'}
++              {record.deviceId ? '换绑/解绑' : '绑定'}
+             </Button>
+           </Space>
+         );
+@@ -1052,6 +1053,17 @@ export const VehicleListView: React.FC = () => {
+           )}
+         </div>
+       </Modal>
++
++      {/* 车辆软硬件绑定 / 换绑 / 解绑管理模态框 */}
++      <VehicleBindModal
++        open={bindModalOpen}
++        vehicle={selectedVehicle}
++        onClose={() => setBindModalOpen(false)}
++        onSuccess={() => {
++          setBindModalOpen(false);
++          loadData();
++        }}
++      />
+     </div>
+   );
+ };
+diff --git a/apps/web/src/views/vehicle/index.ts b/apps/web/src/views/vehicle/index.ts
+index c1e3a15..fd4ff2b 100644
+--- a/apps/web/src/views/vehicle/index.ts
++++ b/apps/web/src/views/vehicle/index.ts
+@@ -1,2 +1,4 @@
+ export { VehicleListView } from './VehicleListView.tsx';
++export { VehicleBindModal, type VehicleBindModalProps } from './VehicleBindModal.tsx';
+ export * from './vehicle-core.ts';
++export * from './vehicle-bind-core.ts';
+diff --git a/apps/web/src/views/vehicle/vehicle-bind-core.ts b/apps/web/src/views/vehicle/vehicle-bind-core.ts
+new file mode 100644
+index 0000000..252ad9b
+--- /dev/null
++++ b/apps/web/src/views/vehicle/vehicle-bind-core.ts
+@@ -0,0 +1,268 @@
++import type { VehicleDto } from './vehicle-core.ts';
++import type { DeviceDto } from '../device/device-core.ts';
++
++export interface BindingValidationResult {
++  valid: boolean;
++  error?: string;
++  warning?: string;
++}
++
++export type UnbindReason =
++  | 'MAINTENANCE'
++  | 'HARDWARE_UPGRADE'
++  | 'VEHICLE_SCRAPPED'
++  | 'OWNERSHIP_TRANSFER'
++  | 'OTHER';
++
++export interface UnbindReasonMeta {
++  value: UnbindReason;
++  label: string;
++  description: string;
++}
++
++export const UNBIND_REASONS: Record<UnbindReason, { label: string; description: string }> = {
++  MAINTENANCE: {
++    label: '模组故障拆卸维修',
++    description: '车载终端或传感器出现硬件故障，需要拆卸送修或更换零部件',
++  },
++  HARDWARE_UPGRADE: {
++    label: '终端硬件换代升级',
++    description: '为车辆升级更高规格车载终端（如从 4G 标准版升级为 5G 旗舰版）',
++  },
++  VEHICLE_SCRAPPED: {
++    label: '车辆到期报废注销',
++    description: '整车达到报废年限或残值清算注销，终端设备回库流转',
++  },
++  OWNERSHIP_TRANSFER: {
++    label: '车主变更/过户转让',
++    description: '车辆所有权过户或转让给其他组织/车主，需解绑原硬件重置',
++  },
++  OTHER: {
++    label: '其他业务调整',
++    description: '车队运营调配、临时解绑测试或其他特定业务场景',
++  },
++};
++
++export const UNBIND_REASON_OPTIONS: UnbindReasonMeta[] = [
++  { value: 'MAINTENANCE', ...UNBIND_REASONS.MAINTENANCE },
++  { value: 'HARDWARE_UPGRADE', ...UNBIND_REASONS.HARDWARE_UPGRADE },
++  { value: 'VEHICLE_SCRAPPED', ...UNBIND_REASONS.VEHICLE_SCRAPPED },
++  { value: 'OWNERSHIP_TRANSFER', ...UNBIND_REASONS.OWNERSHIP_TRANSFER },
++  { value: 'OTHER', ...UNBIND_REASONS.OTHER },
++];
++
++/**
++ * 校验解绑原因是否合法
++ */
++export function validateUnbindReason(reason?: string | null): boolean {
++  if (!reason || typeof reason !== 'string') return false;
++  return Object.prototype.hasOwnProperty.call(UNBIND_REASONS, reason);
++}
++
++/**
++ * 校验软硬件绑定配对前置规则
++ * 1. 跨租户严格防御 (vehicle.tenantId === device.tenantId)
++ * 2. 车辆状态终态拦截 (vehicle.status !== 'SCRAPPED')
++ * 3. 设备状态终态拦截 (device.status !== 'DECOMMISSIONED')
++ * 4. 设备占用冲突排他校验 (device 已绑定其他车辆时阻断)
++ * 5. 项目归属一致性预警 (vehicle.projectId !== device.projectId 时温和提示)
++ */
++export function validateBindingPair(
++  vehicle: VehicleDto,
++  device: DeviceDto
++): BindingValidationResult {
++  if (!vehicle || !device) {
++    return { valid: false, error: '车辆或设备数据不完整，无法进行配对校验' };
++  }
++
++  // 1. 租户隔离校验
++  if (vehicle.tenantId && device.tenantId && vehicle.tenantId !== device.tenantId) {
++    return {
++      valid: false,
++      error: `跨租户拦截：车辆所属租户【${vehicle.tenantId}】与设备所属租户【${device.tenantId}】不一致，系统严禁跨企业租户绑定设备！`,
++    };
++  }
++
++  // 2. 车辆生命周期状态校验
++  if (vehicle.status === 'SCRAPPED') {
++    return {
++      valid: false,
++      error: '车辆状态异常：已报废车辆为物理终态档案，严禁继续绑定或更换硬件设备。',
++    };
++  }
++
++  // 3. 设备生命周期状态校验
++  if (device.status === 'DECOMMISSIONED') {
++    return {
++      valid: false,
++      error: '设备状态异常：已报废设备（DECOMMISSIONED）不可继续配对绑定车辆。',
++    };
++  }
++
++  // 4. 设备占用状态冲突校验
++  const occupiedPlate = device.boundVehiclePlate || device.boundVehicle?.plate;
++  const occupiedVin = device.boundVin || device.boundVehicle?.vin;
++
++  const isOccupiedByOther =
++    (occupiedPlate && occupiedPlate !== vehicle.plateNumber) ||
++    (occupiedVin && occupiedVin !== vehicle.vin);
++
++  if (isOccupiedByOther) {
++    return {
++      valid: false,
++      error: `设备占用冲突：目标设备【${device.deviceNo}】当前已绑定至车辆 ${occupiedPlate || '未知车牌'} (VIN: ${occupiedVin || '未知VIN'})，请先前往原车辆解除绑定关系！`,
++    };
++  }
++
++  // 5. 项目一致性友好提示
++  let warning: string | undefined;
++  if (vehicle.projectId && device.projectId && vehicle.projectId !== device.projectId) {
++    const vProj = vehicle.projectName || vehicle.projectId;
++    const dProj = device.projectName || device.projectId;
++    warning = `项目归属提示：车辆当前归属于【${vProj}】，而该设备归属于【${dProj}】。确认绑定后，该设备将跨项目运行服务。`;
++  }
++
++  return {
++    valid: true,
++    warning,
++  };
++}
++
++export interface ApplyBindingChangeResult {
++  vehicles: VehicleDto[];
++  devices: DeviceDto[];
++  targetVehicle?: VehicleDto;
++  targetDevice?: DeviceDto;
++  previousDevice?: DeviceDto;
++}
++
++/**
++ * 原子更新内存池中的车辆与设备双向配对状态 (不可变更新)
++ */
++export function applyBindingChange(
++  vehicles: VehicleDto[],
++  devices: DeviceDto[],
++  vehicleId: string,
++  newDeviceId?: string | null,
++  _reason?: string
++): ApplyBindingChangeResult {
++  const vehicleIndex = vehicles.findIndex((v) => v.id === vehicleId);
++  if (vehicleIndex === -1) {
++    throw new Error(`车辆 ID "${vehicleId}" 未找到`);
++  }
++
++  const currentVehicle = vehicles[vehicleIndex]!;
++  const currentDeviceId = currentVehicle.deviceId;
++  const now = new Date().toISOString().replace('T', ' ').slice(0, 19);
++
++  let updatedVehicles = [...vehicles];
++  let updatedDevices = [...devices];
++  let targetVehicle: VehicleDto;
++  let targetDevice: DeviceDto | undefined;
++  let previousDevice: DeviceDto | undefined;
++
++  // 场景 1: 解绑模式 (!newDeviceId)
++  if (!newDeviceId) {
++    targetVehicle = {
++      ...currentVehicle,
++      deviceId: null,
++      deviceNo: null,
++      deviceOnlineStatus: undefined,
++      updatedAt: now,
++    };
++    updatedVehicles[vehicleIndex] = targetVehicle;
++
++    if (currentDeviceId) {
++      const devIndex = updatedDevices.findIndex((d) => d.id === currentDeviceId);
++      if (devIndex !== -1) {
++        previousDevice = {
++          ...updatedDevices[devIndex]!,
++          boundVehiclePlate: null,
++          boundVin: null,
++          boundVehicle: null,
++          updatedAt: now,
++        };
++        updatedDevices[devIndex] = previousDevice;
++      }
++    }
++
++    return {
++      vehicles: updatedVehicles,
++      devices: updatedDevices,
++      targetVehicle,
++      previousDevice,
++    };
++  }
++
++  // 场景 2: 绑定或换绑模式 (newDeviceId 存在)
++  const newDevIndex = updatedDevices.findIndex((d) => d.id === newDeviceId);
++  if (newDevIndex === -1) {
++    throw new Error(`设备 ID "${newDeviceId}" 未找到`);
++  }
++
++  const rawNewDevice = updatedDevices[newDevIndex]!;
++
++  // 如果原本已绑定了其他设备，先解绑原设备
++  if (currentDeviceId && currentDeviceId !== newDeviceId) {
++    const oldDevIndex = updatedDevices.findIndex((d) => d.id === currentDeviceId);
++    if (oldDevIndex !== -1) {
++      previousDevice = {
++        ...updatedDevices[oldDevIndex]!,
++        boundVehiclePlate: null,
++        boundVin: null,
++        boundVehicle: null,
++        updatedAt: now,
++      };
++      updatedDevices[oldDevIndex] = previousDevice;
++    }
++  }
++
++  // 如果新设备此前曾被其他车辆占用，清空该车辆关联
++  updatedVehicles = updatedVehicles.map((v) => {
++    if (v.id !== vehicleId && v.deviceId === newDeviceId) {
++      return {
++        ...v,
++        deviceId: null,
++        deviceNo: null,
++        deviceOnlineStatus: undefined,
++        updatedAt: now,
++      };
++    }
++    return v;
++  });
++
++  // 更新新设备信息
++  targetDevice = {
++    ...rawNewDevice,
++    boundVehiclePlate: currentVehicle.plateNumber,
++    boundVin: currentVehicle.vin,
++    boundVehicle: {
++      plate: currentVehicle.plateNumber,
++      vin: currentVehicle.vin,
++      model: currentVehicle.modelName || '',
++      ownerName: currentVehicle.ownerName || '',
++      ownerPhone: currentVehicle.ownerPhone || '',
++    },
++    updatedAt: now,
++  };
++  updatedDevices[newDevIndex] = targetDevice;
++
++  // 更新目标车辆信息
++  targetVehicle = {
++    ...currentVehicle,
++    deviceId: targetDevice.id,
++    deviceNo: targetDevice.deviceNo,
++    deviceOnlineStatus: targetDevice.onlineStatus,
++    updatedAt: now,
++  };
++  const targetVehIndex = updatedVehicles.findIndex((v) => v.id === vehicleId);
++  updatedVehicles[targetVehIndex] = targetVehicle;
++
++  return {
++    vehicles: updatedVehicles,
++    devices: updatedDevices,
++    targetVehicle,
++    targetDevice,
++    previousDevice,
++  };
++}

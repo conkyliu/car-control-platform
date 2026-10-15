@@ -1,0 +1,1256 @@
+diff --git a/apps/web/package.json b/apps/web/package.json
+index d827a80..6336a7e 100644
+--- a/apps/web/package.json
++++ b/apps/web/package.json
+@@ -5,6 +5,7 @@
+   "scripts": {
+     "dev": "vite",
+     "build": "tsc && vite build",
++    "test": "node --test --experimental-strip-types src/test/*.test.ts",
+     "preview": "vite preview"
+   },
+   "dependencies": {
+diff --git a/apps/web/src/api/auth.ts b/apps/web/src/api/auth.ts
+new file mode 100644
+index 0000000..526cce5
+--- /dev/null
++++ b/apps/web/src/api/auth.ts
+@@ -0,0 +1,69 @@
++import { http } from './client.ts';
++import type { UserInfo } from '../store/useAuthStore.ts';
++import { useAuthStore } from '../store/useAuthStore.ts';
++
++export interface LoginInput {
++  username: string;
++  password: string;
++  captchaToken?: string;
++}
++
++export interface AuthResult {
++  accessToken: string;
++  refreshToken: string;
++  expiresIn?: number;
++  user: UserInfo;
++}
++
++export interface RefreshResult {
++  accessToken: string;
++  refreshToken: string;
++  expiresIn?: number;
++  user?: UserInfo;
++}
++
++export type UserProfile = UserInfo;
++
++/**
++ * 登录认证 API
++ */
++export async function loginApi(input: LoginInput): Promise<AuthResult> {
++  const result = await http.post<AuthResult>('/auth/login', input, { skipAuth: true });
++  return result;
++}
++
++/**
++ * 刷新访问令牌 API
++ */
++export async function refreshApi(refreshToken: string): Promise<RefreshResult> {
++  const result = await http.post<RefreshResult>(
++    '/auth/refresh',
++    { refreshToken },
++    { skipAuth: true }
++  );
++  return result;
++}
++
++/**
++ * 获取当前登录用户信息 API
++ */
++export async function profileApi(): Promise<UserProfile> {
++  const result = await http.get<UserProfile>('/auth/me');
++  return result;
++}
++
++/**
++ * 退出登录 API
++ */
++export async function logoutApi(): Promise<void> {
++  try {
++    await http.post<void>('/auth/logout');
++  } catch {
++    // 允许后端无端点或网络故障降级，确保本地状态安全清空
++  } finally {
++    useAuthStore.getState().clearAuth();
++    if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
++      window.dispatchEvent(new CustomEvent('auth:logout', { detail: { reason: 'user_action' } }));
++    }
++  }
++}
+diff --git a/apps/web/src/api/client.ts b/apps/web/src/api/client.ts
+new file mode 100644
+index 0000000..905faca
+--- /dev/null
++++ b/apps/web/src/api/client.ts
+@@ -0,0 +1,257 @@
++import { useAuthStore } from '../store/useAuthStore.ts';
++import { useTenantStore } from '../store/useTenantStore.ts';
++
++export class ApiError extends Error {
++  public statusCode: number;
++  public error?: string;
++  public details?: any;
++
++  constructor(message: string, statusCode: number, error?: string, details?: any) {
++    super(message);
++    this.name = 'ApiError';
++    this.statusCode = statusCode;
++    this.error = error;
++    this.details = details;
++    Object.setPrototypeOf(this, ApiError.prototype);
++  }
++}
++
++export interface RequestOptions extends Omit<RequestInit, 'body'> {
++  body?: any;
++  params?: Record<string, any>;
++  data?: any;
++  headers?: Record<string, string>;
++  skipAuth?: boolean;
++  skipTenant?: boolean;
++  _retry?: boolean;
++}
++
++export type FetchFunction = typeof fetch;
++
++export class HttpClient {
++  private baseUrl: string;
++  private fetchFn: FetchFunction;
++  private refreshPromise: Promise<string | null> | null = null;
++
++  constructor(baseUrl: string = '/api/v1', customFetch?: FetchFunction) {
++    this.baseUrl = baseUrl.replace(/\/+$/, '');
++    this.fetchFn = customFetch || ((...args: Parameters<FetchFunction>) => globalThis.fetch(...args));
++  }
++
++  private buildUrl(url: string, params?: Record<string, any>): string {
++    const isAbsolute = /^https?:\/\//i.test(url);
++    const normalizedUrl = url.startsWith('/') ? url : `/${url}`;
++    const fullPath = isAbsolute ? url : `${this.baseUrl}${normalizedUrl}`;
++
++    if (!params || Object.keys(params).length === 0) {
++      return fullPath;
++    }
++
++    const query = new URLSearchParams();
++    for (const [key, val] of Object.entries(params)) {
++      if (val !== undefined && val !== null) {
++        if (Array.isArray(val)) {
++          val.forEach((item) => query.append(key, String(item)));
++        } else {
++          query.append(key, String(val));
++        }
++      }
++    }
++
++    const queryString = query.toString();
++    if (!queryString) {
++      return fullPath;
++    }
++
++    const separator = fullPath.includes('?') ? '&' : '?';
++    return `${fullPath}${separator}${queryString}`;
++  }
++
++  private async parseResponseBody(response: Response): Promise<any> {
++    const contentType = response.headers.get('content-type') || '';
++    if (response.status === 204) {
++      return null;
++    }
++
++    if (contentType.includes('application/json')) {
++      try {
++        return await response.json();
++      } catch {
++        return null;
++      }
++    }
++
++    try {
++      const text = await response.text();
++      return text ? { message: text } : null;
++    } catch {
++      return null;
++    }
++  }
++
++  private async executeTokenRefresh(refreshToken: string): Promise<string | null> {
++    try {
++      const refreshUrl = `${this.baseUrl}/auth/refresh`;
++      const response = await this.fetchFn(refreshUrl, {
++        method: 'POST',
++        headers: {
++          'Content-Type': 'application/json',
++        },
++        body: JSON.stringify({ refreshToken }),
++      });
++
++      if (!response.ok) {
++        const errorBody = await this.parseResponseBody(response);
++        throw new ApiError(
++          errorBody?.message || 'Token refresh failed',
++          response.status,
++          errorBody?.error || 'Unauthorized',
++          errorBody
++        );
++      }
++
++      const data = await response.json();
++      const newAccessToken = data.accessToken;
++      const newRefreshToken = data.refreshToken || refreshToken;
++
++      if (!newAccessToken) {
++        throw new ApiError('Missing access token in refresh response', 500);
++      }
++
++      useAuthStore.getState().setTokens({
++        accessToken: newAccessToken,
++        refreshToken: newRefreshToken,
++      });
++
++      if (data.user) {
++        useAuthStore.getState().setUser(data.user);
++      }
++
++      return newAccessToken;
++    } catch (err) {
++      useAuthStore.getState().clearAuth();
++      if (typeof window !== 'undefined' && typeof window.dispatchEvent === 'function') {
++        window.dispatchEvent(new CustomEvent('auth:logout', { detail: { reason: 'session_expired' } }));
++      }
++      throw err;
++    }
++  }
++
++  public async request<T>(url: string, options: RequestOptions = {}): Promise<T> {
++    const targetUrl = this.buildUrl(url, options.params);
++    const headers: Record<string, string> = {
++      'Content-Type': 'application/json',
++      ...(options.headers || {}),
++    };
++
++    if (!options.skipAuth) {
++      const token = useAuthStore.getState().accessToken;
++      if (token && !headers['Authorization'] && !headers['authorization']) {
++        headers['Authorization'] = `Bearer ${token}`;
++      }
++    }
++
++    if (!options.skipTenant) {
++      const tenantId = useTenantStore.getState().currentTenantId;
++      if (tenantId && !headers['x-tenant-id'] && !headers['X-Tenant-Id']) {
++        headers['x-tenant-id'] = tenantId;
++      }
++    }
++
++    let requestBody: any = options.body;
++    if (options.data !== undefined) {
++      if (typeof FormData !== 'undefined' && options.data instanceof FormData) {
++        delete headers['Content-Type'];
++        requestBody = options.data;
++      } else if (typeof options.data === 'string') {
++        requestBody = options.data;
++      } else {
++        requestBody = JSON.stringify(options.data);
++      }
++    }
++
++    const { params, data, skipAuth, skipTenant, _retry, ...fetchInit } = options;
++
++    const response = await this.fetchFn(targetUrl, {
++      ...fetchInit,
++      headers,
++      body: requestBody,
++    });
++
++    if (response.status === 401) {
++      const isRefreshRequest = targetUrl.includes('/auth/refresh');
++      const refreshToken = useAuthStore.getState().refreshToken;
++
++      if (!isRefreshRequest && !_retry && refreshToken) {
++        if (!this.refreshPromise) {
++          this.refreshPromise = this.executeTokenRefresh(refreshToken).finally(() => {
++            this.refreshPromise = null;
++          });
++        }
++
++        try {
++          const freshToken = await this.refreshPromise;
++          if (freshToken) {
++            return await this.request<T>(url, {
++              ...options,
++              _retry: true,
++              headers: {
++                ...options.headers,
++                Authorization: `Bearer ${freshToken}`,
++              },
++            });
++          }
++        } catch (refreshErr) {
++          throw refreshErr instanceof ApiError
++            ? refreshErr
++            : new ApiError('Session expired. Please log in again.', 401, 'Unauthorized');
++        }
++      }
++
++      if (!_retry) {
++        useAuthStore.getState().clearAuth();
++      }
++
++      const errBody = await this.parseResponseBody(response);
++      throw new ApiError(
++        errBody?.message || 'Unauthorized',
++        401,
++        errBody?.error || 'Unauthorized',
++        errBody
++      );
++    }
++
++    const parsedData = await this.parseResponseBody(response);
++
++    if (!response.ok) {
++      const statusCode = response.status;
++      const message = parsedData?.message || `Request failed with status ${statusCode}`;
++      const error = parsedData?.error;
++      throw new ApiError(message, statusCode, error, parsedData);
++    }
++
++    return parsedData as T;
++  }
++
++  public get<T>(url: string, params?: Record<string, any>, options?: RequestOptions): Promise<T> {
++    return this.request<T>(url, { ...options, method: 'GET', params });
++  }
++
++  public post<T>(url: string, data?: any, options?: RequestOptions): Promise<T> {
++    return this.request<T>(url, { ...options, method: 'POST', data });
++  }
++
++  public put<T>(url: string, data?: any, options?: RequestOptions): Promise<T> {
++    return this.request<T>(url, { ...options, method: 'PUT', data });
++  }
++
++  public patch<T>(url: string, data?: any, options?: RequestOptions): Promise<T> {
++    return this.request<T>(url, { ...options, method: 'PATCH', data });
++  }
++
++  public delete<T>(url: string, options?: RequestOptions): Promise<T> {
++    return this.request<T>(url, { ...options, method: 'DELETE' });
++  }
++}
++
++export const http = new HttpClient();
+diff --git a/apps/web/src/api/tenant.ts b/apps/web/src/api/tenant.ts
+new file mode 100644
+index 0000000..1f8bac2
+--- /dev/null
++++ b/apps/web/src/api/tenant.ts
+@@ -0,0 +1,53 @@
++import { http } from './client.ts';
++import type { TenantDto, TenantQuotaDto, OrgNodeDto } from '../store/useTenantStore.ts';
++
++export interface CreateTenantInput {
++  name: string;
++  code: string;
++  quotaDeviceCount: number;
++  description?: string;
++}
++
++export interface CreateOrgInput {
++  tenantId: string;
++  name: string;
++  code: string;
++  parentId?: string | null;
++  sortOrder?: number;
++}
++
++/**
++ * 获取租户列表 API
++ */
++export async function getTenantsApi(): Promise<TenantDto[]> {
++  return http.get<TenantDto[]>('/tenants');
++}
++
++/**
++ * 获取指定租户设备配额与使用详情 API
++ */
++export async function getTenantQuotaApi(tenantId: string): Promise<TenantQuotaDto> {
++  return http.get<TenantQuotaDto>(`/tenants/${encodeURIComponent(tenantId)}/quota`);
++}
++
++/**
++ * 更新租户运行状态（启用/停用/冻结）API
++ */
++export async function updateTenantStatusApi(tenantId: string, status: string): Promise<void> {
++  return http.patch<void>(`/tenants/${encodeURIComponent(tenantId)}/status`, { status });
++}
++
++/**
++ * 获取机构树形拓扑结构 API
++ */
++export async function getOrgTreeApi(tenantId?: string): Promise<OrgNodeDto[]> {
++  const params = tenantId ? { tenantId } : undefined;
++  return http.get<OrgNodeDto[]>('/orgs/tree', params);
++}
++
++/**
++ * 创建新机构节点 API
++ */
++export async function createOrgApi(data: CreateOrgInput): Promise<OrgNodeDto> {
++  return http.post<OrgNodeDto>('/orgs', data);
++}
+diff --git a/apps/web/src/router/routes.ts b/apps/web/src/router/routes.ts
+new file mode 100644
+index 0000000..1d1c033
+--- /dev/null
++++ b/apps/web/src/router/routes.ts
+@@ -0,0 +1,233 @@
++export const RoutePath = {
++  LOGIN: '/login',
++  DASHBOARD: '/dashboard',
++  TENANTS: '/tenants',
++  ORGS: '/orgs',
++  USERS: '/users',
++  ROLES: '/roles',
++  DEVICES: '/devices',
++  VEHICLES: '/vehicles',
++  COMMANDS: '/commands',
++  TELEMETRY: '/telemetry',
++  GEOFENCE: '/geofence',
++  ALARMS: '/alarms',
++  OTA: '/ota',
++  LOGS: '/logs',
++  MONITOR: '/monitor',
++} as const;
++
++export type RoutePathType = (typeof RoutePath)[keyof typeof RoutePath];
++
++export const RouteCategory = {
++  OVERVIEW: '概览看板',
++  PLATFORM_IAM: '平台中枢',
++  ASSET_MANAGEMENT: '资产管理',
++  VEHICLE_CONTROL: '车控运营',
++  LOCATION_GEOFENCE: '位置与围栏',
++  OPERATIONS_SECURITY: '运维保障',
++} as const;
++
++export type RouteCategoryType = (typeof RouteCategory)[keyof typeof RouteCategory];
++
++export interface RouteMeta {
++  path: string;
++  title: string;
++  icon?: string;
++  permission?: string;
++  category?: string;
++  hideInMenu?: boolean;
++  order?: number;
++  description?: string;
++}
++
++export const routes: RouteMeta[] = [
++  // 01 认证登录 (独立页面，无主布局)
++  {
++    path: RoutePath.LOGIN,
++    title: '用户登录',
++    hideInMenu: true,
++    description: '手机控车运营管理中台账号身份鉴权与滑块人机验证',
++  },
++
++  // 11 运营数据大屏
++  {
++    path: RoutePath.DASHBOARD,
++    title: '运营看板',
++    icon: 'DashboardOutlined',
++    category: RouteCategory.OVERVIEW,
++    permission: 'dashboard:read',
++    order: 10,
++    description: '设备在线率、车控指令成功率与24小时告警趋势综合态势看板',
++  },
++
++  // 02 & 22 多租户与机构中枢
++  {
++    path: RoutePath.TENANTS,
++    title: '租户管理',
++    icon: 'ApartmentOutlined',
++    category: RouteCategory.PLATFORM_IAM,
++    permission: 'tenant:manage',
++    order: 20,
++    description: 'SaaS多租户配置、设备配额硬约束与租户生命周期管理',
++  },
++  {
++    path: RoutePath.ORGS,
++    title: '机构管理',
++    icon: 'ClusterOutlined',
++    category: RouteCategory.PLATFORM_IAM,
++    permission: 'org:manage',
++    order: 21,
++    description: '多级组织树状拓扑、行政层级划分与数据隔离范围',
++  },
++
++  // 03 用户与角色权限
++  {
++    path: RoutePath.USERS,
++    title: '用户管理',
++    icon: 'UserOutlined',
++    category: RouteCategory.PLATFORM_IAM,
++    permission: 'user:manage',
++    order: 22,
++    description: '平台管理员账户增删改查、机构绑定与状态启停',
++  },
++  {
++    path: RoutePath.ROLES,
++    title: '角色权限',
++    icon: 'SafetyCertificateOutlined',
++    category: RouteCategory.PLATFORM_IAM,
++    permission: 'role:manage',
++    order: 23,
++    description: 'RBAC细粒度权限配置、菜单及操作按钮级权限分配',
++  },
++
++  // 04 设备管理
++  {
++    path: RoutePath.DEVICES,
++    title: '设备管理',
++    icon: 'DesktopOutlined',
++    category: RouteCategory.ASSET_MANAGEMENT,
++    permission: 'device:read',
++    order: 30,
++    description: 'T-Box/车机硬件资产台账、批量导入、参数设置与网络状态诊断',
++  },
++
++  // 05 车辆管理
++  {
++    path: RoutePath.VEHICLES,
++    title: '车辆管理',
++    icon: 'CarOutlined',
++    category: RouteCategory.ASSET_MANAGEMENT,
++    permission: 'vehicle:read',
++    order: 31,
++    description: '车辆档案管理、VIN校验、软硬件一键绑定/转让与实时车况',
++  },
++
++  // 06 & 07 车控运营与能力继承
++  {
++    path: RoutePath.COMMANDS,
++    title: '车控中心',
++    icon: 'ControlOutlined',
++    category: RouteCategory.VEHICLE_CONTROL,
++    permission: 'vehicle:control',
++    order: 40,
++    description: '13类远程车控操作工作台、安全码校验与全生命周期实时流水',
++  },
++
++  // 10 定位与轨迹
++  {
++    path: RoutePath.TELEMETRY,
++    title: '实时定位与轨迹',
++    icon: 'AimOutlined',
++    category: RouteCategory.LOCATION_GEOFENCE,
++    permission: 'telemetry:read',
++    order: 50,
++    description: '多车实时地图打点聚合、抽稀历史轨迹回放播放器',
++  },
++  {
++    path: RoutePath.GEOFENCE,
++    title: '电子围栏',
++    icon: 'CompassOutlined',
++    category: RouteCategory.LOCATION_GEOFENCE,
++    permission: 'geofence:read',
++    order: 51,
++    description: '圆形/多边形围栏地图交互编辑与出入告警联动规则',
++  },
++
++  // 08 报警中心
++  {
++    path: RoutePath.ALARMS,
++    title: '报警中心',
++    icon: 'AlertOutlined',
++    category: RouteCategory.OPERATIONS_SECURITY,
++    permission: 'alarm:read',
++    order: 60,
++    description: '8大车况告警检索、声光弹窗推送与人工闭环处置抽屉',
++  },
++
++  // 14 固件 OTA 升级
++  {
++    path: RoutePath.OTA,
++    title: '固件升级',
++    icon: 'CloudUploadOutlined',
++    category: RouteCategory.OPERATIONS_SECURITY,
++    permission: 'ota:manage',
++    order: 61,
++    description: '固件版本库完整性校验、分批升级调度向导与全链路进度追踪',
++  },
++
++  // 19 通讯日志中心
++  {
++    path: RoutePath.LOGS,
++    title: '通讯日志',
++    icon: 'FileTextOutlined',
++    category: RouteCategory.OPERATIONS_SECURITY,
++    permission: 'audit:read',
++    order: 62,
++    description: 'TCP/MQTT上行下行报文检索、Hex与明文JSON对照分析',
++  },
++
++  // 16 系统运维监控
++  {
++    path: RoutePath.MONITOR,
++    title: '运维监控',
++    icon: 'LineChartOutlined',
++    category: RouteCategory.OPERATIONS_SECURITY,
++    permission: 'monitor:read',
++    order: 63,
++    description: 'Prometheus微服务指标可视化、分布式锁与QPS吞吐监控',
++  },
++];
++
++/**
++ * 获取侧边栏/主导航可见的菜单路由列表
++ */
++export function getMenuRoutes(): RouteMeta[] {
++  return routes
++    .filter((route) => !route.hideInMenu)
++    .sort((a, b) => (a.order ?? 999) - (b.order ?? 999));
++}
++
++/**
++ * 根据所属分组对菜单项进行分类归集
++ */
++export function getRoutesByCategory(): Record<string, RouteMeta[]> {
++  const menuRoutes = getMenuRoutes();
++  const grouped: Record<string, RouteMeta[]> = {};
++
++  for (const item of menuRoutes) {
++    const cat = item.category || '其他';
++    if (!grouped[cat]) {
++      grouped[cat] = [];
++    }
++    grouped[cat].push(item);
++  }
++
++  return grouped;
++}
++
++/**
++ * 根据路径匹配路由元信息
++ */
++export function findRouteByPath(path: string): RouteMeta | undefined {
++  return routes.find((route) => route.path === path);
++}
+diff --git a/apps/web/src/store/useAuthStore.ts b/apps/web/src/store/useAuthStore.ts
+new file mode 100644
+index 0000000..f2e4007
+--- /dev/null
++++ b/apps/web/src/store/useAuthStore.ts
+@@ -0,0 +1,145 @@
++import { create } from 'zustand';
++import { persist, createJSONStorage } from 'zustand/middleware';
++import { RoleCode } from '@car-control/contracts';
++
++export interface UserInfo {
++  id: string;
++  tenantId: string;
++  username: string;
++  roles: (RoleCode | string)[];
++  permissions: string[];
++  displayName?: string;
++  email?: string;
++  avatar?: string;
++}
++
++export interface AuthTokens {
++  accessToken: string;
++  refreshToken: string;
++  expiresIn?: number;
++}
++
++export interface AuthState {
++  accessToken: string | null;
++  refreshToken: string | null;
++  user: UserInfo | null;
++  permissions: string[];
++  isAuthenticated: boolean;
++
++  setAuth: (
++    tokens: { accessToken: string; refreshToken: string },
++    user: UserInfo,
++    permissions?: string[]
++  ) => void;
++  setTokens: (tokens: { accessToken: string; refreshToken?: string }) => void;
++  setUser: (user: UserInfo) => void;
++  setPermissions: (permissions: string[]) => void;
++  clearAuth: () => void;
++  hasPermission: (permCode: string) => boolean;
++}
++
++const getSafeStorage = () => {
++  if (typeof window !== 'undefined' && window.localStorage) {
++    return window.localStorage;
++  }
++  if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
++    return (globalThis as any).localStorage;
++  }
++  return {
++    getItem: () => null,
++    setItem: () => {},
++    removeItem: () => {},
++  };
++};
++
++export const useAuthStore = create<AuthState>()(
++  persist(
++    (set, get) => ({
++      accessToken: null,
++      refreshToken: null,
++      user: null,
++      permissions: [],
++      isAuthenticated: false,
++
++      setAuth: (tokens, user, permissions) => {
++        const resolvedPermissions = permissions ?? user.permissions ?? [];
++        set({
++          accessToken: tokens.accessToken,
++          refreshToken: tokens.refreshToken,
++          user,
++          permissions: resolvedPermissions,
++          isAuthenticated: true,
++        });
++      },
++
++      setTokens: (tokens) => {
++        set((state) => ({
++          accessToken: tokens.accessToken,
++          refreshToken: tokens.refreshToken ?? state.refreshToken,
++          isAuthenticated: Boolean(tokens.accessToken),
++        }));
++      },
++
++      setUser: (user) => {
++        set({
++          user,
++          permissions: user.permissions ?? [],
++        });
++      },
++
++      setPermissions: (permissions) => {
++        set({ permissions });
++      },
++
++      clearAuth: () => {
++        set({
++          accessToken: null,
++          refreshToken: null,
++          user: null,
++          permissions: [],
++          isAuthenticated: false,
++        });
++      },
++
++      hasPermission: (permCode: string): boolean => {
++        const state = get();
++        if (!state.isAuthenticated) {
++          return false;
++        }
++
++        const userRoles = state.user?.roles ?? [];
++        if (userRoles.includes(RoleCode.SUPER_ADMIN) || userRoles.includes('SUPER_ADMIN')) {
++          return true;
++        }
++
++        const userPerms = state.permissions;
++        if (userPerms.includes('*') || userPerms.includes('*:*')) {
++          return true;
++        }
++
++        if (userPerms.includes(permCode)) {
++          return true;
++        }
++
++        // Support module:* wildcard matching, e.g. "device:*" matches "device:read"
++        const [targetModule] = permCode.split(':');
++        if (targetModule && userPerms.includes(`${targetModule}:*`)) {
++          return true;
++        }
++
++        return false;
++      },
++    }),
++    {
++      name: 'car_control_auth_storage',
++      storage: createJSONStorage(getSafeStorage),
++      partialize: (state) => ({
++        accessToken: state.accessToken,
++        refreshToken: state.refreshToken,
++        user: state.user,
++        permissions: state.permissions,
++        isAuthenticated: state.isAuthenticated,
++      }),
++    }
++  )
++);
+diff --git a/apps/web/src/store/useTenantStore.ts b/apps/web/src/store/useTenantStore.ts
+new file mode 100644
+index 0000000..34ea16b
+--- /dev/null
++++ b/apps/web/src/store/useTenantStore.ts
+@@ -0,0 +1,89 @@
++import { create } from 'zustand';
++import { persist, createJSONStorage } from 'zustand/middleware';
++
++export interface TenantDto {
++  id: string;
++  name: string;
++  code: string;
++  status: 'ACTIVE' | 'SUSPENDED' | 'DISABLED';
++  quotaDeviceCount: number;
++  description?: string;
++  createdAt?: string | Date;
++  updatedAt?: string | Date;
++}
++
++export interface TenantQuotaDto {
++  tenantId: string;
++  totalQuota: number;
++  usedCount: number;
++  remainingQuota: number;
++  usagePercentage: number;
++}
++
++export interface OrgNodeDto {
++  id: string;
++  tenantId: string;
++  name: string;
++  code: string;
++  parentId?: string | null;
++  sortOrder?: number;
++  children?: OrgNodeDto[];
++}
++
++export interface TenantState {
++  currentTenantId: string | null;
++  currentOrgId: string | null;
++  tenantList: TenantDto[];
++  orgTree: OrgNodeDto[];
++
++  setCurrentTenantId: (id: string | null) => void;
++  setCurrentOrgId: (id: string | null) => void;
++  setTenantList: (list: TenantDto[]) => void;
++  setOrgTree: (tree: OrgNodeDto[]) => void;
++  clearTenant: () => void;
++}
++
++const getSafeStorage = () => {
++  if (typeof window !== 'undefined' && window.localStorage) {
++    return window.localStorage;
++  }
++  if (typeof globalThis !== 'undefined' && (globalThis as any).localStorage) {
++    return (globalThis as any).localStorage;
++  }
++  return {
++    getItem: () => null,
++    setItem: () => {},
++    removeItem: () => {},
++  };
++};
++
++export const useTenantStore = create<TenantState>()(
++  persist(
++    (set) => ({
++      currentTenantId: null,
++      currentOrgId: null,
++      tenantList: [],
++      orgTree: [],
++
++      setCurrentTenantId: (id) => set({ currentTenantId: id }),
++      setCurrentOrgId: (id) => set({ currentOrgId: id }),
++      setTenantList: (tenantList) => set({ tenantList }),
++      setOrgTree: (orgTree) => set({ orgTree }),
++      clearTenant: () =>
++        set({
++          currentTenantId: null,
++          currentOrgId: null,
++          tenantList: [],
++          orgTree: [],
++        }),
++    }),
++    {
++      name: 'car_control_tenant_storage',
++      storage: createJSONStorage(getSafeStorage),
++      partialize: (state) => ({
++        currentTenantId: state.currentTenantId,
++        currentOrgId: state.currentOrgId,
++      }),
++    }
++  )
++);
+diff --git a/apps/web/src/test/api-client.test.ts b/apps/web/src/test/api-client.test.ts
+new file mode 100644
+index 0000000..68f6e3c
+--- /dev/null
++++ b/apps/web/src/test/api-client.test.ts
+@@ -0,0 +1,343 @@
++import test from 'node:test';
++import assert from 'node:assert/strict';
++
++// Setup mock localStorage before importing stores
++const mockStorage = new Map<string, string>();
++const storageMock = {
++  getItem: (key: string) => mockStorage.get(key) ?? null,
++  setItem: (key: string, val: string) => { mockStorage.set(key, String(val)); },
++  removeItem: (key: string) => { mockStorage.delete(key); },
++  clear: () => { mockStorage.clear(); },
++  key: (i: number) => Array.from(mockStorage.keys())[i] ?? null,
++  get length() { return mockStorage.size; },
++};
++
++(globalThis as any).localStorage = storageMock;
++if (typeof window === 'undefined') {
++  (globalThis as any).window = globalThis;
++}
++
++// Now import target modules
++import { HttpClient, ApiError, http } from '../api/client.ts';
++import { useAuthStore } from '../store/useAuthStore.ts';
++import { useTenantStore } from '../store/useTenantStore.ts';
++import { routes, RoutePath, RouteCategory, findRouteByPath, getMenuRoutes } from '../router/routes.ts';
++import { loginApi, refreshApi, profileApi, logoutApi } from '../api/auth.ts';
++import { getTenantsApi, getTenantQuotaApi, updateTenantStatusApi, getOrgTreeApi, createOrgApi } from '../api/tenant.ts';
++
++test('API Client, Stores, and Route Definitions Test Suite', async (t) => {
++  // Test 1: useAuthStore State and Permission Checking
++  await t.test('useAuthStore sets credentials, detects permissions and wildcards, clears auth', () => {
++    useAuthStore.getState().clearAuth();
++    assert.equal(useAuthStore.getState().isAuthenticated, false);
++    assert.equal(useAuthStore.getState().accessToken, null);
++    assert.equal(useAuthStore.getState().refreshToken, null);
++    assert.equal(useAuthStore.getState().user, null);
++
++    // Set auth
++    useAuthStore.getState().setAuth(
++      { accessToken: 'mock-access-token', refreshToken: 'mock-refresh-token' },
++      { id: 'u1', username: 'admin', tenantId: 'tnt_1', roles: ['ADMIN'], permissions: ['vehicle:read', 'device:*'] },
++      ['vehicle:read', 'device:*']
++    );
++
++    assert.equal(useAuthStore.getState().isAuthenticated, true);
++    assert.equal(useAuthStore.getState().accessToken, 'mock-access-token');
++    assert.equal(useAuthStore.getState().refreshToken, 'mock-refresh-token');
++    assert.equal(useAuthStore.getState().hasPermission('vehicle:read'), true);
++    assert.equal(useAuthStore.getState().hasPermission('device:write'), true); // wildcard match
++    assert.equal(useAuthStore.getState().hasPermission('user:manage'), false);
++
++    // Clear auth
++    useAuthStore.getState().clearAuth();
++    assert.equal(useAuthStore.getState().isAuthenticated, false);
++    assert.equal(useAuthStore.getState().accessToken, null);
++    assert.equal(useAuthStore.getState().hasPermission('vehicle:read'), false);
++  });
++
++  // Test 2: useTenantStore State and Tenant Switching
++  await t.test('useTenantStore manages active tenant, org tree, and tenant list', () => {
++    useTenantStore.getState().setCurrentTenantId('tnt_demo');
++    useTenantStore.getState().setCurrentOrgId('org_1');
++    assert.equal(useTenantStore.getState().currentTenantId, 'tnt_demo');
++    assert.equal(useTenantStore.getState().currentOrgId, 'org_1');
++
++    useTenantStore.getState().setTenantList([
++      { id: 'tnt_demo', name: 'Demonstration Fleet', code: 'DEMO', status: 'ACTIVE', quotaDeviceCount: 100 },
++    ]);
++    assert.equal(useTenantStore.getState().tenantList.length, 1);
++    assert.equal(useTenantStore.getState().tenantList[0].name, 'Demonstration Fleet');
++
++    useTenantStore.getState().setOrgTree([
++      { id: 'org_1', tenantId: 'tnt_demo', name: 'HQ', code: 'HQ', children: [] },
++    ]);
++    assert.equal(useTenantStore.getState().orgTree.length, 1);
++    assert.equal(useTenantStore.getState().orgTree[0].name, 'HQ');
++  });
++
++  // Test 3: HTTP Client Request Interceptor (Bearer token & x-tenant-id)
++  await t.test('HttpClient injects Authorization and x-tenant-id headers automatically', async () => {
++    useAuthStore.getState().setAuth(
++      { accessToken: 'test-jwt-token', refreshToken: 'test-refresh-token' },
++      { id: 'u1', username: 'tester', tenantId: 'tnt_xyz', roles: [], permissions: [] }
++    );
++    useTenantStore.getState().setCurrentTenantId('tnt_xyz');
++
++    let interceptedUrl = '';
++    let interceptedHeaders: Headers | undefined;
++
++    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
++      interceptedUrl = input.toString();
++      interceptedHeaders = new Headers(init?.headers);
++      return new Response(JSON.stringify({ success: true, data: 'ok' }), {
++        status: 200,
++        headers: { 'Content-Type': 'application/json' },
++      });
++    };
++
++    const client = new HttpClient('/api/v1', mockFetch);
++    const result = await client.get<{ success: boolean; data: string }>('/vehicles', { page: 1, limit: 10 });
++
++    assert.equal(result.data, 'ok');
++    assert.ok(interceptedUrl.includes('/api/v1/vehicles?page=1&limit=10'));
++    assert.equal(interceptedHeaders?.get('Authorization'), 'Bearer test-jwt-token');
++    assert.equal(interceptedHeaders?.get('x-tenant-id'), 'tnt_xyz');
++    assert.equal(interceptedHeaders?.get('Content-Type'), 'application/json');
++  });
++
++  // Test 4: HTTP Client 401 Silent Token Refresh & Re-request
++  await t.test('HttpClient intercepts 401, calls refresh, updates store, and retries original request', async () => {
++    useAuthStore.getState().setAuth(
++      { accessToken: 'expired-token', refreshToken: 'valid-refresh-token' },
++      { id: 'u1', username: 'tester', tenantId: 'tnt_1', roles: [], permissions: [] }
++    );
++
++    let refreshCallCount = 0;
++    let requestCount = 0;
++
++    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
++      const url = input.toString();
++      const headers = new Headers(init?.headers);
++
++      if (url.includes('/auth/refresh')) {
++        refreshCallCount++;
++        const body = JSON.parse(init?.body as string);
++        assert.equal(body.refreshToken, 'valid-refresh-token');
++        return new Response(
++          JSON.stringify({
++            accessToken: 'brand-new-token',
++            refreshToken: 'renewed-refresh-token',
++            expiresIn: 900,
++            user: { id: 'u1', username: 'tester', tenantId: 'tnt_1', roles: [], permissions: [] },
++          }),
++          { status: 200, headers: { 'Content-Type': 'application/json' } }
++        );
++      }
++
++      if (url.includes('/protected-resource')) {
++        requestCount++;
++        const auth = headers.get('Authorization');
++        if (auth === 'Bearer expired-token') {
++          return new Response(
++            JSON.stringify({ statusCode: 401, message: 'Token expired', error: 'Unauthorized' }),
++            { status: 401, headers: { 'Content-Type': 'application/json' } }
++          );
++        }
++        if (auth === 'Bearer brand-new-token') {
++          return new Response(
++            JSON.stringify({ message: 'Success with refreshed token' }),
++            { status: 200, headers: { 'Content-Type': 'application/json' } }
++          );
++        }
++      }
++
++      return new Response('Not Found', { status: 404 });
++    };
++
++    const client = new HttpClient('/api/v1', mockFetch);
++    const res = await client.get<{ message: string }>('/protected-resource');
++
++    assert.equal(res.message, 'Success with refreshed token');
++    assert.equal(refreshCallCount, 1);
++    assert.equal(requestCount, 2); // Initial 401 request + retried 200 request
++    assert.equal(useAuthStore.getState().accessToken, 'brand-new-token');
++    assert.equal(useAuthStore.getState().refreshToken, 'renewed-refresh-token');
++  });
++
++  // Test 5: HTTP Client 401 Silent Token Refresh Queues Concurrent Requests
++  await t.test('HttpClient queues concurrent 401 requests to trigger only ONE token refresh', async () => {
++    useAuthStore.getState().setAuth(
++      { accessToken: 'expired-token', refreshToken: 'valid-refresh-token' },
++      { id: 'u1', username: 'tester', tenantId: 'tnt_1', roles: [], permissions: [] }
++    );
++
++    let refreshCallCount = 0;
++
++    const mockFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
++      const url = input.toString();
++      const headers = new Headers(init?.headers);
++
++      if (url.includes('/auth/refresh')) {
++        refreshCallCount++;
++        // Simulate network delay for refresh
++        await new Promise((r) => setTimeout(r, 50));
++        return new Response(
++          JSON.stringify({
++            accessToken: 'shared-new-token',
++            refreshToken: 'shared-renewed-refresh',
++          }),
++          { status: 200, headers: { 'Content-Type': 'application/json' } }
++        );
++      }
++
++      const auth = headers.get('Authorization');
++      if (auth === 'Bearer expired-token') {
++        return new Response(
++          JSON.stringify({ statusCode: 401, message: 'Unauthorized' }),
++          { status: 401, headers: { 'Content-Type': 'application/json' } }
++        );
++      }
++      if (auth === 'Bearer shared-new-token') {
++        return new Response(
++          JSON.stringify({ url, status: 'ok' }),
++          { status: 200, headers: { 'Content-Type': 'application/json' } }
++        );
++      }
++
++      return new Response('Bad Request', { status: 400 });
++    };
++
++    const client = new HttpClient('/api/v1', mockFetch);
++
++    // Launch 3 requests concurrently with expired token
++    const [res1, res2, res3] = await Promise.all([
++      client.get<{ url: string; status: string }>('/item/1'),
++      client.get<{ url: string; status: string }>('/item/2'),
++      client.get<{ url: string; status: string }>('/item/3'),
++    ]);
++
++    assert.equal(res1.status, 'ok');
++    assert.equal(res2.status, 'ok');
++    assert.equal(res3.status, 'ok');
++    assert.equal(refreshCallCount, 1, 'Only one refresh call should be made despite 3 concurrent 401s');
++  });
++
++  // Test 6: HTTP Client 401 Refresh Failure Clears Auth and Throws ApiError
++  await t.test('HttpClient clears useAuthStore and throws ApiError when refresh token itself fails', async () => {
++    useAuthStore.getState().setAuth(
++      { accessToken: 'bad-token', refreshToken: 'invalid-refresh-token' },
++      { id: 'u1', username: 'tester', tenantId: 'tnt_1', roles: [], permissions: [] }
++    );
++
++    const mockFetch = async (input: RequestInfo | URL): Promise<Response> => {
++      const url = input.toString();
++      if (url.includes('/auth/refresh')) {
++        return new Response(
++          JSON.stringify({ statusCode: 401, message: 'Invalid refresh token', error: 'Unauthorized' }),
++          { status: 401, headers: { 'Content-Type': 'application/json' } }
++        );
++      }
++      return new Response(
++        JSON.stringify({ statusCode: 401, message: 'Access token expired', error: 'Unauthorized' }),
++        { status: 401, headers: { 'Content-Type': 'application/json' } }
++      );
++    };
++
++    const client = new HttpClient('/api/v1', mockFetch);
++
++    await assert.rejects(
++      async () => {
++        await client.get('/some-data');
++      },
++      (err: any) => {
++        assert.ok(err instanceof ApiError);
++        assert.equal(err.statusCode, 401);
++        return true;
++      }
++    );
++
++    // Store should have been cleared
++    assert.equal(useAuthStore.getState().isAuthenticated, false);
++    assert.equal(useAuthStore.getState().accessToken, null);
++    assert.equal(useAuthStore.getState().refreshToken, null);
++  });
++
++  // Test 7: HTTP Client Structured ApiError Parsing
++  await t.test('HttpClient correctly parses 4xx and 5xx errors into structured ApiError', async () => {
++    const mockFetch = async (): Promise<Response> => {
++      return new Response(
++        JSON.stringify({
++          statusCode: 409,
++          message: 'VEHICLE_COMMAND_IN_PROGRESS',
++          error: 'Conflict',
++        }),
++        { status: 409, headers: { 'Content-Type': 'application/json' } }
++      );
++    };
++
++    const client = new HttpClient('/api/v1', mockFetch);
++
++    await assert.rejects(
++      async () => {
++        await client.post('/commands', { code: 'CMD_LOCK' });
++      },
++      (err: any) => {
++        assert.ok(err instanceof ApiError);
++        assert.equal(err.statusCode, 409);
++        assert.equal(err.message, 'VEHICLE_COMMAND_IN_PROGRESS');
++        assert.equal(err.error, 'Conflict');
++        return true;
++      }
++    );
++  });
++
++  // Test 8: Routes Definitions (15 business routes)
++  await t.test('Route definitions include all 15 business paths with title, icon, and permissions', () => {
++    assert.equal(routes.length, 15);
++
++    const expectedPaths = [
++      RoutePath.LOGIN,
++      RoutePath.DASHBOARD,
++      RoutePath.TENANTS,
++      RoutePath.ORGS,
++      RoutePath.USERS,
++      RoutePath.ROLES,
++      RoutePath.DEVICES,
++      RoutePath.VEHICLES,
++      RoutePath.COMMANDS,
++      RoutePath.TELEMETRY,
++      RoutePath.GEOFENCE,
++      RoutePath.ALARMS,
++      RoutePath.OTA,
++      RoutePath.LOGS,
++      RoutePath.MONITOR,
++    ];
++
++    expectedPaths.forEach((path) => {
++      const match = findRouteByPath(path);
++      assert.ok(match, `Route ${path} must exist`);
++      assert.ok(match.title, `Route ${path} must have a title`);
++      if (path !== RoutePath.LOGIN) {
++        assert.ok(match.icon, `Route ${path} must have an icon`);
++        assert.ok(match.category, `Route ${path} must have a category`);
++      }
++    });
++
++    const menuRoutes = getMenuRoutes();
++    assert.equal(menuRoutes.length, 14, 'All routes except /login should appear in menu');
++    assert.equal(menuRoutes.find((r) => r.path === RoutePath.LOGIN), undefined);
++  });
++
++  // Test 9: Auth and Tenant API Definitions
++  await t.test('auth and tenant API wrapper functions are exported and callable', () => {
++    assert.equal(typeof loginApi, 'function');
++    assert.equal(typeof refreshApi, 'function');
++    assert.equal(typeof profileApi, 'function');
++    assert.equal(typeof logoutApi, 'function');
++    assert.equal(typeof getTenantsApi, 'function');
++    assert.equal(typeof getTenantQuotaApi, 'function');
++    assert.equal(typeof updateTenantStatusApi, 'function');
++    assert.equal(typeof getOrgTreeApi, 'function');
++    assert.equal(typeof createOrgApi, 'function');
++  });
++});
+diff --git a/apps/web/tsconfig.json b/apps/web/tsconfig.json
+index f489c8b..61f5df1 100644
+--- a/apps/web/tsconfig.json
++++ b/apps/web/tsconfig.json
+@@ -6,7 +6,7 @@
+     "module": "ESNext",
+     "skipLibCheck": true,
+     "moduleResolution": "bundler",
+-    "allowImportingTsExtensions": false,
++    "allowImportingTsExtensions": true,
+     "resolveJsonModule": true,
+     "isolatedModules": true,
+     "noEmit": true,

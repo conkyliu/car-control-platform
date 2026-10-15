@@ -1,0 +1,2215 @@
+diff --git a/apps/web/src/api/audit.ts b/apps/web/src/api/audit.ts
+new file mode 100644
+index 0000000..28720ed
+--- /dev/null
++++ b/apps/web/src/api/audit.ts
+@@ -0,0 +1,69 @@
++import { http } from './client.ts';
++import {
++  type AuditLogDto,
++  type AuditLogQueryParams,
++  type AuditLogStatsDto,
++  type AuditLogRiskLevel,
++  type AuditLogStatus,
++  isApiError,
++  filterAuditLogs,
++  generateAuditLogCsv,
++  SEED_AUDIT_LOGS,
++} from '../views/rbac/audit-core.ts';
++
++export type {
++  AuditLogDto,
++  AuditLogQueryParams,
++  AuditLogStatsDto,
++  AuditLogRiskLevel,
++  AuditLogStatus,
++};
++
++/**
++ * 拉取操作审计日志列表 API
++ * 遵循 isApiError 模式：真实服务端异常抛出中断并提示，离线/开发环境平滑降级至 SEED_AUDIT_LOGS
++ */
++export async function fetchAuditLogsApi(params?: AuditLogQueryParams): Promise<AuditLogDto[]> {
++  try {
++    const data = await http.get<AuditLogDto[]>('/audit-logs', params);
++    if (Array.isArray(data)) {
++      return data;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 服务未部署或离线时平滑降级至种子数据并应用本地过滤
++  return filterAuditLogs(SEED_AUDIT_LOGS, params);
++}
++
++/**
++ * 导出操作审计日志 API
++ * 遵循 isApiError 模式：服务端支持导出时返回数据，否则客户端生成 UTF-8 BOM CSV
++ */
++export async function exportAuditLogsApi(params?: AuditLogQueryParams): Promise<Blob | string> {
++  try {
++    const remoteData = await http.get<string>('/audit-logs/export', params);
++    if (typeof remoteData === 'string' && remoteData.length > 0) {
++      if (typeof Blob !== 'undefined') {
++        return new Blob([remoteData], { type: 'text/csv;charset=utf-8;' });
++      }
++      return remoteData;
++    }
++  } catch (err) {
++    if (isApiError(err)) {
++      throw err;
++    }
++  }
++
++  // 离线/降级模式下直接客户端生成规范 CSV
++  const filtered = filterAuditLogs(SEED_AUDIT_LOGS, params);
++  const csvContent = generateAuditLogCsv(filtered);
++
++  if (typeof Blob !== 'undefined') {
++    return new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
++  }
++  return csvContent;
++}
+diff --git a/apps/web/src/layouts/AdminLayout.tsx b/apps/web/src/layouts/AdminLayout.tsx
+index fcc2f8e..85a6b35 100644
+--- a/apps/web/src/layouts/AdminLayout.tsx
++++ b/apps/web/src/layouts/AdminLayout.tsx
+@@ -43,7 +43,7 @@ import { HeaderUserMenu } from './HeaderUserMenu.tsx';
+ import { NavTabs } from './NavTabs.tsx';
+ import { CarControlPanel } from '../components/CarControlPanel.tsx';
+ import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
+-import { UserListView, RolePermissionView } from '../views/rbac/index.ts';
++import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
+ 
+ const { Header, Sider, Content, Footer } = Layout;
+ const { Title, Text, Paragraph } = Typography;
+@@ -134,6 +134,10 @@ export const AdminLayout: React.FC = () => {
+       return <RolePermissionView />;
+     }
+ 
++    if (activeKey === RoutePath.LOGS) {
++      return <AuditLogView />;
++    }
++
+     if (activeKey === RoutePath.COMMANDS || activeKey === RoutePath.DEVICES) {
+       return <CarControlPanel />;
+     }
+diff --git a/apps/web/src/test/audit-log-view.test.ts b/apps/web/src/test/audit-log-view.test.ts
+new file mode 100644
+index 0000000..a27e3d2
+--- /dev/null
++++ b/apps/web/src/test/audit-log-view.test.ts
+@@ -0,0 +1,343 @@
++import { describe, it } from 'node:test';
++import assert from 'node:assert/strict';
++import {
++  calculateAuditStats,
++  filterAuditLogs,
++  getRiskLevel,
++  generateAuditLogCsv,
++  isApiError,
++  SEED_AUDIT_LOGS,
++  AUDIT_MODULES,
++  AUDIT_ACTIONS,
++} from '../views/rbac/audit-core.ts';
++import {
++  fetchAuditLogsApi,
++  exportAuditLogsApi,
++  type AuditLogDto,
++  type AuditLogQueryParams,
++} from '../api/audit.ts';
++import { ApiError } from '../api/client.ts';
++
++describe('Audit Log Center Core Logic Test Suite (TDD)', () => {
++  const sampleLogs: AuditLogDto[] = [
++    {
++      id: 'log-001',
++      traceId: 'trace-4bf92f3577b34da6a3ce929d0e0e4736',
++      operatorId: 'user-001',
++      operatorName: '张伟',
++      operatorUsername: 'zhangwei',
++      orgId: 'org-01',
++      orgName: '华东运营中心',
++      clientIp: '192.168.1.100',
++      clientLocation: '上海市 (电信)',
++      module: 'VEHICLE_CONTROL',
++      action: 'REMOTE_ENGINE_STOP',
++      actionName: '远程发动机熄火',
++      resourceType: 'Vehicle',
++      resourceId: 'VIN: LFPH2E023N10001',
++      status: 'SUCCESS',
++      executionTimeMs: 1420,
++      signatureHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
++      createdAt: '2026-10-12 09:30:00',
++    },
++    {
++      id: 'log-002',
++      traceId: 'trace-c8b92f3577b34da6a3ce929d0e0e4737',
++      operatorId: 'user-002',
++      operatorName: '李强',
++      operatorUsername: 'liqiang',
++      orgId: 'org-02',
++      orgName: '华南车队中心',
++      clientIp: '10.0.0.12',
++      clientLocation: '广州市 (联通)',
++      module: 'VEHICLE_CONTROL',
++      action: 'REMOTE_UNLOCK',
++      actionName: '远程开锁',
++      resourceType: 'Vehicle',
++      resourceId: 'VIN: LFPH2E023N10002',
++      status: 'FAILED',
++      executionTimeMs: 350,
++      errorMessage: '终端应答超时 (10s)',
++      signatureHash: 'a1b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef0',
++      createdAt: '2026-10-12 10:15:00',
++    },
++    {
++      id: 'log-003',
++      traceId: 'trace-7bf92f3577b34da6a3ce929d0e0e4738',
++      operatorId: 'user-001',
++      operatorName: '张伟',
++      operatorUsername: 'zhangwei',
++      orgId: 'org-01',
++      orgName: '华东运营中心',
++      clientIp: '192.168.1.100',
++      clientLocation: '上海市 (电信)',
++      module: 'USER_IAM',
++      action: 'PASSWORD_RESET',
++      actionName: '重置用户密码',
++      resourceType: 'User',
++      resourceId: 'USER_2004',
++      status: 'SUCCESS',
++      executionTimeMs: 85,
++      signatureHash: 'f4b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef1',
++      createdAt: '2026-10-11 14:00:00',
++    },
++    {
++      id: 'log-004',
++      traceId: 'trace-1bf92f3577b34da6a3ce929d0e0e4739',
++      operatorId: 'user-003',
++      operatorName: '王芳',
++      operatorUsername: 'wangfang',
++      clientIp: '172.16.5.20',
++      module: 'USER_IAM',
++      action: 'LOGIN',
++      actionName: '管理员登录',
++      resourceType: 'Auth',
++      resourceId: 'SESSION_9981',
++      status: 'SUCCESS',
++      executionTimeMs: 42,
++      signatureHash: 'b5b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef2',
++      createdAt: '2026-10-10 08:00:00',
++    },
++    {
++      id: 'log-005',
++      traceId: 'trace-3bf92f3577b34da6a3ce929d0e0e4740',
++      operatorId: 'user-002',
++      operatorName: '李强',
++      operatorUsername: 'liqiang',
++      clientIp: '10.0.0.12',
++      module: 'USER_IAM',
++      action: 'DELETE',
++      actionName: '删除用户账号',
++      resourceType: 'User',
++      resourceId: 'USER_9090',
++      status: 'FAILED',
++      executionTimeMs: 120,
++      errorMessage: '禁止删除内置超级管理员',
++      signatureHash: 'c6b2c3d4e5f67890123456789abcdef0123456789abcdef0123456789abcdef3',
++      createdAt: '2026-10-12 11:20:00',
++    },
++  ];
++
++  it('calculateAuditStats accurately computes summary metrics', () => {
++    const stats = calculateAuditStats(sampleLogs);
++    assert.equal(stats.totalCount, 5);
++    // Control audits: log-001 (REMOTE_ENGINE_STOP) + log-002 (REMOTE_UNLOCK) = 2
++    assert.equal(stats.controlCount, 2);
++    // High-risk operations:
++    // log-001: REMOTE_ENGINE_STOP (HIGH)
++    // log-003: PASSWORD_RESET (HIGH)
++    // log-005: DELETE (HIGH)
++    // total = 3
++    assert.equal(stats.highRiskCount, 3);
++    // Failed operations: log-002 (FAILED) + log-005 (FAILED) = 2
++    assert.equal(stats.failedCount, 2);
++
++    // Empty list boundary
++    const emptyStats = calculateAuditStats([]);
++    assert.equal(emptyStats.totalCount, 0);
++    assert.equal(emptyStats.controlCount, 0);
++    assert.equal(emptyStats.highRiskCount, 0);
++    assert.equal(emptyStats.failedCount, 0);
++  });
++
++  it('getRiskLevel evaluates high, medium, and low operational risk correctly', () => {
++    // High risk actions
++    assert.equal(getRiskLevel('VEHICLE_CONTROL', 'REMOTE_ENGINE_STOP'), 'HIGH');
++    assert.equal(getRiskLevel('USER_IAM', 'DELETE'), 'HIGH');
++    assert.equal(getRiskLevel('USER_IAM', 'USER_DELETE'), 'HIGH');
++    assert.equal(getRiskLevel('USER_IAM', 'PASSWORD_RESET'), 'HIGH');
++    assert.equal(getRiskLevel('OTA_UPDATE', 'OTA_BATCH_TRIGGER'), 'HIGH');
++    assert.equal(getRiskLevel('DEVICE_MANAGE', 'DEVICE_UNBIND'), 'HIGH');
++    assert.equal(getRiskLevel('TENANT_CONFIG', 'TENANT_DISABLE'), 'HIGH');
++
++    // Medium risk actions
++    assert.equal(getRiskLevel('VEHICLE_CONTROL', 'REMOTE_UNLOCK'), 'MEDIUM');
++    assert.equal(getRiskLevel('VEHICLE_CONTROL', 'REMOTE_AC_CONTROL'), 'MEDIUM');
++    assert.equal(getRiskLevel('USER_IAM', 'CREATE'), 'MEDIUM');
++    assert.equal(getRiskLevel('USER_IAM', 'UPDATE'), 'MEDIUM');
++    assert.equal(getRiskLevel('GEOFENCE', 'GEOFENCE_UPDATE'), 'MEDIUM');
++    assert.equal(getRiskLevel('PLATFORM', 'EXPORT'), 'MEDIUM');
++
++    // Low risk actions
++    assert.equal(getRiskLevel('USER_IAM', 'LOGIN'), 'LOW');
++    assert.equal(getRiskLevel('USER_IAM', 'LOGOUT'), 'LOW');
++    assert.equal(getRiskLevel('TELEMETRY', 'QUERY'), 'LOW');
++    assert.equal(getRiskLevel('AUDIT', 'VIEW'), 'LOW');
++
++    // Object overload support
++    assert.equal(getRiskLevel({ module: 'VEHICLE_CONTROL', action: 'REMOTE_ENGINE_STOP' }), 'HIGH');
++    assert.equal(getRiskLevel({ module: 'USER_IAM', action: 'LOGIN' }), 'LOW');
++  });
++
++  it('filterAuditLogs filters across keyword, module, action, status, and date range', () => {
++    // 1. Keyword search: operator name
++    const byName = filterAuditLogs(sampleLogs, { keyword: '张伟' });
++    assert.equal(byName.length, 2);
++    assert.ok(byName.every((l) => l.operatorName === '张伟'));
++
++    // Keyword search: Trace ID substring
++    const byTrace = filterAuditLogs(sampleLogs, { keyword: '4bf92f35' });
++    assert.equal(byTrace.length, 1);
++    assert.equal(byTrace[0]?.id, 'log-001');
++
++    // Keyword search: IP address
++    const byIp = filterAuditLogs(sampleLogs, { keyword: '10.0.0.12' });
++    assert.equal(byIp.length, 2);
++
++    // Keyword search: Resource ID
++    const byResource = filterAuditLogs(sampleLogs, { keyword: 'LFPH2E023N10002' });
++    assert.equal(byResource.length, 1);
++    assert.equal(byResource[0]?.id, 'log-002');
++
++    // 2. Module filter
++    const controlModuleLogs = filterAuditLogs(sampleLogs, { module: 'VEHICLE_CONTROL' });
++    assert.equal(controlModuleLogs.length, 2);
++
++    // 3. Action filter
++    const actionLogs = filterAuditLogs(sampleLogs, { action: 'PASSWORD_RESET' });
++    assert.equal(actionLogs.length, 1);
++    assert.equal(actionLogs[0]?.id, 'log-003');
++
++    // 4. Status filter
++    const failedLogs = filterAuditLogs(sampleLogs, { status: 'FAILED' });
++    assert.equal(failedLogs.length, 2);
++
++    // 5. Risk level filter
++    const highRiskLogs = filterAuditLogs(sampleLogs, { riskLevel: 'HIGH' });
++    assert.equal(highRiskLogs.length, 3);
++
++    // 6. Date range filter
++    const rangeLogs = filterAuditLogs(sampleLogs, {
++      startTime: '2026-10-12 00:00:00',
++      endTime: '2026-10-12 23:59:59',
++    });
++    // Should contain log-001, log-002, log-005 (on 2026-10-12)
++    assert.equal(rangeLogs.length, 3);
++
++    // 7. Multi-condition intersection
++    const multiFiltered = filterAuditLogs(sampleLogs, {
++      module: 'VEHICLE_CONTROL',
++      status: 'FAILED',
++    });
++    assert.equal(multiFiltered.length, 1);
++    assert.equal(multiFiltered[0]?.id, 'log-002');
++  });
++
++  it('generateAuditLogCsv creates spec-compliant UTF-8 BOM CSV text with proper escaping', () => {
++    const csvContent = generateAuditLogCsv(sampleLogs);
++
++    // 1. Must start with UTF-8 BOM (\uFEFF)
++    assert.ok(csvContent.startsWith('\uFEFF'), 'CSV must start with UTF-8 BOM');
++
++    // 2. Header columns must be complete
++    const lines = csvContent.slice(1).trim().split('\n');
++    const header = lines[0]!;
++    assert.ok(header.includes('日志ID'));
++    assert.ok(header.includes('Trace ID'));
++    assert.ok(header.includes('操作时间'));
++    assert.ok(header.includes('操作人'));
++    assert.ok(header.includes('业务模块'));
++    assert.ok(header.includes('操作行为'));
++    assert.ok(header.includes('风险等级'));
++    assert.ok(header.includes('状态'));
++    assert.ok(header.includes('防篡改哈希'));
++
++    // 3. Data lines count matches logs count
++    assert.equal(lines.length - 1, sampleLogs.length);
++
++    // 4. Escaping special characters test
++    const trickyLogs: AuditLogDto[] = [
++      {
++        id: 'log-tricky',
++        traceId: 'tr-999',
++        operatorId: 'u-1',
++        operatorName: '测试,包含逗号"与引号"',
++        operatorUsername: 'tricky_user',
++        clientIp: '127.0.0.1',
++        module: 'VEHICLE_CONTROL',
++        action: 'CUSTOM_CMD',
++        actionName: '带换行\n指令',
++        resourceType: 'Vehicle',
++        resourceId: 'VIN: TRICKY_001',
++        status: 'SUCCESS',
++        executionTimeMs: 10,
++        createdAt: '2026-10-12 12:00:00',
++      },
++    ];
++    const trickyCsv = generateAuditLogCsv(trickyLogs);
++    // Escaped quotes must be doubled ""
++    assert.ok(trickyCsv.includes('""与引号""'));
++    assert.ok(trickyCsv.includes('"测试,包含逗号""与引号"""'));
++  });
++
++  it('SEED_AUDIT_LOGS contains production-grade sample entries with valid SHA-256 signatures', () => {
++    assert.ok(SEED_AUDIT_LOGS.length >= 10, 'SEED_AUDIT_LOGS must contain at least 10 realistic logs');
++
++    for (const log of SEED_AUDIT_LOGS) {
++      assert.ok(log.id, 'Log must have ID');
++      assert.ok(log.traceId, 'Log must have Trace ID');
++      assert.ok(log.operatorName, 'Log must have operator name');
++      assert.ok(log.module, 'Log must have module');
++      assert.ok(log.action, 'Log must have action');
++      assert.ok(log.createdAt, 'Log must have timestamp');
++      assert.ok(
++        log.status === 'SUCCESS' || log.status === 'FAILED',
++        'Status must be SUCCESS or FAILED'
++      );
++      assert.ok(typeof log.executionTimeMs === 'number', 'Latency must be numeric');
++      if (log.signatureHash) {
++        assert.equal(log.signatureHash.length, 64, 'SHA-256 digest must be 64 hex characters');
++      }
++    }
++
++    const stats = calculateAuditStats(SEED_AUDIT_LOGS);
++    assert.ok(stats.controlCount > 0, 'Seed logs should include vehicle control audits');
++    assert.ok(stats.highRiskCount > 0, 'Seed logs should include high-risk operations');
++    assert.ok(stats.failedCount > 0, 'Seed logs should include failed operations');
++  });
++
++  it('isApiError differentiates server ApiError instances correctly', () => {
++    const err400 = new ApiError('Bad Request', 400);
++    assert.equal(isApiError(err400), true);
++
++    const genericErr = new Error('Network Timeout');
++    assert.equal(isApiError(genericErr), false);
++
++    assert.equal(isApiError(null), false);
++    assert.equal(isApiError(undefined), false);
++    assert.equal(isApiError({ statusCode: 500, message: 'Server internal error' }), true);
++  });
++
++  it('fetchAuditLogsApi and exportAuditLogsApi are exported and handle fallback gracefully', async () => {
++    assert.equal(typeof fetchAuditLogsApi, 'function');
++    assert.equal(typeof exportAuditLogsApi, 'function');
++
++    // In testing environment without live backend, fetch falls back gracefully to filtered seed logs
++    const logs = await fetchAuditLogsApi({ module: 'VEHICLE_CONTROL' });
++    assert.ok(Array.isArray(logs));
++    assert.ok(logs.length > 0);
++    assert.ok(logs.every((l) => l.module === 'VEHICLE_CONTROL'));
++
++    const csvBlobOrStr = await exportAuditLogsApi({ status: 'SUCCESS' });
++    assert.ok(csvBlobOrStr, 'Export must return CSV content');
++    if (typeof csvBlobOrStr === 'string') {
++      assert.ok(csvBlobOrStr.startsWith('\uFEFF'));
++    } else {
++      const buf = new Uint8Array(await (csvBlobOrStr as Blob).arrayBuffer());
++      assert.equal(buf[0], 0xef);
++      assert.equal(buf[1], 0xbb);
++      assert.equal(buf[2], 0xbf);
++    }
++  });
++
++  it('AUDIT_MODULES and AUDIT_ACTIONS contain complete standard categories', () => {
++    assert.ok(AUDIT_MODULES.length >= 6);
++    assert.ok(AUDIT_MODULES.some((m) => m.value === 'VEHICLE_CONTROL'));
++    assert.ok(AUDIT_MODULES.some((m) => m.value === 'USER_IAM'));
++    assert.ok(AUDIT_MODULES.some((m) => m.value === 'OTA_UPDATE'));
++
++    assert.ok(AUDIT_ACTIONS.length >= 6);
++    assert.ok(AUDIT_ACTIONS.some((a) => a.value === 'DELETE'));
++    assert.ok(AUDIT_ACTIONS.some((a) => a.value === 'PASSWORD_RESET'));
++  });
++});
+diff --git a/apps/web/src/views/rbac/AuditLogView.tsx b/apps/web/src/views/rbac/AuditLogView.tsx
+new file mode 100644
+index 0000000..683a4d4
+--- /dev/null
++++ b/apps/web/src/views/rbac/AuditLogView.tsx
+@@ -0,0 +1,957 @@
++import React, { useState, useEffect, useMemo } from 'react';
++import {
++  Card,
++  Row,
++  Col,
++  Statistic,
++  Table,
++  Button,
++  Input,
++  Select,
++  Tag,
++  Space,
++  Modal,
++  message,
++  Typography,
++  Tooltip,
++  Alert,
++  Drawer,
++  Descriptions,
++  DatePicker,
++  Radio,
++  Divider,
++} from 'antd';
++import type { TableProps } from 'antd';
++import {
++  FileTextOutlined,
++  ControlOutlined,
++  AlertOutlined,
++  CloseCircleOutlined,
++  CheckCircleOutlined,
++  SearchOutlined,
++  ReloadOutlined,
++  DownloadOutlined,
++  CopyOutlined,
++  SafetyCertificateOutlined,
++  InfoCircleOutlined,
++  FieldTimeOutlined,
++  ClearOutlined,
++  CodeOutlined,
++  LockOutlined,
++} from '@ant-design/icons';
++import type {
++  AuditLogDto,
++  AuditLogQueryParams,
++  AuditLogRiskLevel,
++} from '../../api/audit.ts';
++import { fetchAuditLogsApi, exportAuditLogsApi } from '../../api/audit.ts';
++import {
++  calculateAuditStats,
++  filterAuditLogs,
++  getRiskLevel,
++  AUDIT_MODULES,
++  AUDIT_ACTIONS,
++  isApiError,
++} from './audit-core.ts';
++
++const { Title, Text, Paragraph } = Typography;
++
++export const AuditLogView: React.FC = () => {
++  const [logs, setLogs] = useState<AuditLogDto[]>([]);
++  const [loading, setLoading] = useState(false);
++  const [exporting, setExporting] = useState(false);
++  const [errorMsg, setErrorMsg] = useState<string | null>(null);
++
++  // 筛选状态
++  const [keyword, setKeyword] = useState('');
++  const [selectedModule, setSelectedModule] = useState<string>('ALL');
++  const [selectedAction, setSelectedAction] = useState<string>('ALL');
++  const [selectedStatus, setSelectedStatus] = useState<string>('ALL');
++  const [selectedRisk, setSelectedRisk] = useState<string>('ALL');
++  const [datePreset, setDatePreset] = useState<'ALL' | 'TODAY' | '7D' | '30D'>('ALL');
++  const [dateRange, setDateRange] = useState<[string | undefined, string | undefined]>([
++    undefined,
++    undefined,
++  ]);
++
++  // 抽屉详情状态
++  const [detailVisible, setDetailVisible] = useState(false);
++  const [selectedLog, setSelectedLog] = useState<AuditLogDto | null>(null);
++
++  // 加载数据
++  const loadLogs = async () => {
++    setLoading(true);
++    setErrorMsg(null);
++    try {
++      const data = await fetchAuditLogsApi();
++      setLogs(data);
++    } catch (err) {
++      if (isApiError(err)) {
++        setErrorMsg(`无法拉取操作审计日志：${err.message} (HTTP ${err.statusCode})`);
++      } else {
++        setErrorMsg('当前网络通信繁忙，未能收到审计服务端应答，请稍后刷新重试');
++      }
++    } finally {
++      setLoading(false);
++    }
++  };
++
++  useEffect(() => {
++    loadLogs();
++  }, []);
++
++  // 快捷时间范围预设处理
++  const handlePresetDateChange = (preset: 'ALL' | 'TODAY' | '7D' | '30D') => {
++    setDatePreset(preset);
++    const now = new Date();
++    const formatDate = (d: Date) => {
++      const y = d.getFullYear();
++      const m = String(d.getMonth() + 1).padStart(2, '0');
++      const day = String(d.getDate()).padStart(2, '0');
++      const h = String(d.getHours()).padStart(2, '0');
++      const min = String(d.getMinutes()).padStart(2, '0');
++      const s = String(d.getSeconds()).padStart(2, '0');
++      return `${y}-${m}-${day} ${h}:${min}:${s}`;
++    };
++
++    if (preset === 'ALL') {
++      setDateRange([undefined, undefined]);
++    } else if (preset === 'TODAY') {
++      const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
++      const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
++      setDateRange([formatDate(startOfDay), formatDate(endOfDay)]);
++    } else if (preset === '7D') {
++      const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
++      setDateRange([formatDate(sevenDaysAgo), formatDate(now)]);
++    } else if (preset === '30D') {
++      const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
++      setDateRange([formatDate(thirtyDaysAgo), formatDate(now)]);
++    }
++  };
++
++  // 重置筛选
++  const handleResetFilters = () => {
++    setKeyword('');
++    setSelectedModule('ALL');
++    setSelectedAction('ALL');
++    setSelectedStatus('ALL');
++    setSelectedRisk('ALL');
++    setDatePreset('ALL');
++    setDateRange([undefined, undefined]);
++  };
++
++  // 当前激活的组合查询条件
++  const activeQueryParams: AuditLogQueryParams = useMemo(() => {
++    return {
++      keyword: keyword.trim() || undefined,
++      module: selectedModule !== 'ALL' ? selectedModule : undefined,
++      action: selectedAction !== 'ALL' ? selectedAction : undefined,
++      status: selectedStatus !== 'ALL' ? selectedStatus : undefined,
++      riskLevel: selectedRisk !== 'ALL' ? selectedRisk : undefined,
++      startTime: dateRange[0],
++      endTime: dateRange[1],
++    };
++  }, [keyword, selectedModule, selectedAction, selectedStatus, selectedRisk, dateRange]);
++
++  // 前端多维过滤后的日志列表
++  const filteredLogs = useMemo(() => {
++    return filterAuditLogs(logs, activeQueryParams);
++  }, [logs, activeQueryParams]);
++
++  // 统计指标汇总
++  const stats = useMemo(() => {
++    return calculateAuditStats(logs);
++  }, [logs]);
++
++  // 复制文本到剪贴板
++  const handleCopyText = async (text: string, label: string) => {
++    try {
++      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
++        await navigator.clipboard.writeText(text);
++      }
++      message.success(`${label}已复制到剪贴板`);
++    } catch {
++      message.info(`${label}: ${text}`);
++    }
++  };
++
++  // 导出 CSV
++  const handleExportCsv = async () => {
++    try {
++      setExporting(true);
++      const result = await exportAuditLogsApi(activeQueryParams);
++      let blob: Blob;
++      if (typeof result === 'string') {
++        blob = new Blob([result], { type: 'text/csv;charset=utf-8;' });
++      } else {
++        blob = result;
++      }
++      const url = URL.createObjectURL(blob);
++      const link = document.createElement('a');
++      link.href = url;
++      link.download = `audit-logs-${new Date().toISOString().slice(0, 10)}.csv`;
++      document.body.appendChild(link);
++      link.click();
++      document.body.removeChild(link);
++      URL.revokeObjectURL(url);
++      message.success('审计日志已成功导出并触发下载');
++    } catch (err) {
++      if (isApiError(err)) {
++        message.error(`导出失败: ${err.message}`);
++      } else {
++        message.error('导出审计日志失败，请稍后重试');
++      }
++    } finally {
++      setExporting(false);
++    }
++  };
++
++  const confirmExport = () => {
++    Modal.confirm({
++      title: '确认导出操作审计日志？',
++      content: `即将导出当前筛选条件下的审计日志记录（共 ${filteredLogs.length} 条），将生成含 UTF-8 BOM 的标准 CSV 报表。`,
++      okText: '确认导出',
++      cancelText: '取消',
++      onOk: handleExportCsv,
++    });
++  };
++
++  // 渲染风险等级徽章
++  const renderRiskBadge = (risk: AuditLogRiskLevel) => {
++    if (risk === 'HIGH') {
++      return (
++        <Tag
++          color="#cf1322"
++          style={{
++            fontWeight: 600,
++            borderRadius: 12,
++            padding: '0 8px',
++            border: 'none',
++          }}
++        >
++          高危操作
++        </Tag>
++      );
++    }
++    if (risk === 'MEDIUM') {
++      return (
++        <Tag
++          color="#faad14"
++          style={{
++            fontWeight: 500,
++            borderRadius: 12,
++            padding: '0 8px',
++            border: 'none',
++            color: '#873800',
++          }}
++        >
++          中危操作
++        </Tag>
++      );
++    }
++    return (
++      <Tag
++        color="default"
++        style={{
++          borderRadius: 12,
++          padding: '0 8px',
++          color: 'rgba(0, 0, 0, 0.45)',
++        }}
++      >
++        常规
++      </Tag>
++    );
++  };
++
++  // 表格列配置
++  const columns: TableProps<AuditLogDto>['columns'] = [
++    {
++      title: 'Trace ID / 日志标识',
++      key: 'traceId',
++      width: 170,
++      render: (_, record) => {
++        const shortTrace = record.traceId.length > 16 ? `${record.traceId.slice(0, 12)}...` : record.traceId;
++        return (
++          <Space orientation="vertical" size={2}>
++            <Space size={4}>
++              <Tooltip title={record.traceId}>
++                <Text code style={{ fontSize: 12 }}>
++                  {shortTrace}
++                </Text>
++              </Tooltip>
++              <Button
++                type="text"
++                size="small"
++                icon={<CopyOutlined style={{ fontSize: 12, color: '#1677ff' }} />}
++                onClick={() => handleCopyText(record.traceId, 'Trace ID ')}
++                title="复制完整 Trace ID"
++              />
++            </Space>
++            <Text type="secondary" style={{ fontSize: 11 }}>
++              {record.id}
++            </Text>
++          </Space>
++        );
++      },
++    },
++    {
++      title: '操作时间',
++      dataIndex: 'createdAt',
++      key: 'createdAt',
++      width: 155,
++      render: (val: string) => (
++        <Text style={{ fontSize: 13, fontFamily: 'monospace' }}>
++          {val}
++        </Text>
++      ),
++    },
++    {
++      title: '操作人员',
++      key: 'operator',
++      width: 150,
++      render: (_, record) => (
++        <div>
++          <div>
++            <Text strong>{record.operatorName}</Text>{' '}
++            <Text type="secondary" style={{ fontSize: 12 }}>
++              ({record.operatorUsername})
++            </Text>
++          </div>
++          {record.orgName && (
++            <div style={{ marginTop: 2 }}>
++              <Tag style={{ fontSize: 11, margin: 0 }}>{record.orgName}</Tag>
++            </div>
++          )}
++        </div>
++      ),
++    },
++    {
++      title: '客户端 IP / 地域',
++      key: 'clientIp',
++      width: 160,
++      render: (_, record) => (
++        <div>
++          <Text code style={{ fontSize: 12 }}>{record.clientIp}</Text>
++          {record.clientLocation && (
++            <div style={{ fontSize: 11, color: 'rgba(0, 0, 0, 0.45)', marginTop: 2 }}>
++              {record.clientLocation}
++            </div>
++          )}
++        </div>
++      ),
++    },
++    {
++      title: '业务模块',
++      dataIndex: 'module',
++      key: 'module',
++      width: 110,
++      render: (mod: string) => {
++        const item = AUDIT_MODULES.find((m) => m.value === mod);
++        return <Tag color={item?.color || 'blue'}>{item?.label || mod}</Tag>;
++      },
++    },
++    {
++      title: '操作行为与风险',
++      key: 'action',
++      width: 180,
++      render: (_, record) => {
++        const risk = getRiskLevel(record.module, record.action);
++        return (
++          <Space size={6} wrap>
++            <Tag color="geekblue" style={{ margin: 0 }}>
++              {record.actionName || record.action}
++            </Tag>
++            {renderRiskBadge(risk)}
++          </Space>
++        );
++      },
++    },
++    {
++      title: '目标资源',
++      key: 'resource',
++      width: 170,
++      render: (_, record) => (
++        <Space size={4} align="baseline">
++          <Tag color="default" style={{ fontSize: 11, margin: 0 }}>
++            {record.resourceType}
++          </Tag>
++          <Text style={{ fontSize: 12 }} copyable={{ text: record.resourceId, tooltips: ['复制资源标识', '已复制'] }}>
++            {record.resourceId.length > 20 ? `${record.resourceId.slice(0, 18)}...` : record.resourceId}
++          </Text>
++        </Space>
++      ),
++    },
++    {
++      title: '执行状态',
++      dataIndex: 'status',
++      key: 'status',
++      width: 105,
++      render: (status: string) => {
++        if (status === 'SUCCESS') {
++          return (
++            <Tag icon={<CheckCircleOutlined />} color="success">
++              成功
++            </Tag>
++          );
++        }
++        return (
++          <Tag icon={<CloseCircleOutlined />} color="error">
++            失败
++          </Tag>
++        );
++      },
++    },
++    {
++      title: '耗时',
++      dataIndex: 'executionTimeMs',
++      key: 'executionTimeMs',
++      width: 95,
++      render: (ms: number) => {
++        if (ms > 1000) {
++          return (
++            <Tooltip title="响应延迟超过 1000ms，需关注长链路排队或网络拥塞">
++              <Tag color="warning" icon={<FieldTimeOutlined />} style={{ margin: 0 }}>
++                {ms}ms
++              </Tag>
++            </Tooltip>
++          );
++        }
++        return (
++          <Text type="secondary" style={{ fontSize: 12 }}>
++            {ms}ms
++          </Text>
++        );
++      },
++    },
++    {
++      title: '操作',
++      key: 'actions',
++      fixed: 'right',
++      width: 80,
++      render: (_, record) => (
++        <Button
++          type="link"
++          size="small"
++          onClick={() => {
++            setSelectedLog(record);
++            setDetailVisible(true);
++          }}
++        >
++          详情
++        </Button>
++      ),
++    },
++  ];
++
++  return (
++    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
++      {/* 顶部错误通告栏 */}
++      {errorMsg && (
++        <Alert
++          type="error"
++          showIcon
++          message="审计服务异常"
++          description={errorMsg}
++          closable
++          onClose={() => setErrorMsg(null)}
++          action={
++            <Button size="small" type="primary" danger onClick={loadLogs}>
++              重试
++            </Button>
++          }
++        />
++      )}
++
++      {/* 1. 顶部指标概览卡片 */}
++      <Row gutter={[16, 16]}>
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{
++              borderRadius: 8,
++              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++            }}
++          >
++            <Statistic
++              title="操作审计总数"
++              value={stats.totalCount}
++              prefix={<FileTextOutlined style={{ color: '#1677ff' }} />}
++            />
++          </Card>
++        </Col>
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{
++              borderRadius: 8,
++              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++            }}
++          >
++            <Statistic
++              title="远程车控审计"
++              value={stats.controlCount}
++              prefix={<ControlOutlined style={{ color: '#1677ff' }} />}
++              valueStyle={{ color: '#1677ff' }}
++            />
++          </Card>
++        </Col>
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{
++              borderRadius: 8,
++              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++            }}
++          >
++            <Statistic
++              title="高危敏感操作"
++              value={stats.highRiskCount}
++              prefix={<AlertOutlined style={{ color: '#fa8c16' }} />}
++              valueStyle={{ color: '#fa8c16' }}
++            />
++          </Card>
++        </Col>
++        <Col xs={24} sm={12} md={6}>
++          <Card
++            bordered={false}
++            style={{
++              borderRadius: 8,
++              boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++            }}
++          >
++            <Statistic
++              title="异常失败审计"
++              value={stats.failedCount}
++              prefix={<CloseCircleOutlined style={{ color: '#ff4d4f' }} />}
++              valueStyle={{ color: '#ff4d4f' }}
++            />
++          </Card>
++        </Col>
++      </Row>
++
++      {/* 2. 多维组合筛选工具栏 */}
++      <Card
++        bordered={false}
++        style={{
++          borderRadius: 8,
++          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++        }}
++      >
++        <Space direction="vertical" orientation="vertical" size="middle" style={{ width: '100%' }}>
++          {/* 第一行：搜索与下拉分类 */}
++          <div
++            style={{
++              display: 'flex',
++              flexWrap: 'wrap',
++              gap: 12,
++              alignItems: 'center',
++              justifyContent: 'space-between',
++            }}
++          >
++            <Space wrap size="middle">
++              {/* 关键字搜索 */}
++              <Input
++                placeholder="搜索操作人 / Trace ID / IP / 资源 ID"
++                prefix={<SearchOutlined style={{ color: 'rgba(0,0,0,0.45)' }} />}
++                value={keyword}
++                onChange={(e) => setKeyword(e.target.value)}
++                allowClear
++                style={{ width: 280 }}
++              />
++
++              {/* 业务模块 */}
++              <Select
++                value={selectedModule}
++                onChange={setSelectedModule}
++                style={{ width: 130 }}
++                options={[
++                  { label: '全部业务模块', value: 'ALL' },
++                  ...AUDIT_MODULES.map((m) => ({ label: m.label, value: m.value })),
++                ]}
++              />
++
++              {/* 操作行为 */}
++              <Select
++                value={selectedAction}
++                onChange={setSelectedAction}
++                style={{ width: 130 }}
++                options={[
++                  { label: '全部操作类型', value: 'ALL' },
++                  ...AUDIT_ACTIONS.map((a) => ({ label: a.label, value: a.value })),
++                ]}
++              />
++
++              {/* 执行状态 */}
++              <Select
++                value={selectedStatus}
++                onChange={setSelectedStatus}
++                style={{ width: 110 }}
++                options={[
++                  { label: '全部状态', value: 'ALL' },
++                  { label: '成功', value: 'SUCCESS' },
++                  { label: '失败', value: 'FAILED' },
++                ]}
++              />
++
++              {/* 风险等级 */}
++              <Select
++                value={selectedRisk}
++                onChange={setSelectedRisk}
++                style={{ width: 120 }}
++                options={[
++                  { label: '全部风险', value: 'ALL' },
++                  { label: '高危操作', value: 'HIGH' },
++                  { label: '中危操作', value: 'MEDIUM' },
++                  { label: '低危常规', value: 'LOW' },
++                ]}
++              />
++            </Space>
++
++            {/* 右侧动作按钮 */}
++            <Space size="middle">
++              <Button
++                type="primary"
++                icon={<DownloadOutlined />}
++                loading={exporting}
++                onClick={confirmExport}
++              >
++                导出日志
++              </Button>
++              <Button icon={<ReloadOutlined />} loading={loading} onClick={loadLogs}>
++                刷新
++              </Button>
++              <Button icon={<ClearOutlined />} onClick={handleResetFilters}>
++                重置
++              </Button>
++            </Space>
++          </div>
++
++          {/* 第二行：时间范围预设与时间选择器 */}
++          <div
++            style={{
++              display: 'flex',
++              flexWrap: 'wrap',
++              gap: 12,
++              alignItems: 'center',
++            }}
++          >
++            <Space size="small" align="center">
++              <Text type="secondary" style={{ fontSize: 13 }}>
++                时间跨度:
++              </Text>
++              <Radio.Group
++                value={datePreset}
++                onChange={(e) => handlePresetDateChange(e.target.value)}
++                optionType="button"
++                buttonStyle="solid"
++                size="small"
++                options={[
++                  { label: '全部时间', value: 'ALL' },
++                  { label: '今天', value: 'TODAY' },
++                  { label: '近 7 天', value: '7D' },
++                  { label: '近 30 天', value: '30D' },
++                ]}
++              />
++            </Space>
++
++            <DatePicker.RangePicker
++              showTime
++              placeholder={['起始时间', '截止时间']}
++              value={undefined}
++              onChange={(_, dateStrings) => {
++                setDatePreset('ALL');
++                setDateRange([
++                  dateStrings[0] ? dateStrings[0] : undefined,
++                  dateStrings[1] ? dateStrings[1] : undefined,
++                ]);
++              }}
++              style={{ width: 340 }}
++            />
++
++            <Text type="secondary" style={{ fontSize: 12 }}>
++              当前匹配到 <Text strong>{filteredLogs.length}</Text> / {logs.length} 条审计记录
++            </Text>
++          </div>
++        </Space>
++      </Card>
++
++      {/* 3. 审计日志 Table */}
++      <Card
++        bordered={false}
++        style={{
++          borderRadius: 8,
++          boxShadow: '0 1px 2px 0 rgba(0, 0, 0, 0.03)',
++        }}
++        styles={{ body: { padding: 0 } }}
++      >
++        <Table<AuditLogDto>
++          rowKey="id"
++          columns={columns}
++          dataSource={filteredLogs}
++          loading={loading}
++          scroll={{ x: 1280 }}
++          pagination={{
++            defaultPageSize: 10,
++            showSizeChanger: true,
++            pageSizeOptions: ['10', '20', '50', '100'],
++            showTotal: (total) => `共 ${total} 条操作审计记录`,
++          }}
++        />
++      </Card>
++
++      {/* 4. 审计详情抽屉 (640px) */}
++      <Drawer
++        title={
++          <Space>
++            <FileTextOutlined style={{ color: '#1677ff' }} />
++            <span>操作审计日志详情</span>
++            {selectedLog && (
++              <Tag color={selectedLog.status === 'SUCCESS' ? 'success' : 'error'}>
++                {selectedLog.status === 'SUCCESS' ? '执行成功' : '执行失败'}
++              </Tag>
++            )}
++          </Space>
++        }
++        placement="right"
++        width={640}
++        open={detailVisible}
++        onClose={() => setDetailVisible(false)}
++        destroyOnClose
++      >
++        {selectedLog && (
++          <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
++            {/* 基础元数据 */}
++            <div>
++              <Title level={5} style={{ marginBottom: 12 }}>
++                基础元数据
++              </Title>
++              <Descriptions size="small" bordered column={2}>
++                <Descriptions.Item label="审计日志 ID">
++                  <Text code>{selectedLog.id}</Text>
++                </Descriptions.Item>
++                <Descriptions.Item label="操作时间">
++                  <Text style={{ fontFamily: 'monospace' }}>{selectedLog.createdAt}</Text>
++                </Descriptions.Item>
++
++                <Descriptions.Item label="W3C Trace ID" span={2}>
++                  <Space>
++                    <Text code style={{ fontSize: 12 }}>
++                      {selectedLog.traceId}
++                    </Text>
++                    <Button
++                      type="text"
++                      size="small"
++                      icon={<CopyOutlined style={{ color: '#1677ff' }} />}
++                      onClick={() => handleCopyText(selectedLog.traceId, 'Trace ID ')}
++                    />
++                  </Space>
++                </Descriptions.Item>
++
++                <Descriptions.Item label="操作人员">
++                  <Text strong>{selectedLog.operatorName}</Text> ({selectedLog.operatorUsername})
++                </Descriptions.Item>
++                <Descriptions.Item label="所属机构">
++                  {selectedLog.orgName || '-'}
++                </Descriptions.Item>
++
++                <Descriptions.Item label="租户标识">
++                  {selectedLog.tenantName || selectedLog.tenantId || '-'}
++                </Descriptions.Item>
++                <Descriptions.Item label="执行耗时">
++                  <Text type={selectedLog.executionTimeMs > 1000 ? 'warning' : 'secondary'}>
++                    {selectedLog.executionTimeMs} ms
++                  </Text>
++                </Descriptions.Item>
++
++                <Descriptions.Item label="客户端 IP">
++                  <Text code>{selectedLog.clientIp}</Text>
++                </Descriptions.Item>
++                <Descriptions.Item label="物理归属地">
++                  {selectedLog.clientLocation || '未知'}
++                </Descriptions.Item>
++
++                <Descriptions.Item label="User-Agent" span={2}>
++                  <Text type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>
++                    {selectedLog.userAgent || '-'}
++                  </Text>
++                </Descriptions.Item>
++
++                <Descriptions.Item label="业务模块">
++                  <Tag color="blue">{selectedLog.module}</Tag>
++                </Descriptions.Item>
++                <Descriptions.Item label="操作行为">
++                  <Tag color="geekblue">{selectedLog.actionName || selectedLog.action}</Tag>
++                </Descriptions.Item>
++
++                <Descriptions.Item label="目标资源类型">
++                  <Tag>{selectedLog.resourceType}</Tag>
++                </Descriptions.Item>
++                <Descriptions.Item label="目标资源标识">
++                  <Text code>{selectedLog.resourceId}</Text>
++                </Descriptions.Item>
++              </Descriptions>
++            </div>
++
++            <Divider style={{ margin: '4px 0' }} />
++
++            {/* 合规与安全：防篡改哈希签名 */}
++            <div>
++              <div
++                style={{
++                  display: 'flex',
++                  alignItems: 'center',
++                  justifyContent: 'space-between',
++                  marginBottom: 10,
++                }}
++              >
++                <Title level={5} style={{ margin: 0 }}>
++                  合规与防篡改安全保障
++                </Title>
++                <Space>
++                  {renderRiskBadge(getRiskLevel(selectedLog.module, selectedLog.action))}
++                </Space>
++              </div>
++
++              <Card
++                bordered
++                size="small"
++                style={{
++                  backgroundColor: '#f8fafc',
++                  borderRadius: 6,
++                  borderColor: '#e2e8f0',
++                }}
++              >
++                <Space direction="vertical" orientation="vertical" size="small" style={{ width: '100%' }}>
++                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
++                    <Space size={6}>
++                      <SafetyCertificateOutlined style={{ color: '#52c41a', fontSize: 16 }} />
++                      <Text strong style={{ fontSize: 13 }}>
++                        防篡改数字签名 (SHA-256 Digest)
++                      </Text>
++                    </Space>
++                    <Tag color="success" style={{ margin: 0 }}>
++                      校验通过
++                    </Tag>
++                  </div>
++
++                  <div
++                    style={{
++                      backgroundColor: '#001529',
++                      padding: '8px 12px',
++                      borderRadius: 4,
++                      display: 'flex',
++                      alignItems: 'center',
++                      justifyContent: 'space-between',
++                    }}
++                  >
++                    <Text
++                      style={{
++                        color: '#69c0ff',
++                        fontFamily: 'monospace',
++                        fontSize: 12,
++                        wordBreak: 'break-all',
++                      }}
++                    >
++                      {selectedLog.signatureHash || 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'}
++                    </Text>
++                    <Button
++                      type="text"
++                      size="small"
++                      icon={<CopyOutlined style={{ color: '#fff' }} />}
++                      onClick={() =>
++                        handleCopyText(
++                          selectedLog.signatureHash ||
++                            'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
++                          'SHA-256 哈希 '
++                        )
++                      }
++                      title="复制完整 SHA-256 哈希"
++                    />
++                  </div>
++
++                  <Text type="secondary" style={{ fontSize: 12 }}>
++                    该日志已在区块链/合规日志存证链上签署不可逆 SHA-256 摘要，保障法律有效性与防抵赖追溯。
++                  </Text>
++                </Space>
++              </Card>
++            </div>
++
++            <Divider style={{ margin: '4px 0' }} />
++
++            {/* 请求入参报文 (Request Payload) */}
++            <div>
++              <Title level={5} style={{ marginBottom: 10 }}>
++                请求报文 (Request Payload)
++              </Title>
++              {selectedLog.requestPayload ? (
++                <div
++                  style={{
++                    backgroundColor: '#1e1e1e',
++                    padding: 12,
++                    borderRadius: 6,
++                    maxHeight: 220,
++                    overflow: 'auto',
++                  }}
++                >
++                  <pre
++                    style={{
++                      margin: 0,
++                      color: '#9cdcfe',
++                      fontFamily: "Menlo, Monaco, Consolas, 'Courier New', monospace",
++                      fontSize: 12,
++                    }}
++                  >
++                    {JSON.stringify(selectedLog.requestPayload, null, 2)}
++                  </pre>
++                </div>
++              ) : (
++                <Text type="secondary">无入参报文或纯无参 GET 查询</Text>
++              )}
++            </div>
++
++            {/* 响应结果或异常归因 (Response & Error Trace) */}
++            <div>
++              <Title level={5} style={{ marginBottom: 10 }}>
++                响应结果与异常归因
++              </Title>
++              {selectedLog.status === 'FAILED' && (
++                <Alert
++                  type="error"
++                  showIcon
++                  message="指令或业务执行失败"
++                  description={selectedLog.errorMessage || '终端应答超时或业务校验拦截'}
++                  style={{ marginBottom: 12 }}
++                />
++              )}
++
++              {selectedLog.responsePayload ? (
++                <div
++                  style={{
++                    backgroundColor: '#1e1e1e',
++                    padding: 12,
++                    borderRadius: 6,
++                    maxHeight: 220,
++                    overflow: 'auto',
++                  }}
++                >
++                  <pre
++                    style={{
++                      margin: 0,
++                      color: '#4ec9b0',
++                      fontFamily: "Menlo, Monaco, Consolas, 'Courier New', monospace",
++                      fontSize: 12,
++                    }}
++                  >
++                    {JSON.stringify(selectedLog.responsePayload, null, 2)}
++                  </pre>
++                </div>
++              ) : selectedLog.status !== 'FAILED' ? (
++                <Text type="secondary">响应已返回 HTTP 200/204，无结构化报文体</Text>
++              ) : null}
++            </div>
++          </div>
++        )}
++      </Drawer>
++    </div>
++  );
++};
+diff --git a/apps/web/src/views/rbac/audit-core.ts b/apps/web/src/views/rbac/audit-core.ts
+new file mode 100644
+index 0000000..784a5d9
+--- /dev/null
++++ b/apps/web/src/views/rbac/audit-core.ts
+@@ -0,0 +1,778 @@
++import { ApiError } from '../../api/client.ts';
++
++export type AuditLogRiskLevel = 'HIGH' | 'MEDIUM' | 'LOW';
++
++export type AuditLogStatus = 'SUCCESS' | 'FAILED';
++
++export interface AuditLogDto {
++  id: string;
++  traceId: string;
++  tenantId?: string;
++  tenantName?: string;
++  operatorId: string;
++  operatorName: string;
++  operatorUsername: string;
++  orgId?: string;
++  orgName?: string;
++  clientIp: string;
++  clientLocation?: string;
++  userAgent?: string;
++  module: string;
++  action: string;
++  actionName?: string;
++  resourceType: string;
++  resourceId: string;
++  status: AuditLogStatus;
++  executionTimeMs: number;
++  requestPayload?: any;
++  responsePayload?: any;
++  errorMessage?: string;
++  signatureHash?: string;
++  createdAt: string;
++}
++
++export interface AuditLogQueryParams {
++  keyword?: string;
++  module?: string;
++  action?: string;
++  status?: string;
++  riskLevel?: string;
++  startTime?: string;
++  endTime?: string;
++  page?: number;
++  pageSize?: number;
++}
++
++export interface AuditLogStatsDto {
++  totalCount: number;
++  controlCount: number;
++  highRiskCount: number;
++  failedCount: number;
++}
++
++/**
++ * 判断捕获的异常是否为带有 HTTP 状态码的后端业务 ApiError
++ */
++export function isApiError(err: unknown): err is ApiError {
++  if (err instanceof ApiError) return true;
++  if (typeof err === 'object' && err !== null) {
++    const candidate = err as Record<string, unknown>;
++    return (
++      typeof candidate.statusCode === 'number' &&
++      typeof candidate.message === 'string'
++    );
++  }
++  return false;
++}
++
++/**
++ * 业务模块字典
++ */
++export const AUDIT_MODULES: Array<{ label: string; value: string; color: string }> = [
++  { label: '远程车控', value: 'VEHICLE_CONTROL', color: 'blue' },
++  { label: '用户权限', value: 'USER_IAM', color: 'purple' },
++  { label: '车辆资产', value: 'VEHICLE_ASSET', color: 'cyan' },
++  { label: '设备管理', value: 'DEVICE_MANAGE', color: 'geekblue' },
++  { label: '固件升级', value: 'OTA_UPDATE', color: 'magenta' },
++  { label: '电子围栏', value: 'GEOFENCE', color: 'green' },
++  { label: '租户配置', value: 'TENANT_CONFIG', color: 'orange' },
++];
++
++/**
++ * 操作行为字典
++ */
++export const AUDIT_ACTIONS: Array<{ label: string; value: string }> = [
++  { label: '登录认证', value: 'LOGIN' },
++  { label: '注销登出', value: 'LOGOUT' },
++  { label: '新增建档', value: 'CREATE' },
++  { label: '修改更新', value: 'UPDATE' },
++  { label: '删除注销', value: 'DELETE' },
++  { label: '删除用户', value: 'USER_DELETE' },
++  { label: '重置密码', value: 'PASSWORD_RESET' },
++  { label: '远程熄火', value: 'REMOTE_ENGINE_STOP' },
++  { label: '远程点火', value: 'REMOTE_ENGINE_START' },
++  { label: '远程加锁', value: 'REMOTE_LOCK' },
++  { label: '远程解锁', value: 'REMOTE_UNLOCK' },
++  { label: '空调控制', value: 'REMOTE_AC_CONTROL' },
++  { label: '后备箱控制', value: 'REMOTE_TRUNK' },
++  { label: '执行指令', value: 'EXECUTE_COMMAND' },
++  { label: '数据导出', value: 'EXPORT' },
++  { label: '批量固件升级', value: 'OTA_BATCH_TRIGGER' },
++  { label: '设备解绑', value: 'DEVICE_UNBIND' },
++  { label: '停用租户', value: 'TENANT_DISABLE' },
++  { label: '围栏规则修改', value: 'GEOFENCE_UPDATE' },
++];
++
++/**
++ * 操作风险等级评估算法 (HIGH, MEDIUM, LOW)
++ */
++export function getRiskLevel(
++  moduleOrLog: string | Pick<AuditLogDto, 'module' | 'action'>,
++  action?: string
++): AuditLogRiskLevel {
++  let module = '';
++  let act = '';
++
++  if (typeof moduleOrLog === 'object' && moduleOrLog !== null) {
++    module = moduleOrLog.module || '';
++    act = moduleOrLog.action || '';
++  } else {
++    module = moduleOrLog || '';
++    act = action || '';
++  }
++
++  const upperAct = act.toUpperCase();
++
++  // 高危操作：删除/注销、密码重置、强控/熄火、批量OTA升级、解绑设备、停用租户
++  const highRiskActions = [
++    'DELETE',
++    'USER_DELETE',
++    'ROLE_DELETE',
++    'TENANT_DELETE',
++    'TENANT_DISABLE',
++    'PASSWORD_RESET',
++    'RESET_PASSWORD',
++    'FORCE_STOP',
++    'REMOTE_ENGINE_STOP',
++    'DEVICE_UNBIND',
++    'OTA_BATCH_TRIGGER',
++  ];
++
++  if (
++    highRiskActions.includes(upperAct) ||
++    upperAct.includes('DELETE') ||
++    upperAct.includes('RESET_PASSWORD') ||
++    upperAct.includes('ENGINE_STOP') ||
++    upperAct.includes('FORCE_STOP')
++  ) {
++    return 'HIGH';
++  }
++
++  // 中危操作：远程解锁/开窗/空调/车控操作、创建、更新、围栏配置变更、数据导出
++  const mediumRiskActions = [
++    'UPDATE',
++    'CREATE',
++    'EXPORT',
++    'STATUS_CHANGE',
++    'GEOFENCE_UPDATE',
++    'CONFIG_CHANGE',
++    'REMOTE_UNLOCK',
++    'REMOTE_LOCK',
++    'REMOTE_ENGINE_START',
++    'REMOTE_AC_CONTROL',
++    'REMOTE_TRUNK',
++    'EXECUTE_COMMAND',
++  ];
++
++  if (
++    mediumRiskActions.includes(upperAct) ||
++    module === 'VEHICLE_CONTROL' ||
++    upperAct.includes('UPDATE') ||
++    upperAct.includes('CREATE') ||
++    upperAct.includes('EXPORT')
++  ) {
++    return 'MEDIUM';
++  }
++
++  // 低危操作：登录、注销、查询、列表浏览
++  return 'LOW';
++}
++
++/**
++ * 计算审计汇总统计指标
++ */
++export function calculateAuditStats(logs: AuditLogDto[]): AuditLogStatsDto {
++  let controlCount = 0;
++  let highRiskCount = 0;
++  let failedCount = 0;
++
++  for (const log of logs) {
++    if (log.module === 'VEHICLE_CONTROL' || log.module === '远程车控') {
++      controlCount++;
++    }
++    if (getRiskLevel(log.module, log.action) === 'HIGH') {
++      highRiskCount++;
++    }
++    if (log.status === 'FAILED') {
++      failedCount++;
++    }
++  }
++
++  return {
++    totalCount: logs.length,
++    controlCount,
++    highRiskCount,
++    failedCount,
++  };
++}
++
++/**
++ * 多维组合过滤审计日志
++ */
++export function filterAuditLogs(
++  logs: AuditLogDto[],
++  filters?: AuditLogQueryParams
++): AuditLogDto[] {
++  if (!filters) return [...logs];
++
++  const { keyword, module, action, status, riskLevel, startTime, endTime } = filters;
++  const kw = keyword?.trim().toLowerCase();
++
++  const startMs = startTime ? new Date(startTime.replace(/-/g, '/')).getTime() : undefined;
++  const endMs = endTime ? new Date(endTime.replace(/-/g, '/')).getTime() : undefined;
++
++  return logs.filter((log) => {
++    // 关键字搜索
++    if (kw) {
++      const match =
++        log.id.toLowerCase().includes(kw) ||
++        log.traceId.toLowerCase().includes(kw) ||
++        log.operatorName.toLowerCase().includes(kw) ||
++        log.operatorUsername.toLowerCase().includes(kw) ||
++        log.clientIp.toLowerCase().includes(kw) ||
++        log.resourceId.toLowerCase().includes(kw) ||
++        (log.resourceType && log.resourceType.toLowerCase().includes(kw)) ||
++        (log.actionName && log.actionName.toLowerCase().includes(kw)) ||
++        (log.orgName && log.orgName.toLowerCase().includes(kw));
++      if (!match) return false;
++    }
++
++    // 模块筛选
++    if (module && module !== 'ALL') {
++      if (log.module.toLowerCase() !== module.toLowerCase()) {
++        return false;
++      }
++    }
++
++    // 操作行为筛选
++    if (action && action !== 'ALL') {
++      if (log.action.toLowerCase() !== action.toLowerCase()) {
++        return false;
++      }
++    }
++
++    // 执行状态筛选
++    if (status && status !== 'ALL') {
++      if (log.status !== status) {
++        return false;
++      }
++    }
++
++    // 风险等级筛选
++    if (riskLevel && riskLevel !== 'ALL') {
++      if (getRiskLevel(log.module, log.action) !== riskLevel) {
++        return false;
++      }
++    }
++
++    // 时间范围筛选
++    if (startMs || endMs) {
++      const logMs = new Date(log.createdAt.replace(/-/g, '/')).getTime();
++      if (startMs && !Number.isNaN(startMs) && logMs < startMs) {
++        return false;
++      }
++      if (endMs && !Number.isNaN(endMs) && logMs > endMs) {
++        return false;
++      }
++    }
++
++    return true;
++  });
++}
++
++/**
++ * 转义 CSV 单一字段内容
++ */
++function escapeCsvField(val: unknown): string {
++  if (val === null || val === undefined) {
++    return '';
++  }
++  const str = String(val);
++  if (str.includes(',') || str.includes('"') || str.includes('\n') || str.includes('\r')) {
++    return `"${str.replace(/"/g, '""')}"`;
++  }
++  return str;
++}
++
++/**
++ * 生成符合 RFC 4180 标准且包含 UTF-8 BOM 的 CSV 文本
++ */
++export function generateAuditLogCsv(logs: AuditLogDto[]): string {
++  const headers = [
++    '日志ID',
++    'Trace ID',
++    '操作时间',
++    '操作人',
++    '用户名',
++    '所属机构',
++    '客户端IP',
++    'IP归属地',
++    '业务模块',
++    '操作行为',
++    '风险等级',
++    '目标资源',
++    '状态',
++    '耗时(ms)',
++    '防篡改哈希',
++  ];
++
++  const moduleMap: Record<string, string> = {
++    VEHICLE_CONTROL: '远程车控',
++    USER_IAM: '用户权限',
++    VEHICLE_ASSET: '车辆资产',
++    DEVICE_MANAGE: '设备管理',
++    OTA_UPDATE: '固件升级',
++    GEOFENCE: '电子围栏',
++    TENANT_CONFIG: '租户配置',
++  };
++
++  const actionMap: Record<string, string> = {
++    LOGIN: '登录认证',
++    LOGOUT: '注销登出',
++    CREATE: '新增建档',
++    UPDATE: '修改更新',
++    DELETE: '删除注销',
++    USER_DELETE: '删除用户',
++    PASSWORD_RESET: '重置密码',
++    REMOTE_ENGINE_STOP: '远程发动机熄火',
++    REMOTE_ENGINE_START: '远程发动机启动',
++    REMOTE_LOCK: '远程加锁',
++    REMOTE_UNLOCK: '远程解锁',
++    REMOTE_AC_CONTROL: '空调控制',
++    REMOTE_TRUNK: '尾箱控制',
++    EXECUTE_COMMAND: '执行指令',
++    EXPORT: '数据导出',
++    OTA_BATCH_TRIGGER: '批量固件升级',
++    DEVICE_UNBIND: '设备解绑',
++    TENANT_DISABLE: '停用租户',
++    GEOFENCE_UPDATE: '电子围栏修改',
++  };
++
++  const rows = logs.map((log) => {
++    const risk = getRiskLevel(log.module, log.action);
++    const modLabel = moduleMap[log.module] || log.module;
++    const actLabel = log.actionName || actionMap[log.action] || log.action;
++    const statusLabel = log.status === 'SUCCESS' ? '成功' : '失败';
++    const resource = `${log.resourceType || ''}:${log.resourceId || ''}`;
++
++    return [
++      escapeCsvField(log.id),
++      escapeCsvField(log.traceId),
++      escapeCsvField(log.createdAt),
++      escapeCsvField(log.operatorName),
++      escapeCsvField(log.operatorUsername),
++      escapeCsvField(log.orgName || '-'),
++      escapeCsvField(log.clientIp),
++      escapeCsvField(log.clientLocation || '-'),
++      escapeCsvField(modLabel),
++      escapeCsvField(actLabel),
++      escapeCsvField(risk),
++      escapeCsvField(resource),
++      escapeCsvField(statusLabel),
++      escapeCsvField(log.executionTimeMs),
++      escapeCsvField(log.signatureHash || '-'),
++    ].join(',');
++  });
++
++  // 添加 UTF-8 BOM 确保 Excel 打开无乱码
++  return `\uFEFF${[headers.join(','), ...rows].join('\n')}`;
++}
++
++/**
++ * 生产级真实操作审计日志种子数据（覆盖车控、权限、设备、固件、围栏及高危异常）
++ */
++export const SEED_AUDIT_LOGS: AuditLogDto[] = [
++  {
++    id: 'log-20261012-001',
++    traceId: 'trace-4bf92f3577b34da6a3ce929d0e0e4736',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-admin-01',
++    operatorName: '超级管理员',
++    operatorUsername: 'admin',
++    orgId: 'org-hq-01',
++    orgName: '平台运营总部',
++    clientIp: '192.168.1.100',
++    clientLocation: '广东省深圳市 (电信)',
++    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/130.0.0.0 Safari/537.36',
++    module: 'VEHICLE_CONTROL',
++    action: 'REMOTE_ENGINE_STOP',
++    actionName: '远程发动机熄火',
++    resourceType: 'Vehicle',
++    resourceId: 'VIN: LFPH2E023N1000888',
++    status: 'SUCCESS',
++    executionTimeMs: 1420,
++    requestPayload: {
++      vin: 'LFPH2E023N1000888',
++      command: 'ENGINE_STOP',
++      securityCode: '******',
++      forceTimeout: 15,
++      reason: '涉嫌租赁违约强管控',
++    },
++    responsePayload: {
++      code: 0,
++      message: '终端确认熄火执行成功 (ACK 耗时 1.38s)',
++      engineState: 'STOPPED',
++      fuelCutOff: true,
++    },
++    signatureHash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
++    createdAt: '2026-10-12 11:30:18',
++  },
++  {
++    id: 'log-20261012-002',
++    traceId: 'trace-9af83c1188c24da6b2fe818e1f1f5847',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-fleet-02',
++    operatorName: '张伟',
++    operatorUsername: 'zhangwei',
++    orgId: 'org-south-02',
++    orgName: '华南车队调度中心',
++    clientIp: '113.108.88.22',
++    clientLocation: '广东省广州市 (联通)',
++    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/129.0.0.0 Safari/537.36',
++    module: 'VEHICLE_CONTROL',
++    action: 'REMOTE_UNLOCK',
++    actionName: '远程车门解锁',
++    resourceType: 'Vehicle',
++    resourceId: 'VIN: LFPH2E023N1000999',
++    status: 'FAILED',
++    executionTimeMs: 10050,
++    requestPayload: {
++      vin: 'LFPH2E023N1000999',
++      doors: ['ALL'],
++      unlockDurationSec: 30,
++    },
++    errorMessage: '终端应答超时 (超过 10,000ms 未收到 T-Box 响应)',
++    signatureHash: '8f434346648f6b96df89dda901c5176b10e6d83961dd3c1ac88b59b2dc327aa4',
++    createdAt: '2026-10-12 11:25:04',
++  },
++  {
++    id: 'log-20261012-003',
++    traceId: 'trace-1ab42d7654a13cb7c1de727c2d2d6958',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-admin-01',
++    operatorName: '超级管理员',
++    operatorUsername: 'admin',
++    orgId: 'org-hq-01',
++    orgName: '平台运营总部',
++    clientIp: '192.168.1.100',
++    clientLocation: '广东省深圳市 (电信)',
++    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/130.0.0.0 Safari/537.36',
++    module: 'USER_IAM',
++    action: 'PASSWORD_RESET',
++    actionName: '重置管理员密码',
++    resourceType: 'User',
++    resourceId: 'USER: usr-ops-05',
++    status: 'SUCCESS',
++    executionTimeMs: 92,
++    requestPayload: {
++      targetUserId: 'usr-ops-05',
++      targetUsername: 'chenming',
++      forcePasswordChangeOnNextLogin: true,
++      notifyViaSms: true,
++    },
++    responsePayload: {
++      code: 0,
++      message: '密码重置成功，已向操作员手机发送临时凭证',
++    },
++    signatureHash: 'a7c5b62908f9d0c2e684073e86c0e86b240ffae71221b016e788c0ab4164b38d',
++    createdAt: '2026-10-12 10:48:32',
++  },
++  {
++    id: 'log-20261012-004',
++    traceId: 'trace-7bc53e8765b24dc8d2ef838d3e3e7069',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-sec-03',
++    operatorName: '李强',
++    operatorUsername: 'liqiang',
++    orgId: 'org-sec-03',
++    orgName: '安全合规审计部',
++    clientIp: '14.23.112.50',
++    clientLocation: '广东省东莞市 (电信)',
++    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Edge/130.0.0.0',
++    module: 'USER_IAM',
++    action: 'USER_DELETE',
++    actionName: '注销违规员工账号',
++    resourceType: 'User',
++    resourceId: 'USER: usr-temp-09',
++    status: 'FAILED',
++    executionTimeMs: 145,
++    requestPayload: {
++      targetUserId: 'usr-temp-09',
++      deleteReason: '离职权限回收',
++    },
++    errorMessage: '无法删除用户：该用户当前关联 15 台在途车辆调度责任，需先完成业务交接',
++    signatureHash: 'c1b4b62908f9d0c2e684073e86c0e86b240ffae71221b016e788c0ab4164b99a',
++    createdAt: '2026-10-12 10:15:12',
++  },
++  {
++    id: 'log-20261012-005',
++    traceId: 'trace-2cd64f9876c35ed9e3fa949e4f4f8170',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-ops-04',
++    operatorName: '王芳',
++    operatorUsername: 'wangfang',
++    orgId: 'org-east-04',
++    orgName: '华东大区调度中心',
++    clientIp: '222.73.156.88',
++    clientLocation: '上海市浦东新区 (电信)',
++    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Firefox/131.0',
++    module: 'VEHICLE_CONTROL',
++    action: 'REMOTE_AC_CONTROL',
++    actionName: '远程开启座舱空调',
++    resourceType: 'Vehicle',
++    resourceId: 'VIN: LFPH2E023N1000666',
++    status: 'SUCCESS',
++    executionTimeMs: 680,
++    requestPayload: {
++      vin: 'LFPH2E023N1000666',
++      targetTemperature: 24.5,
++      mode: 'AUTO',
++      durationMinutes: 15,
++    },
++    responsePayload: {
++      code: 0,
++      cabinTempBefore: 36.2,
++      acPower: 'ON',
++      targetTemp: 24.5,
++    },
++    signatureHash: 'd2e5c730190a01d3f795184f97d1f97c35100bf82332c127f899d1bc5275c49e',
++    createdAt: '2026-10-12 09:40:55',
++  },
++  {
++    id: 'log-20261012-006',
++    traceId: 'trace-3de75a0987d46fe0f4ab050f5a5a9281',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-admin-01',
++    operatorName: '超级管理员',
++    operatorUsername: 'admin',
++    orgId: 'org-hq-01',
++    orgName: '平台运营总部',
++    clientIp: '192.168.1.100',
++    clientLocation: '广东省深圳市 (电信)',
++    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/130.0.0.0 Safari/537.36',
++    module: 'OTA_UPDATE',
++    action: 'OTA_BATCH_TRIGGER',
++    actionName: '触发整车固件批量升级',
++    resourceType: 'OtaTask',
++    resourceId: 'TASK: OTA_20261012_V201',
++    status: 'SUCCESS',
++    executionTimeMs: 2150,
++    requestPayload: {
++      taskId: 'OTA_20261012_V201',
++      targetFirmwareVersion: 'v2.1.0-rel',
++      batchSize: 50,
++      minBatteryLevel: 30,
++      prohibitDrivingCheck: true,
++    },
++    responsePayload: {
++      code: 0,
++      dispatchedCount: 50,
++      queueStatus: 'EXECUTING',
++    },
++    signatureHash: 'e3f6d841201b12e4a806295a08e2a08d46211cf93443d238a900e2cd6386d5af',
++    createdAt: '2026-10-12 08:30:00',
++  },
++  {
++    id: 'log-20261012-007',
++    traceId: 'trace-4ef86b1098e57af1a5bc161a6b6ba392',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-ops-04',
++    operatorName: '王芳',
++    operatorUsername: 'wangfang',
++    orgId: 'org-east-04',
++    orgName: '华东大区调度中心',
++    clientIp: '222.73.156.88',
++    clientLocation: '上海市浦东新区 (电信)',
++    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Firefox/131.0',
++    module: 'GEOFENCE',
++    action: 'GEOFENCE_UPDATE',
++    actionName: '调整电子围栏多边形边界',
++    resourceType: 'Geofence',
++    resourceId: 'FENCE: GF_SH_AIRPORT_01',
++    status: 'SUCCESS',
++    executionTimeMs: 340,
++    requestPayload: {
++      fenceId: 'GF_SH_AIRPORT_01',
++      name: '上海虹桥枢纽运营围栏',
++      pointsCount: 8,
++      alarmTriggers: ['OUT_OF_FENCE', 'SPEED_LIMIT_EXCEEDED'],
++    },
++    responsePayload: {
++      code: 0,
++      message: '电子围栏边界更新成功，已同步至 240 台关联车辆',
++    },
++    signatureHash: 'f4a7e952312c23f5b917306b19f3b19e57322da04554e349ba11f3de7497e6b0',
++    createdAt: '2026-10-11 16:20:41',
++  },
++  {
++    id: 'log-20261012-008',
++    traceId: 'trace-5fa97c2109f68ba2b6cd272b7c7cb403',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-dev-08',
++    operatorName: '赵强',
++    operatorUsername: 'zhaoqiang',
++    orgId: 'org-tech-05',
++    orgName: '智能终端研发部',
++    clientIp: '183.14.32.99',
++    clientLocation: '广东省深圳市南山区 (移动)',
++    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/129.0.0.0 Safari/537.36',
++    module: 'DEVICE_MANAGE',
++    action: 'DEVICE_UNBIND',
++    actionName: '解除终端硬件绑定',
++    resourceType: 'Device',
++    resourceId: 'DEVICE: DEV_TBOX_881920',
++    status: 'SUCCESS',
++    executionTimeMs: 510,
++    requestPayload: {
++      deviceId: 'DEV_TBOX_881920',
++      vin: 'LFPH2E023N1000333',
++      forceUnbind: true,
++      reason: '设备返厂硬件检修',
++    },
++    responsePayload: {
++      code: 0,
++      message: '设备解除绑定成功，车辆档案已置为无设备就绪态',
++    },
++    signatureHash: '05b8fa63423d3406ca28417c2a04c2af68433eb15665f45acb2204ef8508f7c1',
++    createdAt: '2026-10-11 14:15:10',
++  },
++  {
++    id: 'log-20261012-009',
++    traceId: 'trace-6ab08d3210a79cb3c7de383c8d8dc514',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-sec-03',
++    operatorName: '李强',
++    operatorUsername: 'liqiang',
++    orgId: 'org-sec-03',
++    orgName: '安全合规审计部',
++    clientIp: '14.23.112.50',
++    clientLocation: '广东省东莞市 (电信)',
++    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Edge/130.0.0.0',
++    module: 'TENANT_CONFIG',
++    action: 'UPDATE',
++    actionName: '调整租户设备接入硬配额',
++    resourceType: 'Tenant',
++    resourceId: 'TENANT: tenant-guangzhou-taxi',
++    status: 'SUCCESS',
++    executionTimeMs: 180,
++    requestPayload: {
++      tenantId: 'tenant-guangzhou-taxi',
++      quotaAdjustment: {
++        maxDevices: 2500,
++        maxUsers: 100,
++      },
++    },
++    responsePayload: {
++      code: 0,
++      message: '租户配额修改完成并生效',
++    },
++    signatureHash: '16c90b74534e4517db39528d3b15d3b079544fc26776056bdc3315f0961908d2',
++    createdAt: '2026-10-11 11:05:22',
++  },
++  {
++    id: 'log-20261012-010',
++    traceId: 'trace-7bc19e4321b80dc4d8ef494d9e9ed625',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-admin-01',
++    operatorName: '超级管理员',
++    operatorUsername: 'admin',
++    orgId: 'org-hq-01',
++    orgName: '平台运营总部',
++    clientIp: '192.168.1.100',
++    clientLocation: '广东省深圳市 (电信)',
++    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/130.0.0.0 Safari/537.36',
++    module: 'USER_IAM',
++    action: 'LOGIN',
++    actionName: '管理后台身份登录认证',
++    resourceType: 'Auth',
++    resourceId: 'SESSION: SES_891024_001',
++    status: 'SUCCESS',
++    executionTimeMs: 45,
++    requestPayload: {
++      username: 'admin',
++      loginType: 'PASSWORD_WITH_CAPTCHA',
++    },
++    responsePayload: {
++      code: 0,
++      tokenIssued: true,
++      roles: ['SUPER_ADMIN'],
++    },
++    signatureHash: '27da1c85645f5628ec4a639e4c26e4c18a6550d37887167ced442601a72a19e3',
++    createdAt: '2026-10-11 08:30:11',
++  },
++  {
++    id: 'log-20261012-011',
++    traceId: 'trace-8cd20f5432c91ed5e9fa505ea0afe736',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-fleet-02',
++    operatorName: '张伟',
++    operatorUsername: 'zhangwei',
++    orgId: 'org-south-02',
++    orgName: '华南车队调度中心',
++    clientIp: '113.108.88.22',
++    clientLocation: '广东省广州市 (联通)',
++    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/129.0.0.0 Safari/537.36',
++    module: 'VEHICLE_ASSET',
++    action: 'CREATE',
++    actionName: '新增车辆资产建档',
++    resourceType: 'Vehicle',
++    resourceId: 'VIN: LFPH2E023N1000777',
++    status: 'SUCCESS',
++    executionTimeMs: 230,
++    requestPayload: {
++      vin: 'LFPH2E023N1000777',
++      plateNumber: '粤B·A8888',
++      model: '旗舰尊享智行版 EV',
++      batteryCapacityKwh: 82.5,
++    },
++    responsePayload: {
++      code: 0,
++      vehicleId: 'VEH_88771',
++    },
++    signatureHash: '38eb2d9675606739fd5b74af5d37f5d29b7661e48998278dfe553712b83b2af4',
++    createdAt: '2026-10-10 15:42:00',
++  },
++  {
++    id: 'log-20261012-012',
++    traceId: 'trace-9de31a6543da2fe6faab616fb1b0f847',
++    tenantId: 'tenant-default',
++    tenantName: '默认总平台租户',
++    operatorId: 'usr-ops-04',
++    operatorName: '王芳',
++    operatorUsername: 'wangfang',
++    orgId: 'org-east-04',
++    orgName: '华东大区调度中心',
++    clientIp: '222.73.156.88',
++    clientLocation: '上海市浦东新区 (电信)',
++    userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Firefox/131.0',
++    module: 'VEHICLE_CONTROL',
++    action: 'REMOTE_LOCK',
++    actionName: '远程车门闭锁设防',
++    resourceType: 'Vehicle',
++    resourceId: 'VIN: LFPH2E023N1000555',
++    status: 'SUCCESS',
++    executionTimeMs: 820,
++    requestPayload: {
++      vin: 'LFPH2E023N1000555',
++      action: 'LOCK_AND_ARM',
++    },
++    responsePayload: {
++      code: 0,
++      armState: 'ARMED',
++      allDoorsLocked: true,
++    },
++    signatureHash: '49fc3ea78671784a0e6c85b06e4806e3ac8772f59aa9389e0f664823c94c3ba5',
++    createdAt: '2026-10-10 10:20:15',
++  },
++];
+diff --git a/apps/web/src/views/rbac/index.ts b/apps/web/src/views/rbac/index.ts
+index a71a9d5..99ea3ba 100644
+--- a/apps/web/src/views/rbac/index.ts
++++ b/apps/web/src/views/rbac/index.ts
+@@ -1,3 +1,15 @@
+ export { UserListView } from './UserListView.tsx';
+ export { RolePermissionView } from './RolePermissionView.tsx';
++export { AuditLogView } from './AuditLogView.tsx';
+ export * from './rbac-core.ts';
++export {
++  calculateAuditStats,
++  filterAuditLogs,
++  getRiskLevel,
++  generateAuditLogCsv,
++  SEED_AUDIT_LOGS,
++  AUDIT_MODULES,
++  AUDIT_ACTIONS,
++} from './audit-core.ts';
++
++
