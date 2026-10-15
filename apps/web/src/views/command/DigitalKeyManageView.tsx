@@ -235,15 +235,13 @@ export const DigitalKeyManageView: React.FC = () => {
 
       setActionLoading(true);
 
-      const [startStr, endStr] = values.validityDates || [];
-      const startTime =
-        startStr || new Date().toISOString().replace('T', ' ').slice(0, 19);
-      const endTime =
-        endStr ||
-        new Date(Date.now() + 30 * 24 * 3600 * 1000)
-          .toISOString()
-          .replace('T', ' ')
-          .slice(0, 19);
+      const [startRaw, endRaw] = values.validityDates || [];
+      const startTime = startRaw?.format
+        ? startRaw.format('YYYY-MM-DD HH:mm:ss')
+        : (typeof startRaw === 'string' ? startRaw : new Date().toISOString().replace('T', ' ').slice(0, 19));
+      const endTime = endRaw?.format
+        ? endRaw.format('YYYY-MM-DD HH:mm:ss')
+        : (typeof endRaw === 'string' ? endRaw : new Date(Date.now() + 30 * 24 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19));
 
       const targetVeh = SEED_WORKBENCH_VEHICLES.find((v) => v.id === values.vehicleId);
 
