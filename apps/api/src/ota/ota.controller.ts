@@ -54,7 +54,7 @@ export class OtaController {
 
   // --- 固件发布包端点 ---
 
-  @Post('firmware')
+  @Post(['firmware', 'firmwares'])
   @RequirePermissions(Permission.DEVICE_WRITE)
   async createFirmware(
     @Body() dto: CreateFirmwareDto | CreateFirmwareRequestDto,
@@ -80,7 +80,7 @@ export class OtaController {
     });
   }
 
-  @Get('firmware')
+  @Get(['firmware', 'firmwares'])
   @RequirePermissions(Permission.DEVICE_READ)
   async listFirmware(
     @Query('targetModelId') targetModelId?: string,
@@ -97,7 +97,7 @@ export class OtaController {
     });
   }
 
-  @Get('firmware/:id')
+  @Get(['firmware/:id', 'firmwares/:id'])
   @RequirePermissions(Permission.DEVICE_READ)
   async getFirmwareById(
     @Param('id') id: string,

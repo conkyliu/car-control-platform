@@ -72,6 +72,14 @@ export class CommunicationLogService {
   }
 
   /**
+   * 根据 ID 查询单条通讯日志详情
+   * 严格限定当前租户上下文
+   */
+  async getLogById(id: string): Promise<CommunicationLog | null> {
+    return this.commLogRepo.findById(id);
+  }
+
+  /**
    * 处理上行定位报文日志沉淀
    */
   private async handleLocationUplink(

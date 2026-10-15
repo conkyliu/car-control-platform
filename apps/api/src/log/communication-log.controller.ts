@@ -1,10 +1,12 @@
 import {
   Controller,
   Get,
+  Param,
   Query,
   UseGuards,
   Request,
   BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   CommunicationDirection,
@@ -18,7 +20,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { PermissionsGuard } from '../auth/guards/permissions.guard.js';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator.js';
 
-@Controller('api/v1/logs/communication')
+@Controller(['api/v1/logs/communication', 'api/v1/logs/comm'])
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class CommunicationLogController {
   constructor(private readonly commLogService: CommunicationLogService) {}
@@ -73,6 +75,29 @@ export class CommunicationLogController {
         startTime,
         endTime,
       });
+    });
+  }
+
+  /**
+   * 获取单条通讯报文日志详情
+   */
+  @Get(':id')
+  @RequirePermissions(Permission.DEVICE_READ)
+  async getLogById(
+    @Param('id') id: string,
+    @Request() req?: any
+  ): Promise<CommunicationLog> {
+    const session = this.resolveTenantSession(req);
+    if (!session) {
+      throw new BadRequestException('Tenant context missing');
+    }
+
+    return TenantContext.run(session, async () => {
+      const log = await this.commLogService.getLogById(id);
+      if (!log) {
+        throw new NotFoundException(`Communication log ${id} not found`);
+      }
+      return log;
     });
   }
 }

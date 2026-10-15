@@ -45,7 +45,13 @@ export class AuthController {
     return req.user;
   }
 
-  @Get('admin/audit-logs')
+  @Post('auth/logout')
+  @UseGuards(JwtAuthGuard)
+  async logout(@Request() _req?: any): Promise<{ success: boolean }> {
+    return { success: true };
+  }
+
+  @Get(['audit-logs', 'admin/audit-logs'])
   @UseGuards(JwtAuthGuard, PermissionsGuard)
   @RequirePermissions(Permission.AUDIT_READ)
   async getAuditLogs(@Request() req: any) {
