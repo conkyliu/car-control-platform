@@ -52,12 +52,13 @@ import {
   CommandDictionaryView,
 } from '../views/command/index.ts';
 import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
-import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
+import { UserListView, RolePermissionView } from '../views/rbac/index.ts';
 import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
 import { VehicleListView, ModelManageView } from '../views/vehicle/index.ts';
 import { RealtimeLocationMap, GeofenceManageView } from '../views/telemetry/index.ts';
 import { AlertCenterView, AlertRealtimeNotification, useAlarmMuteState } from '../views/alarm/index.ts';
 import { OtaWorkbenchView } from '../views/ota/index.ts';
+import { CommLogSearchView } from '../views/log/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -151,7 +152,7 @@ export const AdminLayout: React.FC = () => {
     }
 
     if (activeKey === RoutePath.LOGS) {
-      return <AuditLogView />;
+      return <CommLogSearchView />;
     }
 
     if (activeKey === RoutePath.DEVICES) {
