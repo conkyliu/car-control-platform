@@ -147,3 +147,52 @@ export async function processAlarmApi(id: string, dto: ProcessAlarmDto): Promise
   inMemoryAlarms[index] = updated;
   return JSON.parse(JSON.stringify(updated));
 }
+
+// 实时推流订阅池 (用于 WebSocket/SSE 推流解耦)
+const realtimeAlarmSubscribers = new Set<(alarm: AlarmRecord) => void>();
+
+/**
+ * 订阅实时告警事件通道
+ * @param callback 告警到达回调
+ * @returns 取消订阅句柄
+ */
+export function subscribeRealtimeAlarms(callback: (alarm: AlarmRecord) => void): () => void {
+  realtimeAlarmSubscribers.add(callback);
+  return () => {
+    realtimeAlarmSubscribers.delete(callback);
+  };
+}
+
+/**
+ * 广播/分发实时告警事件至所有活跃订阅者，并同步至内存状态池
+ */
+export function broadcastRealtimeAlarm(alarm: AlarmRecord): void {
+  const existingIndex = inMemoryAlarms.findIndex((a) => a.id === alarm.id);
+  if (existingIndex >= 0) {
+    inMemoryAlarms[existingIndex] = { ...alarm };
+  } else {
+    inMemoryAlarms.unshift({ ...alarm });
+  }
+
+  for (const subscriber of realtimeAlarmSubscribers) {
+    try {
+      subscriber(alarm);
+    } catch (err) {
+      console.error('[broadcastRealtimeAlarm] subscriber execution failed:', err);
+    }
+  }
+}
+
+/**
+ * 获取当前实时订阅者总数 (用于单元测试断言生命周期清理)
+ */
+export function getRealtimeAlarmSubscribersCount(): number {
+  return realtimeAlarmSubscribers.size;
+}
+
+/**
+ * 清空所有实时告警订阅者 (用于测试用例隔离)
+ */
+export function resetRealtimeAlarmSubscribers(): void {
+  realtimeAlarmSubscribers.clear();
+}

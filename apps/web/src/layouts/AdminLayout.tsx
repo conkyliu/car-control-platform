@@ -9,6 +9,7 @@ import {
   Tag,
   Typography,
   Empty,
+  Tooltip,
 } from 'antd';
 import type { MenuProps } from 'antd';
 import {
@@ -29,6 +30,8 @@ import {
   FileTextOutlined,
   LineChartOutlined,
   BookOutlined,
+  SoundOutlined,
+  MutedOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/useAuthStore.ts';
 import { useNavTabsStore } from '../store/useNavTabsStore.ts';
@@ -53,7 +56,7 @@ import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/in
 import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
 import { VehicleListView, ModelManageView } from '../views/vehicle/index.ts';
 import { RealtimeLocationMap, GeofenceManageView } from '../views/telemetry/index.ts';
-import { AlertCenterView } from '../views/alarm/index.ts';
+import { AlertCenterView, AlertRealtimeNotification, useAlarmMuteState } from '../views/alarm/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -78,6 +81,7 @@ const ROUTE_ICON_MAP: Record<string, React.ReactNode> = {
 
 export const AdminLayout: React.FC = () => {
   const [collapsed, setCollapsed] = useState(false);
+  const { muted, toggleMute } = useAlarmMuteState();
 
   const hasPermission = useAuthStore((s) => s.hasPermission);
   const activeKey = useNavTabsStore((s) => s.activeKey);
@@ -235,6 +239,9 @@ export const AdminLayout: React.FC = () => {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
+      {/* 全局实时告警声光弹窗与直达处置抽屉 */}
+      <AlertRealtimeNotification />
+
       {/* 左侧可折叠沉浸式侧边栏 */}
       <Sider
         collapsible
@@ -340,9 +347,25 @@ export const AdminLayout: React.FC = () => {
             />
           </Space>
 
-          {/* 右侧：租户切换器 + 告警铃铛 + 用户菜单 */}
+          {/* 右侧：租户切换器 + 声效静音开关 + 告警铃铛 + 用户菜单 */}
           <Space size="middle" align="center">
             <TenantSelector />
+            <Tooltip title={muted ? '告警声效：已静音（点击开启）' : '告警声效：已开启（点击静音）'}>
+              <Button
+                type="text"
+                shape="circle"
+                icon={
+                  muted ? (
+                    <MutedOutlined style={{ fontSize: 18, color: '#ff7875' }} />
+                  ) : (
+                    <SoundOutlined style={{ fontSize: 18, color: '#fff' }} />
+                  )
+                }
+                onClick={toggleMute}
+                title={muted ? '开启告警声音' : '静音告警声音'}
+                aria-label={muted ? '开启告警声音' : '静音告警声音'}
+              />
+            </Tooltip>
             <AlarmNotificationBell />
             <HeaderUserMenu />
           </Space>
