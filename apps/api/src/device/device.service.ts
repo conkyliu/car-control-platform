@@ -217,4 +217,40 @@ export class DeviceService {
 
     return true;
   }
+
+  /**
+   * 获取当前租户下空闲可用车载终端 (未绑定车辆且状态为 ACTIVE)
+   */
+  async getAvailableDevices(projectId?: string): Promise<any[]> {
+    const vehicles = await this.vehicleRepo.findMany();
+    const boundDeviceIds = new Set(
+      vehicles.map((v) => v.deviceId).filter(Boolean) as string[]
+    );
+
+    const devices = await this.deviceRepo.findMany((device) => {
+      if (device.status !== 'ACTIVE') return false;
+      if (projectId && projectId !== 'ALL' && device.projectId !== projectId) return false;
+      return true;
+    });
+
+    const available = devices.filter((d) => !boundDeviceIds.has(d.id));
+
+    return available.map((d) => {
+      let projectName: string | undefined;
+      if (d.projectId) {
+        try {
+          const p = this.projectService.getProject(d.projectId);
+          projectName = p.name;
+        } catch {
+          // ignore
+        }
+      }
+      return {
+        ...d,
+        projectName,
+        boundVehiclePlate: null,
+        boundVin: null,
+      };
+    });
+  }
 }

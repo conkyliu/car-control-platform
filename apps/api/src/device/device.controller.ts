@@ -42,6 +42,12 @@ export class DeviceController {
     return this.deviceService.queryDevices(query);
   }
 
+  @Get('available')
+  @RequirePermissions(Permission.DEVICE_READ)
+  async getAvailableDevices(@Query('projectId') projectId?: string) {
+    return this.deviceService.getAvailableDevices(projectId);
+  }
+
   @Get(':deviceNo/hierarchy')
   @RequirePermissions(Permission.DEVICE_READ)
   async getHierarchy(@Param('deviceNo') deviceNo: string) {

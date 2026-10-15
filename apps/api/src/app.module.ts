@@ -11,6 +11,7 @@ import { CommandService } from './command/command.service.js';
 import { CommandController } from './command/command.controller.js';
 import { AuthController } from './auth/auth.controller.js';
 import { ProjectService } from './project/project.service.js';
+import { ProjectController } from './project/project.controller.js';
 import { DeviceService } from './device/device.service.js';
 import { DeviceController } from './device/device.controller.js';
 import { VehicleService } from './vehicle/vehicle.service.js';
@@ -41,6 +42,7 @@ import { AuthModule } from './auth/auth.module.js';
     AuthController,
     DeviceController,
     VehicleController,
+    ProjectController,
   ],
   providers: [
     {
