@@ -7,7 +7,12 @@ import {
   NotFoundException,
   Request,
 } from '@nestjs/common';
-import { Permission, SimplifiedTrajectoryDto } from '@car-control/contracts';
+import {
+  Permission,
+  SimplifiedTrajectoryDto,
+  VehicleLocationDto,
+  TelemetryFilterQuery,
+} from '@car-control/contracts';
 import { TenantContext } from '@car-control/database';
 import { TelemetryService } from './telemetry.service.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
@@ -33,6 +38,27 @@ export class TelemetryController {
       return session;
     }
     return null;
+  }
+
+  /**
+   * 获取车队全局车辆最新定位与工况列表（支持关键字、状态及低电压筛选）
+   */
+  @Get('locations')
+  @RequirePermissions(Permission.VEHICLE_READ)
+  async getFleetLocations(
+    @Query('keyword') keyword?: string,
+    @Query('status') status?: string,
+    @Query('lowVoltageOnly') lowVoltageOnly?: string | boolean,
+    @Request() req?: any
+  ): Promise<VehicleLocationDto[]> {
+    const session = this.resolveTenantSession(req);
+    const tenantId = session?.tenantId || TenantContext.getOptional()?.tenantId;
+    const filterQuery: TelemetryFilterQuery = {
+      keyword,
+      status: status as any,
+      lowVoltageOnly: lowVoltageOnly === true || lowVoltageOnly === 'true',
+    };
+    return this.telemetryService.getFleetLocations(filterQuery, tenantId);
   }
 
   /**

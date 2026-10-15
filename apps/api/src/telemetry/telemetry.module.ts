@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { LocationRepository, VehicleRepository } from '@car-control/database';
+import { LocationRepository, VehicleRepository, DeviceRepository } from '@car-control/database';
 import { TelemetryController } from './telemetry.controller.js';
 import { GeofenceController } from './geofence.controller.js';
 import { TelemetryService } from './telemetry.service.js';
@@ -17,6 +17,7 @@ import { AuthModule } from '../auth/auth.module.js';
     GeofenceService,
     LocationRepository,
     VehicleRepository,
+    DeviceRepository,
     WebSocketGatewayService,
     DeviceStatusService,
     {
