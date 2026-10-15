@@ -290,6 +290,12 @@ export const OtaPlanWizardModal: React.FC<OtaPlanWizardModalProps> = ({
         message.warning('请至少勾选一台目标升级车辆');
         return;
       }
+      if (selectionStats.incompatibleCount > 0) {
+        message.error(
+          `已选车辆中包含 ${selectionStats.incompatibleCount} 台与当前固件适用车型不兼容的车辆，请取消勾选后继续`
+        );
+        return;
+      }
     }
 
     setCurrentStep((prev) => Math.min(prev + 1, 3));
@@ -309,6 +315,20 @@ export const OtaPlanWizardModal: React.FC<OtaPlanWizardModalProps> = ({
     if (!activeFirmware) {
       message.error('目标固件包不存在');
       return;
+    }
+
+    if (selectionStats.incompatibleCount > 0) {
+      message.error(
+        `已选车辆中包含 ${selectionStats.incompatibleCount} 台与当前固件适用车型不兼容的车辆，禁止下发`
+      );
+      return;
+    }
+
+    if (scheduleType === ScheduleType.SCHEDULED) {
+      if (!scheduleTimeRange || !scheduleTimeRange[0] || !scheduleTimeRange[1]) {
+        message.warning('定时预约模式下必须选择升级时间窗口区间');
+        return;
+      }
     }
 
     setSubmitting(true);
@@ -530,6 +550,7 @@ export const OtaPlanWizardModal: React.FC<OtaPlanWizardModalProps> = ({
                     onChange={(val) => {
                       setSelectedFirmwareType(val);
                       setSelectedFirmwareId('');
+                      setSelectedVehicleIds([]);
                     }}
                     options={[
                       { label: '全部领域类型', value: 'ALL' },
@@ -551,6 +572,7 @@ export const OtaPlanWizardModal: React.FC<OtaPlanWizardModalProps> = ({
                     value={selectedFirmwareId || undefined}
                     onChange={(val) => {
                       setSelectedFirmwareId(val);
+                      setSelectedVehicleIds([]);
                       const fw = firmwares.find((f) => f.id === val);
                       if (fw && !planName) {
                         setPlanName(`${fw.name} (${fw.version}) 批量升级任务`);
