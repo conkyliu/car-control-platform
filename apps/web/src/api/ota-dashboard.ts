@@ -7,6 +7,7 @@ import {
   SEED_OTA_PLAN_DETAILS,
 } from '../views/ota/ota-dashboard-core.ts';
 import { isApiError } from '../views/ota/firmware-core.ts';
+import { getInMemoryOtaPlans } from './ota-plan.ts';
 
 // 导出类型方便上层调用
 export type { OtaPlanDetailDto, OtaVehicleTaskRecord };
@@ -59,9 +60,26 @@ export async function fetchOtaPlanExecutionDetailApi(
   }
 
   // 离线/开发降级
-  const found = inMemoryPlanDetails[planId];
+  let found = inMemoryPlanDetails[planId];
   if (!found) {
-    throw new ApiError(`未找到 ID 为 [${planId}] 的升级计划执行明细`, 404);
+    // 自动兼容新创建的计划：若存在于 inMemoryPlans 中，合成为初始详情
+    const plan = getInMemoryOtaPlans().find((p) => p.id === planId);
+    if (plan) {
+      found = {
+        plan,
+        summary: calculatePlanTaskSummary([]),
+        vehicleTasks: [],
+      };
+      inMemoryPlanDetails[planId] = found;
+    } else {
+      throw new ApiError(`未找到 ID 为 [${planId}] 的升级计划执行明细`, 404);
+    }
+  }
+
+  // 同步 ota-plan.ts 中的最新动态状态 (如暂停/恢复/中止)
+  const syncedPlan = getInMemoryOtaPlans().find((p) => p.id === planId);
+  if (syncedPlan) {
+    found.plan = syncedPlan;
   }
 
   return JSON.parse(JSON.stringify(found));
@@ -231,7 +249,8 @@ export function subscribeRealtimeOtaProgress(
     const upgradingTask = detail.vehicleTasks.find(
       (t) =>
         t.status === OtaVehicleTaskStatus.UPGRADING ||
-        t.status === OtaVehicleTaskStatus.DOWNLOADING
+        t.status === OtaVehicleTaskStatus.DOWNLOADING ||
+        t.status === OtaVehicleTaskStatus.DOWNLOADED
     );
 
     if (upgradingTask) {
@@ -243,6 +262,9 @@ export function subscribeRealtimeOtaProgress(
         if (upgradingTask.downloadProgress >= 100) {
           upgradingTask.status = OtaVehicleTaskStatus.DOWNLOADED;
         }
+      } else if (upgradingTask.status === OtaVehicleTaskStatus.DOWNLOADED) {
+        upgradingTask.status = OtaVehicleTaskStatus.UPGRADING;
+        upgradingTask.installProgress = 5;
       } else if (upgradingTask.status === OtaVehicleTaskStatus.UPGRADING) {
         upgradingTask.installProgress = Math.min(
           100,
