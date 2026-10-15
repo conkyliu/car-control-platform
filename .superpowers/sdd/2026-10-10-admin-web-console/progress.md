@@ -88,7 +88,7 @@ Scan clean. Ready to execute Sprint 4 Task 1.
 
 ## Sprint 4 Progress
 - Sprint 4 Task 1: complete (commits 910b393..4da7eda, review APPROVED, 338/338 web tests, 450/450 monorepo tests, build pass)
-- Sprint 4 Task 2: pending (车辆实时定位监控视图 `RealtimeLocationMap.tsx` + `telemetry-core.ts` + `api/telemetry.ts`)
+- Sprint 4 Task 2: complete (commit b9f4945, review APPROVED, 356/356 web tests, 468/468 monorepo tests, build pass)
 - Sprint 4 Task 3: pending (历史轨迹回放工作台与播放器 `TrajectoryReplayView.tsx` + `TrajectoryPlayer.tsx` + `trajectory-core.ts`)
 - Sprint 4 Task 4: pending (电子围栏可视化管理 `GeofenceManageView.tsx` + `geofence-core.ts` + `api/geofence.ts`)
 - Sprint 4 Task 5: pending (报警中心与人工处置抽屉 `AlertCenterView.tsx` + `AlertProcessDrawer.tsx` + `alarm-core.ts` + `api/alarm.ts`)
