@@ -16,7 +16,7 @@ export class CapabilityEngine {
 
   /**
    * 解析指定车辆在目标指令下的最终有效生效能力配置 (Effective Capability)
-   * 继承管道：Global Definition -> Project Override -> Model Template -> Vehicle Override
+   * 继承管道：Global Definition -> Model Template -> Project Override -> Vehicle Override
    */
   async resolveEffective(vehicleId: string, commandCode: CommandCode): Promise<EffectiveCapabilityDto> {
     const vehicle = await this.vehicleRepo.findById(vehicleId);
@@ -44,7 +44,7 @@ export class CapabilityEngine {
       if (modelRule.securityLevel) securityLevel = modelRule.securityLevel;
       if (modelRule.timeoutMs) timeoutMs = modelRule.timeoutMs;
       if (modelRule.frequencyLimitSeconds) frequencyLimitSeconds = modelRule.frequencyLimitSeconds;
-      if (!supported) reason = 'UNSUPPORTED_BY_MODEL';
+      if (!supported) reason = modelRule.description || 'UNSUPPORTED_BY_MODEL';
     }
 
     // 3. 项目级能力覆盖 (Project Override)
@@ -55,7 +55,8 @@ export class CapabilityEngine {
       if (projRule.securityLevel) securityLevel = projRule.securityLevel;
       if (projRule.timeoutMs) timeoutMs = projRule.timeoutMs;
       if (projRule.frequencyLimitSeconds) frequencyLimitSeconds = projRule.frequencyLimitSeconds;
-      if (!supported) reason = 'DISABLED_BY_PROJECT';
+      if (!supported) reason = projRule.description || 'DISABLED_BY_PROJECT';
+      else reason = undefined;
     }
 
     // 4. 单车能力覆盖 (Vehicle Override) - 最高优先级
@@ -66,7 +67,7 @@ export class CapabilityEngine {
       if (vRule.securityLevel) securityLevel = vRule.securityLevel;
       if (vRule.timeoutMs) timeoutMs = vRule.timeoutMs;
       if (vRule.frequencyLimitSeconds) frequencyLimitSeconds = vRule.frequencyLimitSeconds;
-      reason = supported ? undefined : 'OVERRIDDEN_BY_VEHICLE';
+      reason = supported ? undefined : (vRule.description || 'OVERRIDDEN_BY_VEHICLE');
     }
 
     return {
@@ -81,16 +82,28 @@ export class CapabilityEngine {
   }
 
   /**
-   * 批量解析某辆车对全部指令的生效能力表 (用于前端面板动态展示/置灰)
+   * 批量解析某辆车对全部指令的生效能力列表
    */
-  async resolveAllCapabilities(vehicleId: string): Promise<Record<CommandCode, EffectiveCapabilityDto>> {
-    const codes = Object.keys(COMMAND_DEFINITIONS) as CommandCode[];
-    const result: Partial<Record<CommandCode, EffectiveCapabilityDto>> = {};
+  async resolveAllCapabilities(vehicleId: string): Promise<EffectiveCapabilityDto[]> {
+    const codes = Object.values(CommandCode);
+    const result: EffectiveCapabilityDto[] = [];
 
     for (const code of codes) {
-      result[code] = await this.resolveEffective(vehicleId, code);
+      result.push(await this.resolveEffective(vehicleId, code));
     }
 
+    return result;
+  }
+
+  /**
+   * 批量解析某辆车对全部指令的生效能力字典映射
+   */
+  async resolveAllCapabilitiesRecord(vehicleId: string): Promise<Record<CommandCode, EffectiveCapabilityDto>> {
+    const list = await this.resolveAllCapabilities(vehicleId);
+    const result: Partial<Record<CommandCode, EffectiveCapabilityDto>> = {};
+    for (const item of list) {
+      result[item.commandCode] = item;
+    }
     return result as Record<CommandCode, EffectiveCapabilityDto>;
   }
 }

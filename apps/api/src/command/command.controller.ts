@@ -10,12 +10,9 @@ import {
 import {
   CreateCommandRequestDto,
   Permission,
-  EffectiveCapabilityDto,
-  CommandCode,
 } from '@car-control/contracts';
 import { CommandRecord } from '@car-control/domain-types';
 import { CommandService } from './command.service.js';
-import { CapabilityEngine } from '../capability/capability.engine.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { PermissionsGuard } from '../auth/guards/permissions.guard.js';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator.js';
@@ -24,8 +21,7 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator.js'
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class CommandController {
   constructor(
-    private readonly commandService: CommandService,
-    private readonly capabilityEngine: CapabilityEngine
+    private readonly commandService: CommandService
   ) {}
 
   @Post('vehicles/:vehicleId/commands')
@@ -46,14 +42,6 @@ export class CommandController {
       confirmationToken: dto.confirmationToken,
       params: dto.params,
     });
-  }
-
-  @Get('vehicles/:vehicleId/capabilities')
-  @RequirePermissions(Permission.VEHICLE_READ)
-  async getCapabilities(
-    @Param('vehicleId') vehicleId: string
-  ): Promise<Record<CommandCode, EffectiveCapabilityDto>> {
-    return this.capabilityEngine.resolveAllCapabilities(vehicleId);
   }
 
   @Get('commands/:commandId')

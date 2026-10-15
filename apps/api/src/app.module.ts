@@ -17,6 +17,7 @@ import { DeviceController } from './device/device.controller.js';
 import { VehicleService } from './vehicle/vehicle.service.js';
 import { VehicleController } from './vehicle/vehicle.controller.js';
 import { CapabilityEngine } from './capability/capability.engine.js';
+import { CapabilityController } from './capability/capability.controller.js';
 import { ControlSecurityService } from './security/control-security.service.js';
 import { TelemetryModule } from './telemetry/telemetry.module.js';
 import { AlarmModule } from './alarm/alarm.module.js';
@@ -43,6 +44,7 @@ import { AuthModule } from './auth/auth.module.js';
     DeviceController,
     VehicleController,
     ProjectController,
+    CapabilityController,
   ],
   providers: [
     {
