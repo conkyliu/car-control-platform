@@ -314,35 +314,39 @@ export const SystemMetricsView: React.FC = () => {
     },
   ];
 
-  const lockTableData = [
+  const rawLockTableData = [
     {
       key: 'tenant-alpha',
       tenantId: 'tenant-alpha',
       tenantName: 'Alpha 智联车队',
-      contentions: snapshot.corePrometheus.lockContentions.byTenant['tenant-alpha'] || 16,
-      websocketCount: snapshot.corePrometheus.websocketConnections.byTenant['tenant-alpha'] || 680,
-      uplinksCount: snapshot.corePrometheus.telemetryUplinksByTenant['tenant-alpha'] || 15130350,
+      contentions: snapshot.corePrometheus.lockContentions.byTenant['tenant-alpha'] ?? 16,
+      websocketCount: snapshot.corePrometheus.websocketConnections.byTenant['tenant-alpha'] ?? 680,
+      uplinksCount: snapshot.corePrometheus.telemetryUplinksByTenant['tenant-alpha'] ?? 15130350,
       status: '正常排队防重',
     },
     {
       key: 'tenant-beta',
       tenantId: 'tenant-beta',
       tenantName: 'Beta 尊享出行',
-      contentions: snapshot.corePrometheus.lockContentions.byTenant['tenant-beta'] || 9,
-      websocketCount: snapshot.corePrometheus.websocketConnections.byTenant['tenant-beta'] || 420,
-      uplinksCount: snapshot.corePrometheus.telemetryUplinksByTenant['tenant-beta'] || 7642100,
+      contentions: snapshot.corePrometheus.lockContentions.byTenant['tenant-beta'] ?? 9,
+      websocketCount: snapshot.corePrometheus.websocketConnections.byTenant['tenant-beta'] ?? 420,
+      uplinksCount: snapshot.corePrometheus.telemetryUplinksByTenant['tenant-beta'] ?? 7642100,
       status: '正常排队防重',
     },
     {
       key: 'tenant-gamma',
       tenantId: 'tenant-gamma',
       tenantName: 'Gamma 共享租车',
-      contentions: snapshot.corePrometheus.lockContentions.byTenant['tenant-gamma'] || 4,
-      websocketCount: snapshot.corePrometheus.websocketConnections.byTenant['tenant-gamma'] || 180,
-      uplinksCount: snapshot.corePrometheus.telemetryUplinksByTenant['tenant-gamma'] || 3140500,
+      contentions: snapshot.corePrometheus.lockContentions.byTenant['tenant-gamma'] ?? 4,
+      websocketCount: snapshot.corePrometheus.websocketConnections.byTenant['tenant-gamma'] ?? 180,
+      uplinksCount: snapshot.corePrometheus.telemetryUplinksByTenant['tenant-gamma'] ?? 3140500,
       status: '正常排队防重',
     },
   ];
+
+  const lockTableData = selectedTenant === 'ALL'
+    ? rawLockTableData
+    : rawLockTableData.filter((item) => item.tenantId === selectedTenant);
 
   const overallHealth = snapshot.clusterHealth.overallStatus;
 
