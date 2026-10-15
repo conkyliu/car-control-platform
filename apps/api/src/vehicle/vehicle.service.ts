@@ -9,14 +9,150 @@ import {
   CreateVehicleDto,
   VehicleFilterDto,
   VehicleDetailDto,
+  BrandDto,
+  CreateBrandDto,
+  ModelDto,
+  CreateModelDto,
 } from '@car-control/contracts';
 import { VehicleRepository, DeviceRepository, TenantContext } from '@car-control/database';
 import { ProjectService } from '../project/project.service.js';
 import { DeviceStatusService } from '../device/device-status.service.js';
 import { AuditService } from '../audit/audit.service.js';
 
+const SEED_BRANDS: BrandDto[] = [
+  {
+    id: 'brand-tesla',
+    name: '特斯拉',
+    code: 'TESLA',
+    country: '外资独资',
+    modelCount: 1,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+  {
+    id: 'brand-byd',
+    name: '比亚迪',
+    code: 'BYD',
+    country: '自主品牌',
+    modelCount: 2,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+  {
+    id: 'brand-nio',
+    name: '蔚来汽车',
+    code: 'NIO',
+    country: '自主新势力',
+    modelCount: 1,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+  {
+    id: 'brand-aion',
+    name: '广汽埃安',
+    code: 'AION',
+    country: '自主品牌',
+    modelCount: 1,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+  {
+    id: 'brand-zeekr',
+    name: '吉利极氪',
+    code: 'ZEEKR',
+    country: '自主新势力',
+    modelCount: 1,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+];
+
+const SEED_MODELS: ModelDto[] = [
+  {
+    id: 'model-tesla-modely',
+    brandId: 'brand-tesla',
+    brandName: '特斯拉',
+    name: 'Model Y',
+    code: '0x0201',
+    powertrain: 'EV',
+    capabilityTemplateId: 'tpl-std-ev',
+    capabilityTemplateName: '纯电标准控车模板',
+    vehicleCount: 0,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+  {
+    id: 'model-byd-han',
+    brandId: 'brand-byd',
+    brandName: '比亚迪',
+    name: '汉 EV',
+    code: '0x0101',
+    powertrain: 'EV',
+    capabilityTemplateId: 'tpl-perf-ev',
+    capabilityTemplateName: '纯电高性能双电机模板',
+    vehicleCount: 0,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+  {
+    id: 'model-byd-tang-dmi',
+    brandId: 'brand-byd',
+    brandName: '比亚迪',
+    name: '唐 DM-i',
+    code: '0x0102',
+    powertrain: 'PHEV',
+    capabilityTemplateId: 'tpl-phev-std',
+    capabilityTemplateName: '插电混动旗舰模板',
+    vehicleCount: 0,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+  {
+    id: 'model-nio-es6',
+    brandId: 'brand-nio',
+    brandName: '蔚来汽车',
+    name: 'ES6',
+    code: '0x0501',
+    powertrain: 'EV',
+    capabilityTemplateId: 'tpl-perf-ev',
+    capabilityTemplateName: '纯电高性能双电机模板',
+    vehicleCount: 0,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+  {
+    id: 'model-aion-s',
+    brandId: 'brand-aion',
+    brandName: '广汽埃安',
+    name: 'AION S',
+    code: '0x0301',
+    powertrain: 'EV',
+    capabilityTemplateId: 'tpl-std-ev',
+    capabilityTemplateName: '纯电标准控车模板',
+    vehicleCount: 0,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+  {
+    id: 'model-zeekr-001',
+    brandId: 'brand-zeekr',
+    brandName: '吉利极氪',
+    name: '极氪 001',
+    code: '0x0401',
+    powertrain: 'EV',
+    capabilityTemplateId: 'tpl-perf-ev',
+    capabilityTemplateName: '纯电高性能双电机模板',
+    vehicleCount: 0,
+    createdAt: new Date('2026-01-01T00:00:00Z'),
+    updatedAt: new Date('2026-01-01T00:00:00Z'),
+  },
+];
+
 @Injectable()
 export class VehicleService {
+  private brands: BrandDto[] = [...SEED_BRANDS.map((b) => ({ ...b }))];
+  private models: ModelDto[] = [...SEED_MODELS.map((m) => ({ ...m }))];
+
   constructor(
     private readonly vehicleRepo: VehicleRepository,
     private readonly deviceRepo: DeviceRepository,
@@ -24,6 +160,97 @@ export class VehicleService {
     private readonly deviceStatusService: DeviceStatusService,
     private readonly auditService: AuditService
   ) {}
+
+  /**
+   * 获取所有品牌字典
+   */
+  async listBrands(): Promise<BrandDto[]> {
+    return [...this.brands];
+  }
+
+  /**
+   * 创建车辆品牌
+   */
+  async createBrand(dto: CreateBrandDto): Promise<BrandDto> {
+    if (!dto.name || !dto.name.trim()) {
+      throw new BadRequestException('Brand name is required');
+    }
+    if (!dto.code || !dto.code.trim()) {
+      throw new BadRequestException('Brand code is required');
+    }
+
+    const trimmedCode = dto.code.trim().toUpperCase();
+    const trimmedName = dto.name.trim();
+
+    if (this.brands.some((b) => b.code.toUpperCase() === trimmedCode || b.name === trimmedName)) {
+      throw new ConflictException(`Brand with code ${trimmedCode} or name ${trimmedName} already exists`);
+    }
+
+    const brand: BrandDto = {
+      id: `brand-${trimmedCode.toLowerCase()}`,
+      name: trimmedName,
+      code: trimmedCode,
+      country: dto.country?.trim() || '自主品牌',
+      logoUrl: dto.logoUrl,
+      modelCount: 0,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    this.brands.push(brand);
+    return brand;
+  }
+
+  /**
+   * 获取所有车型或按品牌过滤
+   */
+  async listModels(brandId?: string): Promise<ModelDto[]> {
+    if (brandId && brandId !== 'ALL') {
+      return this.models.filter((m) => m.brandId === brandId);
+    }
+    return [...this.models];
+  }
+
+  /**
+   * 创建车型
+   */
+  async createModel(dto: CreateModelDto): Promise<ModelDto> {
+    if (!dto.brandId || !dto.name || !dto.code) {
+      throw new BadRequestException('brandId, name, and code are required');
+    }
+
+    const brand = this.brands.find((b) => b.id === dto.brandId);
+    if (!brand) {
+      throw new NotFoundException(`Brand with id ${dto.brandId} not found`);
+    }
+
+    const trimmedName = dto.name.trim();
+    const trimmedCode = dto.code.trim();
+
+    if (this.models.some((m) => m.brandId === dto.brandId && (m.code === trimmedCode || m.name === trimmedName))) {
+      throw new ConflictException(`Model with code ${trimmedCode} or name ${trimmedName} already exists under this brand`);
+    }
+
+    const model: ModelDto = {
+      id: `model-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      brandId: dto.brandId,
+      brandName: brand.name,
+      name: trimmedName,
+      code: trimmedCode,
+      powertrain: dto.powertrain || 'EV',
+      capabilityTemplateId: dto.capabilityTemplateId,
+      capabilityTemplateName: dto.capabilityTemplateName,
+      vehicleCount: 0,
+      template: dto.template,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    brand.modelCount = (brand.modelCount || 0) + 1;
+    this.models.push(model);
+    return model;
+  }
+
 
   /**
    * 录入车辆

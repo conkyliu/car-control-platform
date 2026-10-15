@@ -18,6 +18,13 @@ export class TenantContext {
   }
 
   /**
+   * 将当前异步执行上下文绑定到指定租户会话（适用于 Guard / 中间件）
+   */
+  static enter(session: TenantSession): void {
+    this.storage.enterWith(session);
+  }
+
+  /**
    * 获取当前租户会话。如果当前上下文无租户信息，则抛出安全异常。
    */
   static getRequired(): TenantSession {

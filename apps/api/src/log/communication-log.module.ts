@@ -7,10 +7,10 @@ import { CommunicationLogController } from './communication-log.controller.js';
 import { CommunicationLogService } from './communication-log.service.js';
 import { DeviceStatusService } from '../device/device-status.service.js';
 import { InMemoryMessagingAdapter } from '../messaging/in-memory-messaging.adapter.js';
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
-import { PermissionsGuard } from '../auth/guards/permissions.guard.js';
+import { AuthModule } from '../auth/auth.module.js';
 
 @Module({
+  imports: [AuthModule],
   controllers: [CommunicationLogController],
   providers: [
     CommunicationLogService,
@@ -21,8 +21,6 @@ import { PermissionsGuard } from '../auth/guards/permissions.guard.js';
       provide: 'MessagingPort',
       useClass: InMemoryMessagingAdapter,
     },
-    JwtAuthGuard,
-    PermissionsGuard,
   ],
   exports: [CommunicationLogService, CommunicationLogRepository],
 })

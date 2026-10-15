@@ -12,6 +12,10 @@ import {
   BindDeviceDto,
   VehicleFilterDto,
   Permission,
+  BrandDto,
+  CreateBrandDto,
+  ModelDto,
+  CreateModelDto,
 } from '@car-control/contracts';
 import { VehicleService } from './vehicle.service.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
@@ -33,6 +37,30 @@ export class VehicleController {
   @RequirePermissions(Permission.VEHICLE_READ)
   async queryVehicles(@Query() query: VehicleFilterDto) {
     return this.vehicleService.queryVehicles(query);
+  }
+
+  @Get('brands')
+  @RequirePermissions(Permission.VEHICLE_READ)
+  async listBrands(): Promise<BrandDto[]> {
+    return this.vehicleService.listBrands();
+  }
+
+  @Post('brands')
+  @RequirePermissions(Permission.VEHICLE_WRITE)
+  async createBrand(@Body() dto: CreateBrandDto): Promise<BrandDto> {
+    return this.vehicleService.createBrand(dto);
+  }
+
+  @Get('models')
+  @RequirePermissions(Permission.VEHICLE_READ)
+  async listModels(@Query('brandId') brandId?: string): Promise<ModelDto[]> {
+    return this.vehicleService.listModels(brandId);
+  }
+
+  @Post('models')
+  @RequirePermissions(Permission.VEHICLE_WRITE)
+  async createModel(@Body() dto: CreateModelDto): Promise<ModelDto> {
+    return this.vehicleService.createModel(dto);
   }
 
   @Get(':id')

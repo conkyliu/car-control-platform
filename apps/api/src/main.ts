@@ -9,6 +9,16 @@ async function bootstrap() {
 
   app.enableCors();
 
+  app.use((req: any, res: any, next: any) => {
+    const start = Date.now();
+    res.on('finish', () => {
+      const duration = Date.now() - start;
+      const status = res.statusCode;
+      console.log(`[HTTP] ${req.method} ${req.originalUrl || req.url} -> ${status} (${duration}ms)`);
+    });
+    next();
+  });
+
   await app.listen(config.PORT);
   console.log(`[CarControl API] Server listening on port ${config.PORT}`);
 }
