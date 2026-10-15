@@ -23,6 +23,7 @@ import {
   Descriptions,
   Alert,
   message,
+  theme,
 } from 'antd';
 import type { TableColumnsType, UploadProps } from 'antd';
 import {
@@ -111,6 +112,7 @@ export const renderFirmwareTypeTag = (type: FirmwareType) => {
  * 固件管理工作台视图组件
  */
 export const FirmwareManageView: React.FC = () => {
+  const { token } = theme.useToken();
   const [packages, setPackages] = useState<FirmwarePackageDto[]>([]);
   const [loading, setLoading] = useState(false);
 
@@ -557,13 +559,13 @@ export const FirmwareManageView: React.FC = () => {
         <Col xs={24} sm={12} lg={6}>
           <Card styles={{ body: { padding: '16px 20px' } }}>
             <Statistic
-              title={<span style={{ fontSize: 13, color: 'rgba(0,0,0,0.45)' }}>固件版本总数</span>}
+              title={<span style={{ fontSize: 13, color: token.colorTextSecondary }}>固件版本总数</span>}
               value={stats.total}
               suffix={<span style={{ fontSize: 14 }}>个</span>}
               valueStyle={{ color: '#1677ff', fontWeight: 700 }}
               prefix={<CloudUploadOutlined />}
             />
-            <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+            <div style={{ marginTop: 8, fontSize: 12, color: token.colorTextSecondary }}>
               总存储体积: <Text strong>{stats.totalSizeFormatted}</Text>
             </div>
           </Card>
@@ -572,13 +574,13 @@ export const FirmwareManageView: React.FC = () => {
         <Col xs={24} sm={12} lg={6}>
           <Card styles={{ body: { padding: '16px 20px' } }}>
             <Statistic
-              title={<span style={{ fontSize: 13, color: 'rgba(0,0,0,0.45)' }}>已发布上线固件</span>}
+              title={<span style={{ fontSize: 13, color: token.colorTextSecondary }}>已发布上线固件</span>}
               value={stats.published}
               suffix={<span style={{ fontSize: 14 }}>/ {stats.total}</span>}
               valueStyle={{ color: '#52c41a', fontWeight: 700 }}
               prefix={<CheckCircleOutlined />}
             />
-            <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+            <div style={{ marginTop: 8, fontSize: 12, color: token.colorTextSecondary }}>
               生产就绪率:{' '}
               <Text strong style={{ color: '#52c41a' }}>
                 {stats.total > 0 ? Math.round((stats.published / stats.total) * 100) : 0}%
@@ -590,7 +592,7 @@ export const FirmwareManageView: React.FC = () => {
 
         <Col xs={24} sm={12} lg={6}>
           <Card styles={{ body: { padding: '16px 20px' } }}>
-            <div style={{ fontSize: 13, color: 'rgba(0,0,0,0.45)', marginBottom: 8 }}>
+            <div style={{ fontSize: 13, color: token.colorTextSecondary, marginBottom: 8 }}>
               四大约束领域分布
             </div>
             <Space wrap size={[6, 6]}>
@@ -599,7 +601,7 @@ export const FirmwareManageView: React.FC = () => {
               <Tag color="purple">BCM: {stats.typeDistribution[FirmwareType.BCM]}</Tag>
               <Tag color="green">BMS: {stats.typeDistribution[FirmwareType.BMS]}</Tag>
             </Space>
-            <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+            <div style={{ marginTop: 8, fontSize: 12, color: token.colorTextSecondary }}>
               全域控车硬件固件全覆盖
             </div>
           </Card>
@@ -608,13 +610,13 @@ export const FirmwareManageView: React.FC = () => {
         <Col xs={24} sm={12} lg={6}>
           <Card styles={{ body: { padding: '16px 20px' } }}>
             <Statistic
-              title={<span style={{ fontSize: 13, color: 'rgba(0,0,0,0.45)' }}>已覆盖适配车型</span>}
+              title={<span style={{ fontSize: 13, color: token.colorTextSecondary }}>已覆盖适配车型</span>}
               value={stats.coveredModelsCount}
               suffix={<span style={{ fontSize: 14 }}>款</span>}
               valueStyle={{ color: '#722ed1', fontWeight: 700 }}
               prefix={<CarOutlined />}
             />
-            <div style={{ marginTop: 8, fontSize: 12, color: 'rgba(0,0,0,0.45)' }}>
+            <div style={{ marginTop: 8, fontSize: 12, color: token.colorTextSecondary }}>
               已适配主流新能源与燃油车系架构
             </div>
           </Card>
