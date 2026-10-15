@@ -26,6 +26,7 @@ import {
   pixelToLatLng,
   SEED_MAP_VEHICLES,
 } from './map-core.ts';
+import { type GeofenceDto } from './geofence-core.ts';
 
 const { Text } = Typography;
 
@@ -52,6 +53,9 @@ export interface MapContainerProps {
   onSelectVehicle?: (vehicle: MapMarkerItem | null) => void;
   onTriggerCommand?: (vehicle: MapMarkerItem) => void;
   onViewTrack?: (vehicle: MapMarkerItem) => void;
+  geofences?: GeofenceDto[];
+  activeGeofenceId?: string;
+  onSelectGeofence?: (geofence: GeofenceDto | null) => void;
   center?: Coordinates;
   zoom?: number;
   initialCenter?: Coordinates;
@@ -80,6 +84,9 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   onSelectVehicle,
   onTriggerCommand,
   onViewTrack,
+  geofences,
+  activeGeofenceId,
+  onSelectGeofence,
   center: controlledCenter,
   zoom: controlledZoom,
   initialCenter,
@@ -663,6 +670,129 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             </g>
           );
         })()}
+
+        {/* 1.4 Geofence Vector Layer */}
+        {geofences && geofences.map((gf) => {
+          const isActive = gf.id === activeGeofenceId;
+          const isDisabled = gf.status === 'DISABLED';
+
+          let fillColor = 'rgba(22, 119, 255, 0.20)';
+          let strokeColor = '#1677ff';
+          if (isDisabled) {
+            fillColor = 'rgba(140, 140, 140, 0.15)';
+            strokeColor = '#8c8c8c';
+          } else if (gf.alarmLevel === 'CRITICAL') {
+            fillColor = isActive ? 'rgba(255, 77, 79, 0.35)' : 'rgba(255, 77, 79, 0.22)';
+            strokeColor = '#ff4d4f';
+          } else if (gf.alarmLevel === 'WARNING') {
+            fillColor = isActive ? 'rgba(250, 140, 22, 0.35)' : 'rgba(250, 140, 22, 0.22)';
+            strokeColor = '#fa8c16';
+          } else {
+            fillColor = isActive ? 'rgba(22, 119, 255, 0.35)' : 'rgba(22, 119, 255, 0.20)';
+            strokeColor = '#1677ff';
+          }
+
+          if (gf.type === 'CIRCLE' && gf.circle) {
+            const centerPt = projectToScreen(gf.circle.center);
+            const eastCoord = {
+              lat: gf.circle.center.lat,
+              lng:
+                gf.circle.center.lng +
+                (gf.circle.radiusMeters /
+                  (6378137 * Math.cos((gf.circle.center.lat * Math.PI) / 180))) *
+                  (180 / Math.PI),
+            };
+            const eastPt = projectToScreen(eastCoord);
+            const radiusPx = Math.max(4, Math.abs(eastPt.x - centerPt.x));
+
+            return (
+              <g
+                key={gf.id}
+                className="map-control-interactive map-geofence-group"
+                style={{ cursor: 'pointer', pointerEvents: 'auto' }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectGeofence?.(gf);
+                }}
+              >
+                {/* Active Outer Glow */}
+                {isActive && (
+                  <circle
+                    cx={centerPt.x}
+                    cy={centerPt.y}
+                    r={radiusPx + 4}
+                    fill="none"
+                    stroke={strokeColor}
+                    strokeWidth={2}
+                    strokeOpacity={0.4}
+                  />
+                )}
+                {/* Geofence Circle Body */}
+                <circle
+                  cx={centerPt.x}
+                  cy={centerPt.y}
+                  r={radiusPx}
+                  fill={fillColor}
+                  stroke={strokeColor}
+                  strokeWidth={isActive ? 3 : 2}
+                  strokeDasharray={isActive ? undefined : '6,4'}
+                  data-testid={`geofence-circle-${gf.id}`}
+                />
+                {/* Center marker */}
+                <circle cx={centerPt.x} cy={centerPt.y} r={3} fill={strokeColor} />
+              </g>
+            );
+          }
+
+          if (gf.type === 'POLYGON' && gf.polygon && gf.polygon.vertices.length >= 3) {
+            const screenPoints = gf.polygon.vertices.map((v) => {
+              const pt = projectToScreen(v);
+              return `${pt.x.toFixed(1)},${pt.y.toFixed(1)}`;
+            });
+            const pointsStr = screenPoints.join(' ');
+
+            return (
+              <g
+                key={gf.id}
+                className="map-control-interactive map-geofence-group"
+                style={{ cursor: 'pointer', pointerEvents: 'auto' }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectGeofence?.(gf);
+                }}
+              >
+                {/* Polygon Body */}
+                <polygon
+                  points={pointsStr}
+                  fill={fillColor}
+                  stroke={strokeColor}
+                  strokeWidth={isActive ? 3 : 2}
+                  strokeDasharray={isActive ? undefined : '6,4'}
+                  strokeLinejoin="round"
+                  data-testid={`geofence-polygon-${gf.id}`}
+                />
+                {/* Vertex Points for active fence */}
+                {isActive &&
+                  gf.polygon.vertices.map((v, i) => {
+                    const pt = projectToScreen(v);
+                    return (
+                      <circle
+                        key={i}
+                        cx={pt.x}
+                        cy={pt.y}
+                        r={4}
+                        fill="#ffffff"
+                        stroke={strokeColor}
+                        strokeWidth={2}
+                      />
+                    );
+                  })}
+              </g>
+            );
+          }
+
+          return null;
+        })}
       </svg>
 
       {/* 2. Single Vehicle Markers */}
@@ -1069,6 +1199,77 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           </div>
         );
       })()}
+
+      {/* 3.5 Geofence Name Pills */}
+      {geofences && geofences.map((gf) => {
+        let centerCoord: Coordinates;
+        if (gf.type === 'CIRCLE' && gf.circle) {
+          centerCoord = gf.circle.center;
+        } else if (gf.type === 'POLYGON' && gf.polygon && gf.polygon.vertices.length > 0) {
+          const latAvg = gf.polygon.vertices.reduce((acc, v) => acc + v.lat, 0) / gf.polygon.vertices.length;
+          const lngAvg = gf.polygon.vertices.reduce((acc, v) => acc + v.lng, 0) / gf.polygon.vertices.length;
+          centerCoord = { lat: latAvg, lng: lngAvg };
+        } else {
+          return null;
+        }
+
+        const { x, y } = projectToScreen(centerCoord);
+        if (x < -100 || x > containerSize.width + 100 || y < -100 || y > containerSize.height + 100) {
+          return null;
+        }
+
+        const isActive = gf.id === activeGeofenceId;
+        const isDisabled = gf.status === 'DISABLED';
+
+        let badgeBg = '#1677ff';
+        if (isDisabled) badgeBg = '#8c8c8c';
+        else if (gf.alarmLevel === 'CRITICAL') badgeBg = '#ff4d4f';
+        else if (gf.alarmLevel === 'WARNING') badgeBg = '#fa8c16';
+
+        return (
+          <div
+            key={`badge-${gf.id}`}
+            className="map-control-interactive map-geofence-label"
+            data-testid={`geofence-label-${gf.id}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectGeofence?.(gf);
+            }}
+            style={{
+              position: 'absolute',
+              left: x,
+              top: y,
+              transform: 'translate(-50%, -50%)',
+              zIndex: isActive ? 29 : 22,
+              cursor: 'pointer',
+              display: 'flex',
+              alignItems: 'center',
+              gap: 4,
+              backgroundColor: theme.panelBg,
+              color: theme.textColor,
+              borderRadius: 12,
+              padding: '2px 8px',
+              fontSize: 11,
+              fontWeight: 600,
+              boxShadow: isActive ? `0 0 10px ${badgeBg}` : '0 2px 6px rgba(0,0,0,0.18)',
+              border: `1px solid ${isActive ? badgeBg : theme.panelBorder}`,
+              backdropFilter: 'blur(4px)',
+              whiteSpace: 'nowrap',
+              transition: 'all 0.2s ease',
+            }}
+          >
+            <span
+              style={{
+                width: 6,
+                height: 6,
+                borderRadius: '50%',
+                backgroundColor: badgeBg,
+              }}
+            />
+            <span>{gf.name}</span>
+          </div>
+        );
+      })}
 
       {/* 4. Active Vehicle InfoWindow Popover Card */}
       {activeVehicle && (
