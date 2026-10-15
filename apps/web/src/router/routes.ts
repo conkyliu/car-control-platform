@@ -18,6 +18,7 @@ export const RoutePath = {
   PROJECTS: '/projects',
   CAPABILITIES: '/capabilities',
   DIGITAL_KEYS: '/digital-keys',
+  COMMAND_DICTIONARY: '/command-dictionary',
 } as const;
 
 export type RoutePathType = (typeof RoutePath)[keyof typeof RoutePath];
@@ -235,6 +236,15 @@ export const routes: RouteMeta[] = [
     permission: 'vehicle:control',
     hideInMenu: true,
     description: '数字钥匙授权分发、BLE/云端/NFC介质管控与安全吊销中心',
+  },
+  {
+    path: RoutePath.COMMAND_DICTIONARY,
+    title: '指令字典与协议参数',
+    icon: 'BookOutlined',
+    category: RouteCategory.VEHICLE_CONTROL,
+    permission: 'vehicle:control',
+    hideInMenu: true,
+    description: '13类远程车控指令字典、下行Payload Schema与CAN总线信号映射中心',
   },
 ];
 

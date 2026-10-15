@@ -52,8 +52,10 @@ import {
   ExclamationCircleOutlined,
   AppstoreOutlined,
   SlidersOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
 import { CommandCode, SecurityLevel } from '@car-control/contracts';
+import { CommandDictionaryModal } from './CommandDictionaryModal.tsx';
 import {
   CommandCategory,
   COMMAND_CATEGORY_MAP,
@@ -140,6 +142,7 @@ export const CapabilityTemplateView: React.FC = () => {
   const [cloneModalVisible, setCloneModalVisible] = useState<boolean>(false);
   const [paramModalVisible, setParamModalVisible] = useState<boolean>(false);
   const [diffModalVisible, setDiffModalVisible] = useState<boolean>(false);
+  const [dictionaryModalVisible, setDictionaryModalVisible] = useState<boolean>(false);
 
   // 当前正在配置参数约束的指令代码
   const [paramEditingCode, setParamEditingCode] = useState<CommandCode | null>(null);
@@ -773,6 +776,12 @@ export const CapabilityTemplateView: React.FC = () => {
 
                   <Space size={8}>
                     <Button
+                      icon={<BookOutlined />}
+                      onClick={() => setDictionaryModalVisible(true)}
+                    >
+                      指令字典与协议参数
+                    </Button>
+                    <Button
                       icon={<CopyOutlined />}
                       onClick={() => {
                         cloneForm.setFieldsValue({
@@ -1274,6 +1283,12 @@ export const CapabilityTemplateView: React.FC = () => {
           </div>
         )}
       </Modal>
+
+      {/* ---------------- 960px 全局指令字典与协议参数规范弹窗 ---------------- */}
+      <CommandDictionaryModal
+        open={dictionaryModalVisible}
+        onClose={() => setDictionaryModalVisible(false)}
+      />
     </div>
   );
 };

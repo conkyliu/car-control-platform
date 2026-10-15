@@ -28,6 +28,7 @@ import {
   CloudUploadOutlined,
   FileTextOutlined,
   LineChartOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../store/useAuthStore.ts';
 import { useNavTabsStore } from '../store/useNavTabsStore.ts';
@@ -41,7 +42,12 @@ import { TenantSelector } from './TenantSelector.tsx';
 import { AlarmNotificationBell } from './AlarmNotificationBell.tsx';
 import { HeaderUserMenu } from './HeaderUserMenu.tsx';
 import { NavTabs } from './NavTabs.tsx';
-import { CarControlWorkbench, CapabilityTemplateView, DigitalKeyManageView } from '../views/command/index.ts';
+import {
+  CarControlWorkbench,
+  CapabilityTemplateView,
+  DigitalKeyManageView,
+  CommandDictionaryView,
+} from '../views/command/index.ts';
 import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
 import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
 import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
@@ -65,6 +71,7 @@ const ROUTE_ICON_MAP: Record<string, React.ReactNode> = {
   CloudUploadOutlined: <CloudUploadOutlined />,
   FileTextOutlined: <FileTextOutlined />,
   LineChartOutlined: <LineChartOutlined />,
+  BookOutlined: <BookOutlined />,
 };
 
 export const AdminLayout: React.FC = () => {
@@ -166,6 +173,10 @@ export const AdminLayout: React.FC = () => {
 
     if (activeKey === RoutePath.DIGITAL_KEYS) {
       return <DigitalKeyManageView />;
+    }
+
+    if (activeKey === RoutePath.COMMAND_DICTIONARY) {
+      return <CommandDictionaryView />;
     }
 
     return (

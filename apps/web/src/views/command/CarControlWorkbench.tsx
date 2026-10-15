@@ -50,6 +50,7 @@ import {
   ControlOutlined,
   SlidersOutlined,
   KeyOutlined,
+  BookOutlined,
 } from '@ant-design/icons';
 import {
   CommandCode,
@@ -79,6 +80,7 @@ import { useNavTabsStore } from '../../store/useNavTabsStore.ts';
 import { RoutePath } from '../../router/routes.ts';
 import { CommandStreamDrawer } from './CommandStreamDrawer.tsx';
 import { VehicleOverrideDrawer } from './VehicleOverrideDrawer.tsx';
+import { CommandDictionaryModal } from './CommandDictionaryModal.tsx';
 
 const { Title, Text } = Typography;
 
@@ -145,6 +147,9 @@ export const CarControlWorkbench: React.FC = () => {
 
   // 单车专属可控范围能力覆盖抽屉
   const [overrideDrawerOpen, setOverrideDrawerOpen] = useState(false);
+
+  // 指令字典与协议参数规范弹窗
+  const [dictionaryModalOpen, setDictionaryModalOpen] = useState(false);
 
   const handleOpenTraceDrawer = (cmdId?: string) => {
     setSelectedCommandId(cmdId || commandLogs[0]?.id || 'cmd-seed-01');
@@ -582,6 +587,12 @@ export const CarControlWorkbench: React.FC = () => {
                   unCheckedChildren="离线"
                 />
               </Space>
+              <Button
+                icon={<BookOutlined />}
+                onClick={() => setDictionaryModalOpen(true)}
+              >
+                指令字典
+              </Button>
               <Button
                 icon={<KeyOutlined />}
                 onClick={() => {
@@ -1351,6 +1362,12 @@ export const CarControlWorkbench: React.FC = () => {
         vehicle={currentVehicle}
         onSaved={() => loadVehicleContext(selectedVehicleId)}
         onReset={() => loadVehicleContext(selectedVehicleId)}
+      />
+
+      {/* ---------------- 960px 全局指令字典与协议参数规范弹窗 ---------------- */}
+      <CommandDictionaryModal
+        open={dictionaryModalOpen}
+        onClose={() => setDictionaryModalOpen(false)}
       />
     </div>
   );
