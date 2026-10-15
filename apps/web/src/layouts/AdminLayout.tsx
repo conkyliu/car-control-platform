@@ -52,6 +52,7 @@ import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
 import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
 import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
 import { VehicleListView, ModelManageView } from '../views/vehicle/index.ts';
+import { RealtimeLocationMap } from '../views/telemetry/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -177,6 +178,10 @@ export const AdminLayout: React.FC = () => {
 
     if (activeKey === RoutePath.COMMAND_DICTIONARY) {
       return <CommandDictionaryView />;
+    }
+
+    if (activeKey === RoutePath.TELEMETRY) {
+      return <RealtimeLocationMap />;
     }
 
     return (

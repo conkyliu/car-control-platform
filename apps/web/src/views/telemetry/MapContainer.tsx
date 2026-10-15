@@ -35,6 +35,8 @@ export interface MapContainerProps {
   onSelectVehicle?: (vehicle: MapMarkerItem | null) => void;
   onTriggerCommand?: (vehicle: MapMarkerItem) => void;
   onViewTrack?: (vehicle: MapMarkerItem) => void;
+  center?: Coordinates;
+  zoom?: number;
   initialCenter?: Coordinates;
   initialZoom?: number;
   initialLayer?: MapTileLayerType;
@@ -54,6 +56,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   onSelectVehicle,
   onTriggerCommand,
   onViewTrack,
+  center: controlledCenter,
+  zoom: controlledZoom,
   initialCenter,
   initialZoom = 13,
   initialLayer = 'standard',
@@ -75,8 +79,8 @@ export const MapContainer: React.FC<MapContainerProps> = ({
     return { lat: 22.5428, lng: 113.9389 };
   }, [initialCenter, vehicles]);
 
-  const [center, setCenter] = useState<Coordinates>(defaultCenter);
-  const [zoom, setZoom] = useState<number>(initialZoom);
+  const [center, setCenter] = useState<Coordinates>(controlledCenter || defaultCenter);
+  const [zoom, setZoom] = useState<number>(controlledZoom !== undefined ? controlledZoom : initialZoom);
   const [layer, setLayer] = useState<MapTileLayerType>(initialLayer);
   const [activeVehicleId, setActiveVehicleId] = useState<string | null>(selectedVehicleId || null);
   const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
@@ -91,12 +95,32 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   const wheelDeltaAccumulatorRef = useRef<number>(0);
   const wheelTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Sync controlled center & zoom
+  useEffect(() => {
+    if (controlledCenter) {
+      setCenter(controlledCenter);
+    }
+  }, [controlledCenter]);
+
+  useEffect(() => {
+    if (controlledZoom !== undefined) {
+      setZoom(controlledZoom);
+    }
+  }, [controlledZoom]);
+
   // Sync prop changes
   useEffect(() => {
     if (selectedVehicleId !== undefined) {
       setActiveVehicleId(selectedVehicleId);
+      if (selectedVehicleId) {
+        const found = vehicles.find((v) => v.id === selectedVehicleId);
+        if (found) {
+          setCenter(found.coordinates);
+          setZoom((prev) => Math.max(prev, 15));
+        }
+      }
     }
-  }, [selectedVehicleId]);
+  }, [selectedVehicleId, vehicles]);
 
   // Update container size dynamically via ResizeObserver
   useEffect(() => {
