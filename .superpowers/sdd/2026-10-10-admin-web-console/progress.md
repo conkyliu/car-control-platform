@@ -91,7 +91,7 @@ Scan clean. Ready to execute Sprint 4 Task 1.
 - Sprint 4 Task 2: complete (commit b9f4945, review APPROVED, 356/356 web tests, 468/468 monorepo tests, build pass)
 - Sprint 4 Task 3: complete (commit d281d70, review APPROVED, 376/376 web tests, 488/488 monorepo tests, build pass)
 - Sprint 4 Task 4: complete (commits 94ea3c0..b93570e, review APPROVED, 414/414 web tests, 526/526 monorepo tests, build pass)
-- Sprint 4 Task 5: pending (报警中心与人工处置抽屉 `AlertCenterView.tsx` + `AlertProcessDrawer.tsx` + `alarm-core.ts` + `api/alarm.ts`)
+- Sprint 4 Task 5: complete (commit 8f55d4e, review APPROVED, 440/440 web tests, 552/552 monorepo tests, build pass)
 - Sprint 4 Task 6: pending (全局实时告警声光弹窗 `AlertRealtimeNotification.tsx`)
 - Sprint 4 Task 7: pending (Sprint 4 综合验收与全工程回归)
 
