@@ -57,6 +57,7 @@ import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
 import { VehicleListView, ModelManageView } from '../views/vehicle/index.ts';
 import { RealtimeLocationMap, GeofenceManageView } from '../views/telemetry/index.ts';
 import { AlertCenterView, AlertRealtimeNotification, useAlarmMuteState } from '../views/alarm/index.ts';
+import { FirmwareManageView } from '../views/ota/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -195,6 +196,10 @@ export const AdminLayout: React.FC = () => {
 
     if (activeKey === RoutePath.ALARMS) {
       return <AlertCenterView />;
+    }
+
+    if (activeKey === RoutePath.OTA) {
+      return <FirmwareManageView />;
     }
 
     return (
