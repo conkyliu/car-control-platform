@@ -15,3 +15,4 @@ export * from './ota/ota-payloads.js';
 export * from './tenant/tenant-dtos.js';
 export * from './user/user-dtos.js';
 export * from './project/project-dtos.js';
+export * from './telemetry/geofence-dtos.js';
