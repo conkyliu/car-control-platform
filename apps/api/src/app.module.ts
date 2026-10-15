@@ -9,6 +9,9 @@ import { DeviceStatusService } from './device/device-status.service.js';
 import { WebSocketGatewayService } from './realtime/websocket.gateway.js';
 import { CommandService } from './command/command.service.js';
 import { CommandController } from './command/command.controller.js';
+import { DigitalKeyService } from './command/digital-key.service.js';
+import { DigitalKeyController } from './command/digital-key.controller.js';
+import { CommandDictionaryController } from './command/command-dictionary.controller.js';
 import { AuthController } from './auth/auth.controller.js';
 import { ProjectService } from './project/project.service.js';
 import { ProjectController } from './project/project.controller.js';
@@ -40,6 +43,8 @@ import { AuthModule } from './auth/auth.module.js';
   ],
   controllers: [
     CommandController,
+    DigitalKeyController,
+    CommandDictionaryController,
     AuthController,
     DeviceController,
     VehicleController,
@@ -59,6 +64,7 @@ import { AuthModule } from './auth/auth.module.js';
     CapabilityEngine,
     ControlSecurityService,
     CommandService,
+    DigitalKeyService,
     ProjectService,
     DeviceService,
     VehicleService,
@@ -66,6 +72,7 @@ import { AuthModule } from './auth/auth.module.js';
   exports: [
     AuthModule,
     CommandService,
+    DigitalKeyService,
     DeviceStatusService,
     WebSocketGatewayService,
     'MessagingPort',

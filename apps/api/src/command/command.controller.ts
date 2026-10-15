@@ -6,6 +6,8 @@ import {
   Body,
   UseGuards,
   Request,
+  NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import {
   CreateCommandRequestDto,
@@ -13,6 +15,8 @@ import {
 } from '@car-control/contracts';
 import { CommandRecord } from '@car-control/domain-types';
 import { CommandService } from './command.service.js';
+import { TracerService } from '../observability/tracing/tracer.service.js';
+import { CommandTrace } from '../observability/tracing/tracer.types.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { PermissionsGuard } from '../auth/guards/permissions.guard.js';
 import { RequirePermissions } from '../auth/decorators/permissions.decorator.js';
@@ -21,7 +25,8 @@ import { RequirePermissions } from '../auth/decorators/permissions.decorator.js'
 @UseGuards(JwtAuthGuard, PermissionsGuard)
 export class CommandController {
   constructor(
-    private readonly commandService: CommandService
+    private readonly commandService: CommandService,
+    @Optional() private readonly tracerService?: TracerService
   ) {}
 
   @Post('vehicles/:vehicleId/commands')
@@ -48,5 +53,41 @@ export class CommandController {
   @RequirePermissions(Permission.VEHICLE_READ)
   async getCommand(@Param('commandId') commandId: string): Promise<CommandRecord> {
     return this.commandService.getCommand(commandId);
+  }
+
+  @Get('commands/:commandId/trace')
+  @RequirePermissions(Permission.VEHICLE_READ)
+  async getCommandTrace(
+    @Param('commandId') commandId: string,
+    @Request() req: any
+  ): Promise<CommandTrace> {
+    if (!this.tracerService) {
+      throw new NotFoundException(`TracerService is not available`);
+    }
+
+    const trace =
+      this.tracerService.getTraceByCommandId(commandId) ||
+      this.tracerService.getTrace(commandId);
+
+    if (!trace) {
+      throw new NotFoundException(`未找到指令链路追踪数据: ${commandId}`);
+    }
+
+    const user = req?.user;
+    if (user?.tenantId && trace.tenantId && trace.tenantId !== user.tenantId) {
+      throw new NotFoundException(`未找到指令链路追踪数据: ${commandId}`);
+    }
+
+    return trace;
+  }
+
+  @Get('vehicles/:vehicleId/commands')
+  @RequirePermissions(Permission.VEHICLE_READ)
+  async getVehicleCommands(
+    @Param('vehicleId') vehicleId: string,
+    @Request() req: any
+  ): Promise<CommandRecord[]> {
+    const user = req?.user;
+    return this.commandService.getVehicleCommands(vehicleId, user?.tenantId);
   }
 }
