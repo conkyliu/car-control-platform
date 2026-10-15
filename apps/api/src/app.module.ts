@@ -28,6 +28,7 @@ import { CommunicationLogModule } from './log/communication-log.module.js';
 import { OtaModule } from './ota/ota.module.js';
 import { CacheModule } from './common/cache/cache.module.js';
 import { ObservabilityModule } from './observability/observability.module.js';
+import { DashboardModule } from './dashboard/dashboard.module.js';
 
 import { AuthModule } from './auth/auth.module.js';
 
@@ -40,6 +41,7 @@ import { AuthModule } from './auth/auth.module.js';
     OtaModule,
     CacheModule,
     ObservabilityModule,
+    DashboardModule,
   ],
   controllers: [
     CommandController,
@@ -88,6 +90,7 @@ import { AuthModule } from './auth/auth.module.js';
     OtaModule,
     CacheModule,
     ObservabilityModule,
+    DashboardModule,
   ],
 })
 export class AppModule {}

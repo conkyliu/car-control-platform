@@ -18,3 +18,4 @@ export * from './project/project-dtos.js';
 export * from './telemetry/geofence-dtos.js';
 export * from './command/digital-key-dtos.js';
 export * from './command/command-dictionary-dtos.js';
+export * from './dashboard/dashboard-dtos.js';

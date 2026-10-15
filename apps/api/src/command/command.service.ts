@@ -508,6 +508,22 @@ export class CommandService {
     });
   }
 
+  /**
+   * 获取租户所有指令流水列表 (按创建时间倒序排列，支持租户隔离)
+   */
+  getCommands(tenantId?: string): CommandRecord[] {
+    const list = Array.from(this.commandStore.values()).filter((record) => {
+      if (tenantId && record.tenantId && record.tenantId !== tenantId) return false;
+      return true;
+    });
+
+    return list.sort((a, b) => {
+      const timeA = new Date(a.createdAt).getTime();
+      const timeB = new Date(b.createdAt).getTime();
+      return timeB - timeA;
+    });
+  }
+
   private transitionStatus(
     record: CommandRecord,
     nextStatus: CommandStatus,
