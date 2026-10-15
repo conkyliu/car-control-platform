@@ -112,7 +112,7 @@ Scan clean. Ready to execute Sprint 5 Task 1.
 ## Sprint 5 Progress
 - Sprint 5 Task 1: complete (commits 23464cd..44efa48, review APPROVED, 503/503 web tests, 615/615 monorepo tests, build pass)
 - Sprint 5 Task 2: complete (commits 5ba03e2..a6104b7, review APPROVED, 531/531 web tests, 643/643 monorepo tests, build pass)
-- Sprint 5 Task 3: pending (OTA 批量任务执行监控大屏 `OtaExecutionDashboardView.tsx`)
+- Sprint 5 Task 3: complete (commits 331c154..1028290, review APPROVED, 559/559 web tests, 671/671 monorepo tests, build pass)
 - Sprint 5 Task 4: pending (原始通讯日志与 Hex 报文解析器 `CommLogSearchView.tsx`)
 - Sprint 5 Task 5: pending (运营数据全景大屏与统计分析 `OperationalDashboardView.tsx`)
 - Sprint 5 Task 6: pending (系统 Prometheus 监控指标看板 `SystemMetricsView.tsx`)
