@@ -59,6 +59,7 @@ import { RealtimeLocationMap, GeofenceManageView } from '../views/telemetry/inde
 import { AlertCenterView, AlertRealtimeNotification, useAlarmMuteState } from '../views/alarm/index.ts';
 import { OtaWorkbenchView } from '../views/ota/index.ts';
 import { CommLogSearchView } from '../views/log/index.ts';
+import { OperationalDashboardView } from '../views/dashboard/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -135,6 +136,10 @@ export const AdminLayout: React.FC = () => {
 
   // 渲染主内容区域视图
   const renderActiveView = () => {
+    if (activeKey === RoutePath.DASHBOARD) {
+      return <OperationalDashboardView />;
+    }
+
     if (activeKey === RoutePath.TENANTS) {
       return <TenantListView />;
     }
