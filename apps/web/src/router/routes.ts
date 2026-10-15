@@ -17,6 +17,7 @@ export const RoutePath = {
   MODELS: '/models',
   PROJECTS: '/projects',
   CAPABILITIES: '/capabilities',
+  DIGITAL_KEYS: '/digital-keys',
 } as const;
 
 export type RoutePathType = (typeof RoutePath)[keyof typeof RoutePath];
@@ -225,6 +226,15 @@ export const routes: RouteMeta[] = [
     permission: 'vehicle:control',
     hideInMenu: true,
     description: '车型级车控能力模板矩阵、安全等级与参数Schema约束中心',
+  },
+  {
+    path: RoutePath.DIGITAL_KEYS,
+    title: '数字钥匙授权',
+    icon: 'KeyOutlined',
+    category: RouteCategory.VEHICLE_CONTROL,
+    permission: 'vehicle:control',
+    hideInMenu: true,
+    description: '数字钥匙授权分发、BLE/云端/NFC介质管控与安全吊销中心',
   },
 ];
 

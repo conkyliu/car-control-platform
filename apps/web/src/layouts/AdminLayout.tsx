@@ -41,7 +41,7 @@ import { TenantSelector } from './TenantSelector.tsx';
 import { AlarmNotificationBell } from './AlarmNotificationBell.tsx';
 import { HeaderUserMenu } from './HeaderUserMenu.tsx';
 import { NavTabs } from './NavTabs.tsx';
-import { CarControlWorkbench, CapabilityTemplateView } from '../views/command/index.ts';
+import { CarControlWorkbench, CapabilityTemplateView, DigitalKeyManageView } from '../views/command/index.ts';
 import { TenantListView, OrgTreeView } from '../views/tenant/index.ts';
 import { UserListView, RolePermissionView, AuditLogView } from '../views/rbac/index.ts';
 import { DeviceListView, ProjectManageView } from '../views/device/index.ts';
@@ -162,6 +162,10 @@ export const AdminLayout: React.FC = () => {
 
     if (activeKey === RoutePath.CAPABILITIES) {
       return <CapabilityTemplateView />;
+    }
+
+    if (activeKey === RoutePath.DIGITAL_KEYS) {
+      return <DigitalKeyManageView />;
     }
 
     return (

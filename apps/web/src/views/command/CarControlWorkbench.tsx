@@ -49,6 +49,7 @@ import {
   InfoCircleOutlined,
   ControlOutlined,
   SlidersOutlined,
+  KeyOutlined,
 } from '@ant-design/icons';
 import {
   CommandCode,
@@ -581,6 +582,17 @@ export const CarControlWorkbench: React.FC = () => {
                   unCheckedChildren="离线"
                 />
               </Space>
+              <Button
+                icon={<KeyOutlined />}
+                onClick={() => {
+                  openTab({
+                    key: RoutePath.DIGITAL_KEYS,
+                    title: '数字钥匙授权',
+                  });
+                }}
+              >
+                数字钥匙授权
+              </Button>
               <Button
                 icon={<ControlOutlined />}
                 onClick={() => {
