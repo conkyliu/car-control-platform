@@ -92,8 +92,32 @@ Scan clean. Ready to execute Sprint 4 Task 1.
 - Sprint 4 Task 3: complete (commit d281d70, review APPROVED, 376/376 web tests, 488/488 monorepo tests, build pass)
 - Sprint 4 Task 4: complete (commits 94ea3c0..b93570e, review APPROVED, 414/414 web tests, 526/526 monorepo tests, build pass)
 - Sprint 4 Task 5: complete (commit 8f55d4e, review APPROVED, 440/440 web tests, 552/552 monorepo tests, build pass)
-- Sprint 4 Task 6: pending (全局实时告警声光弹窗 `AlertRealtimeNotification.tsx`)
-- Sprint 4 Task 7: pending (Sprint 4 综合验收与全工程回归)
+- Sprint 4 Task 6: complete (commits 233836f..1e29373, review APPROVED, 461/461 web tests, 573/573 monorepo tests, build pass)
+- Sprint 4 Task 7: complete (461/461 web tests pass, 112/112 api tests pass, 573/573 monorepo tests pass, Vite 8 Rolldown 747ms build pass)
+- Sprint 4 (Week 4 Location, Telemetry & Alerts Center): **100% COMPLETE** (All 7 tasks finished, reviewed, and signed off in `sprint-4-acceptance-report.md`)
+
+## Pre-flight Conflict Scan (Sprint 5)
+
+| Task Pair | Produces / Consumes | Conflict Scan Finding |
+|---|---|---|
+| Task 1 & Task 2 | Task 1 manages firmware packages / Task 2 selects firmware for OTA upgrade plans | Clean. Shared `FirmwarePackageDto` and SemVer validation |
+| Task 2 & Task 3 | Task 2 dispatches OTA plan / Task 3 monitors batch OTA execution stream | Clean. Shared `OtaTaskRecord`, FSM lifecycle (`PENDING` -> `DOWNLOADING` -> `UPGRADING` -> `SUCCESS`/`FAILED`) |
+| Task 3 & Task 4 | Task 3 monitors OTA vehicle logs / Task 4 inspects raw comm telemetry & hex payloads | Clean. Task 3 drawer links to raw hex message traces by `messageId` |
+| Task 1-4 & Task 5 | Tasks 1-4 generate control, OTA & comm logs / Task 5 aggregates high-level KPIs | Clean. Dashboard aggregates domain stats cleanly |
+| Task 5 & Task 6 | Task 5 business telemetry dashboard / Task 6 infrastructure Prometheus cluster health | Clean. Separated business vs system monitoring tabs |
+| Task 1-6 & Task 7 | Task 1-6 implement Sprint 5 views / Task 7 tests and builds monorepo | Clean. Strict build and test gates |
+
+Scan clean. Ready to execute Sprint 5 Task 1.
+
+## Sprint 5 Progress
+- Sprint 5 Task 1: pending (固件包管理工作台 `FirmwareManageView.tsx`)
+- Sprint 5 Task 2: pending (批量 OTA 升级计划制定向导 `OtaPlanWizardModal.tsx`)
+- Sprint 5 Task 3: pending (OTA 批量任务执行监控大屏 `OtaExecutionDashboardView.tsx`)
+- Sprint 5 Task 4: pending (原始通讯日志与 Hex 报文解析器 `CommLogSearchView.tsx`)
+- Sprint 5 Task 5: pending (运营数据全景大屏与统计分析 `OperationalDashboardView.tsx`)
+- Sprint 5 Task 6: pending (系统 Prometheus 监控指标看板 `SystemMetricsView.tsx`)
+- Sprint 5 Task 7: pending (Sprint 5 综合验收与交付报告签署)
+
 
 
 
