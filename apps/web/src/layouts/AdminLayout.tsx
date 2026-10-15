@@ -60,6 +60,7 @@ import { AlertCenterView, AlertRealtimeNotification, useAlarmMuteState } from '.
 import { OtaWorkbenchView } from '../views/ota/index.ts';
 import { CommLogSearchView } from '../views/log/index.ts';
 import { OperationalDashboardView } from '../views/dashboard/index.ts';
+import { SystemMetricsView } from '../views/monitor/index.ts';
 
 const { Header, Sider, Content, Footer } = Layout;
 const { Title, Text, Paragraph } = Typography;
@@ -206,6 +207,10 @@ export const AdminLayout: React.FC = () => {
 
     if (activeKey === RoutePath.OTA) {
       return <OtaWorkbenchView />;
+    }
+
+    if (activeKey === RoutePath.MONITOR) {
+      return <SystemMetricsView />;
     }
 
     return (
