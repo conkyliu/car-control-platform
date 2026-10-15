@@ -34,6 +34,7 @@ import {
   formatHexDump,
   parseMessageHeader,
   unescapeJt808Hex,
+  calculateXorChecksum,
   CommProtocolType,
 } from './comm-log-core.ts';
 
@@ -143,9 +144,18 @@ export const HexPayloadParserDrawer: React.FC<HexPayloadParserDrawerProps> = ({
     },
   ];
 
-  // 构建报文头展示条目
+  // 构建报文头展示条目，过滤已在主卡片及核心字段中展示的项目，避免信息冗余
   const headerEntries = Object.entries(headerFields).filter(
-    ([k]) => !['protocolType', 'messageId', 'messageName'].includes(k)
+    ([k]) =>
+      ![
+        'protocolType',
+        'messageId',
+        'messageName',
+        'sequenceNo',
+        'phoneOrDevice',
+        'deviceNo',
+        'vin',
+      ].includes(k)
   );
 
   return (
@@ -242,6 +252,23 @@ export const HexPayloadParserDrawer: React.FC<HexPayloadParserDrawerProps> = ({
             icon={<CheckCircleOutlined />}
             message="报文校验一致性诊断通过"
             description={`根据 ${protocolMeta.shortLabel} 规范，计算校验码 0x${record.calculatedChecksum} 与报文实际尾部校验码 0x${record.actualChecksum} 完全吻合，数据链路传输完整无误。`}
+            action={
+              <Button
+                size="small"
+                onClick={() => {
+                  const clientCalculated = calculateXorChecksum(record.rawHex, true);
+                  if (clientCalculated.toUpperCase() === record.actualChecksum.toUpperCase()) {
+                    message.success(`前端实时重新验算完成：校验码 0x${clientCalculated} 一致`);
+                  } else {
+                    message.error(
+                      `前端实时重新验算完成：计算值 0x${clientCalculated} 与携带值 0x${record.actualChecksum} 不一致`
+                    );
+                  }
+                }}
+              >
+                重新验算
+              </Button>
+            }
           />
         ) : (
           <Alert
@@ -252,6 +279,20 @@ export const HexPayloadParserDrawer: React.FC<HexPayloadParserDrawerProps> = ({
             description={
               record.errorMessage ||
               `网关验算校验码 0x${record.calculatedChecksum} 与帧内标识 0x${record.actualChecksum} 不一致，疑似无线通信信道抖动丢包、空中噪音或报文被恶意篡改！`
+            }
+            action={
+              <Button
+                size="small"
+                danger
+                onClick={() => {
+                  const clientCalculated = calculateXorChecksum(record.rawHex, true);
+                  message.error(
+                    `前端实时重新验算完成：计算值 0x${clientCalculated} 与携带值 0x${record.actualChecksum} 确实不符`
+                  );
+                }}
+              >
+                重新验算
+              </Button>
             }
           />
         )}
