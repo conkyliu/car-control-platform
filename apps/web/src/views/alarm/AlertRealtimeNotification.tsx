@@ -18,7 +18,7 @@ import {
   shouldTriggerNotification,
   getNotificationSeverityColor,
 } from './alert-notification-core.ts';
-import { subscribeRealtimeAlarms } from '../../api/alarm.ts';
+import { subscribeRealtimeAlarms, broadcastRealtimeAlarm } from '../../api/alarm.ts';
 import { useTenantStore } from '../../store/useTenantStore.ts';
 import { useNavTabsStore } from '../../store/useNavTabsStore.ts';
 import { RoutePath } from '../../router/routes.ts';
@@ -283,6 +283,7 @@ export const AlertRealtimeNotification: React.FC<AlertRealtimeNotificationProps>
         onClose={() => setDrawerOpen(false)}
         onSuccess={(updated) => {
           setDrawerOpen(false);
+          broadcastRealtimeAlarm(updated);
         }}
         onLocate={(alarm) => {
           setDrawerOpen(false);

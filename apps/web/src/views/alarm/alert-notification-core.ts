@@ -236,6 +236,38 @@ export function getNotificationSeverityColor(level: AlarmLevel): string {
   }
 }
 
+let cachedAudioCtx: any = null;
+
+function getSharedAudioContext(): any {
+  try {
+    if (cachedAudioCtx) {
+      if (cachedAudioCtx.state === 'closed') {
+        cachedAudioCtx = null;
+      } else {
+        if (cachedAudioCtx.state === 'suspended' && typeof cachedAudioCtx.resume === 'function') {
+          cachedAudioCtx.resume().catch(() => {});
+        }
+        return cachedAudioCtx;
+      }
+    }
+    const AudioContextClass =
+      typeof window !== 'undefined'
+        ? (window as any).AudioContext || (window as any).webkitAudioContext
+        : undefined;
+
+    if (!AudioContextClass) {
+      return null;
+    }
+    cachedAudioCtx = new AudioContextClass();
+    if (cachedAudioCtx.state === 'suspended' && typeof cachedAudioCtx.resume === 'function') {
+      cachedAudioCtx.resume().catch(() => {});
+    }
+    return cachedAudioCtx;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Web Audio API 原生音效发生器
  * 1. CRITICAL: 高频急促双鸣声 (880Hz -> 1760Hz 脉冲, 增益 0.15, 持续 300ms)
@@ -257,15 +289,10 @@ export function playAlarmSound(
   try {
     let ctx = mockAudioCtx;
     if (!ctx) {
-      const AudioContextClass =
-        typeof window !== 'undefined'
-          ? (window as any).AudioContext || (window as any).webkitAudioContext
-          : undefined;
-
-      if (!AudioContextClass) {
+      ctx = getSharedAudioContext();
+      if (!ctx) {
         return false;
       }
-      ctx = new AudioContextClass();
     }
 
     const now = ctx.currentTime || 0;
