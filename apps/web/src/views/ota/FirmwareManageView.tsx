@@ -72,6 +72,7 @@ import {
   deleteFirmwarePackageApi,
 } from '../../api/firmware.ts';
 import { OtaPlanWizardModal } from './OtaPlanWizardModal.tsx';
+import { type OtaPlanDto } from './ota-plan-core.ts';
 
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -111,9 +112,16 @@ export const renderFirmwareTypeTag = (type: FirmwareType) => {
 };
 
 /**
+ * 固件管理工作台视图组件入参
+ */
+export interface FirmwareManageViewProps {
+  onPlanCreated?: (plan: OtaPlanDto) => void;
+}
+
+/**
  * 固件管理工作台视图组件
  */
-export const FirmwareManageView: React.FC = () => {
+export const FirmwareManageView: React.FC<FirmwareManageViewProps> = ({ onPlanCreated }) => {
   const { token } = theme.useToken();
   const [packages, setPackages] = useState<FirmwarePackageDto[]>([]);
   const [loading, setLoading] = useState(false);
@@ -1207,6 +1215,7 @@ export const FirmwareManageView: React.FC = () => {
         }}
         onSuccess={(plan) => {
           message.success(`OTA 升级计划 [${plan.name}] 制定下发成功！`);
+          onPlanCreated?.(plan);
         }}
         preselectedFirmwareId={preselectedFwId}
       />

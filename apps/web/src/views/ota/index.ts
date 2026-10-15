@@ -3,3 +3,8 @@ export * from './FirmwareManageView.tsx';
 export * from './ota-plan-core.ts';
 export * from './OtaPlanWizardModal.tsx';
 export * from '../../api/ota-plan.ts';
+export * from './ota-dashboard-core.ts';
+export * from './OtaVehicleLogDrawer.tsx';
+export * from './OtaExecutionDashboardView.tsx';
+export * from './OtaWorkbenchView.tsx';
+export * from '../../api/ota-dashboard.ts';
