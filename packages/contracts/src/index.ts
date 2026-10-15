@@ -12,3 +12,4 @@ export * from './alarm/alarm-payloads.js';
 export * from './log/communication-log-payloads.js';
 export * from './events/websocket-events.js';
 export * from './ota/ota-payloads.js';
+export * from './tenant/tenant-dtos.js';
