@@ -48,6 +48,7 @@ import {
   SafetyCertificateOutlined,
   FileTextOutlined,
   ExclamationCircleOutlined,
+  RocketOutlined,
 } from '@ant-design/icons';
 import {
   FirmwareType,
@@ -70,6 +71,7 @@ import {
   deprecateFirmwarePackageApi,
   deleteFirmwarePackageApi,
 } from '../../api/firmware.ts';
+import { OtaPlanWizardModal } from './OtaPlanWizardModal.tsx';
 
 const { Text, Title, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -136,6 +138,15 @@ export const FirmwareManageView: React.FC = () => {
   const [detailDrawerOpen, setDetailDrawerOpen] = useState(false);
   const [activePackage, setActivePackage] = useState<FirmwarePackageDto | null>(null);
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
+
+  // OTA 计划制定向导模态框状态
+  const [wizardModalOpen, setWizardModalOpen] = useState(false);
+  const [preselectedFwId, setPreselectedFwId] = useState<string | null>(null);
+
+  const handleOpenWizard = (firmwareId?: string | null) => {
+    setPreselectedFwId(firmwareId || null);
+    setWizardModalOpen(true);
+  };
 
   // 加载固件列表
   const loadPackages = useCallback(async () => {
@@ -470,7 +481,7 @@ export const FirmwareManageView: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 200,
+      width: 260,
       fixed: 'right',
       render: (_, record) => {
         const isActionLoading = actionLoadingId === record.id;
@@ -488,6 +499,17 @@ export const FirmwareManageView: React.FC = () => {
             >
               详情
             </Button>
+
+            {record.status === FirmwareStatus.PUBLISHED && (
+              <Button
+                type="link"
+                size="small"
+                icon={<RocketOutlined />}
+                onClick={() => handleOpenWizard(record.id)}
+              >
+                基于此固件升级
+              </Button>
+            )}
 
             {canPublish && (
               <Popconfirm
@@ -697,17 +719,25 @@ export const FirmwareManageView: React.FC = () => {
             </Button>
           </Space>
 
-          <Button
-            type="primary"
-            icon={<PlusOutlined />}
-            onClick={() => {
-              uploadForm.resetFields();
-              setSimulatedFile(null);
-              setUploadModalOpen(true);
-            }}
-          >
-            上传固件包
-          </Button>
+          <Space>
+            <Button
+              icon={<RocketOutlined />}
+              onClick={() => handleOpenWizard(null)}
+            >
+              制定升级计划
+            </Button>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                uploadForm.resetFields();
+                setSimulatedFile(null);
+                setUploadModalOpen(true);
+              }}
+            >
+              上传固件包
+            </Button>
+          </Space>
         </div>
 
         <Table
@@ -930,6 +960,19 @@ export const FirmwareManageView: React.FC = () => {
         extra={
           activePackage && (
             <Space>
+              {activePackage.status === FirmwareStatus.PUBLISHED && (
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<RocketOutlined />}
+                  onClick={() => {
+                    setDetailDrawerOpen(false);
+                    handleOpenWizard(activePackage.id);
+                  }}
+                >
+                  基于此固件升级
+                </Button>
+              )}
               {activePackage.status === FirmwareStatus.DRAFT && (
                 <Popconfirm
                   title="发布固件包"
@@ -1154,6 +1197,19 @@ export const FirmwareManageView: React.FC = () => {
           </div>
         )}
       </Drawer>
+
+      {/* 4 步向导式批量 OTA 升级计划制定模态框 */}
+      <OtaPlanWizardModal
+        open={wizardModalOpen}
+        onCancel={() => {
+          setWizardModalOpen(false);
+          setPreselectedFwId(null);
+        }}
+        onSuccess={(plan) => {
+          message.success(`OTA 升级计划 [${plan.name}] 制定下发成功！`);
+        }}
+        preselectedFirmwareId={preselectedFwId}
+      />
     </div>
   );
 };
