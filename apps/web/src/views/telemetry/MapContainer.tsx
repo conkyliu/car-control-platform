@@ -29,6 +29,23 @@ import {
 
 const { Text } = Typography;
 
+export interface ReplayVehicleState {
+  coordinates: Coordinates;
+  heading: number;
+  speed?: number;
+  plateNumber?: string;
+}
+
+export interface MapStayPointItem {
+  id: string;
+  coordinates: Coordinates;
+  durationFormatted: string;
+  durationSeconds?: number;
+  startTime?: number;
+  endTime?: number;
+  address?: string;
+}
+
 export interface MapContainerProps {
   vehicles?: MapMarkerItem[];
   selectedVehicleId?: string;
@@ -48,6 +65,13 @@ export interface MapContainerProps {
   showScale?: boolean;
   clusterEnabled?: boolean;
   clusterDistancePx?: number;
+  trackPolyline?: Coordinates[];
+  startMarker?: Coordinates & { title?: string };
+  endMarker?: Coordinates & { title?: string };
+  stayPoints?: MapStayPointItem[];
+  replayVehicle?: ReplayVehicleState;
+  onSelectStayPoint?: (stay: MapStayPointItem) => void;
+  children?: React.ReactNode;
 }
 
 export const MapContainer: React.FC<MapContainerProps> = ({
@@ -69,6 +93,13 @@ export const MapContainer: React.FC<MapContainerProps> = ({
   showScale = true,
   clusterEnabled = true,
   clusterDistancePx = 50,
+  trackPolyline,
+  startMarker,
+  endMarker,
+  stayPoints,
+  replayVehicle,
+  onSelectStayPoint,
+  children,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -600,6 +631,38 @@ export const MapContainer: React.FC<MapContainerProps> = ({
             )}
           </g>
         ))}
+
+        {/* 1.3 Trajectory Polyline Overlay */}
+        {trackPolyline && trackPolyline.length >= 2 && (() => {
+          const pathPoints = trackPolyline.map((pt) => {
+            const { x, y } = projectToScreen(pt);
+            return `${x.toFixed(1)},${y.toFixed(1)}`;
+          });
+          const pathD = `M ${pathPoints.join(' L ')}`;
+          return (
+            <g className="map-trajectory-group">
+              {/* Semi-transparent outer halo glow */}
+              <path
+                d={pathD}
+                fill="none"
+                stroke="#1677ff"
+                strokeWidth={8}
+                strokeOpacity={0.25}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              {/* Solid core tech blue track */}
+              <path
+                d={pathD}
+                fill="none"
+                stroke="#1677ff"
+                strokeWidth={4}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </g>
+          );
+        })()}
       </svg>
 
       {/* 2. Single Vehicle Markers */}
@@ -767,6 +830,245 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           </div>
         );
       })}
+
+      {/* 3.1 Start Flag Marker */}
+      {startMarker && (() => {
+        const { x, y } = projectToScreen(startMarker);
+        if (x < -100 || x > containerSize.width + 100 || y < -100 || y > containerSize.height + 100) return null;
+        return (
+          <div
+            className="map-control-interactive map-marker-start"
+            data-testid="marker-start-point"
+            style={{
+              position: 'absolute',
+              left: x,
+              top: y,
+              transform: 'translate(-50%, -100%)',
+              zIndex: 28,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              pointerEvents: 'auto',
+            }}
+          >
+            <Tooltip title={startMarker.title || '起点 (出发地)'}>
+              <div
+                style={{
+                  backgroundColor: '#52c41a',
+                  color: '#ffffff',
+                  borderRadius: 12,
+                  padding: '2px 8px',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  boxShadow: '0 2px 8px rgba(82, 196, 26, 0.45)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  cursor: 'pointer',
+                }}
+              >
+                <span>🏁</span>
+                <span>起点</span>
+              </div>
+            </Tooltip>
+            <div
+              style={{
+                width: 2,
+                height: 6,
+                backgroundColor: '#52c41a',
+              }}
+            />
+          </div>
+        );
+      })()}
+
+      {/* 3.2 End Flag Marker */}
+      {endMarker && (() => {
+        const { x, y } = projectToScreen(endMarker);
+        if (x < -100 || x > containerSize.width + 100 || y < -100 || y > containerSize.height + 100) return null;
+        return (
+          <div
+            className="map-control-interactive map-marker-end"
+            data-testid="marker-end-point"
+            style={{
+              position: 'absolute',
+              left: x,
+              top: y,
+              transform: 'translate(-50%, -100%)',
+              zIndex: 28,
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+              pointerEvents: 'auto',
+            }}
+          >
+            <Tooltip title={endMarker.title || '终点 (目的地)'}>
+              <div
+                style={{
+                  backgroundColor: '#ff4d4f',
+                  color: '#ffffff',
+                  borderRadius: 12,
+                  padding: '2px 8px',
+                  fontSize: 11,
+                  fontWeight: 600,
+                  boxShadow: '0 2px 8px rgba(255, 77, 79, 0.45)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 4,
+                  cursor: 'pointer',
+                }}
+              >
+                <span>🏁</span>
+                <span>终点</span>
+              </div>
+            </Tooltip>
+            <div
+              style={{
+                width: 2,
+                height: 6,
+                backgroundColor: '#ff4d4f',
+              }}
+            />
+          </div>
+        );
+      })()}
+
+      {/* 3.3 Stay Point Markers */}
+      {stayPoints && stayPoints.map((stay) => {
+        const { x, y } = projectToScreen(stay.coordinates);
+        if (x < -100 || x > containerSize.width + 100 || y < -100 || y > containerSize.height + 100) return null;
+        return (
+          <div
+            key={stay.id}
+            className="map-control-interactive map-marker-stay"
+            data-testid={`marker-stay-${stay.id}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelectStayPoint?.(stay);
+            }}
+            style={{
+              position: 'absolute',
+              left: x,
+              top: y,
+              transform: 'translate(-50%, -50%)',
+              zIndex: 27,
+              cursor: 'pointer',
+            }}
+          >
+            <Tooltip
+              title={
+                <div>
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>停驻异常点 🅿️</div>
+                  <div>持续时长: <strong>{stay.durationFormatted}</strong></div>
+                  {stay.address && (
+                    <div style={{ fontSize: 11, color: '#e2e8f0', marginTop: 2 }}>
+                      {stay.address}
+                    </div>
+                  )}
+                </div>
+              }
+            >
+              <div
+                style={{
+                  width: 26,
+                  height: 26,
+                  borderRadius: '50%',
+                  backgroundColor: '#1677ff',
+                  color: '#ffffff',
+                  border: '2px solid #ffffff',
+                  boxShadow: '0 2px 6px rgba(22, 119, 255, 0.45)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  fontSize: 12,
+                  fontWeight: 700,
+                  transition: 'transform 0.15s ease',
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.transform = 'scale(1.15)';
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.transform = 'scale(1)';
+                }}
+              >
+                P
+              </div>
+            </Tooltip>
+          </div>
+        );
+      })}
+
+      {/* 3.4 Replay Moving Vehicle Marker */}
+      {replayVehicle && (() => {
+        const { x, y } = projectToScreen(replayVehicle.coordinates);
+        return (
+          <div
+            className="map-control-interactive map-marker-replay-vehicle"
+            data-testid="marker-replay-vehicle"
+            style={{
+              position: 'absolute',
+              left: x,
+              top: y,
+              transform: 'translate(-50%, -50%)',
+              zIndex: 40,
+              pointerEvents: 'none',
+              display: 'flex',
+              flexDirection: 'column',
+              alignItems: 'center',
+            }}
+          >
+            {/* Speed & plate pill */}
+            <div
+              style={{
+                backgroundColor: 'rgba(15, 23, 42, 0.92)',
+                color: '#ffffff',
+                borderRadius: 12,
+                padding: '2px 8px',
+                fontSize: 11,
+                fontWeight: 600,
+                boxShadow: '0 2px 8px rgba(0,0,0,0.3)',
+                marginBottom: 4,
+                whiteSpace: 'nowrap',
+                display: 'flex',
+                alignItems: 'center',
+                gap: 4,
+                backdropFilter: 'blur(4px)',
+                border: '1px solid rgba(255,255,255,0.15)',
+              }}
+            >
+              <span style={{ color: '#1677ff' }}>🚗</span>
+              <span>{replayVehicle.plateNumber || '粤B·D12345'}</span>
+              {replayVehicle.speed !== undefined && (
+                <span style={{ color: '#52c41a', marginLeft: 2 }}>
+                  {replayVehicle.speed.toFixed(0)} km/h
+                </span>
+              )}
+            </div>
+
+            {/* Rotated Vehicle SVG Halo with Direction Arrow */}
+            <div
+              style={{
+                position: 'relative',
+                width: 40,
+                height: 40,
+                borderRadius: '50%',
+                backgroundColor: '#1677ff',
+                border: '3px solid #ffffff',
+                boxShadow: '0 0 16px rgba(22, 119, 255, 0.75)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                transform: `rotate(${replayVehicle.heading}deg)`,
+                transition: 'transform 0.05s linear',
+              }}
+            >
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+                <polygon points="12,2 18,9 14,9 14,20 10,20 10,9 6,9" fill="#ffffff" />
+              </svg>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* 4. Active Vehicle InfoWindow Popover Card */}
       {activeVehicle && (
@@ -1188,6 +1490,9 @@ export const MapContainer: React.FC<MapContainerProps> = ({
           </div>
         </div>
       )}
+
+      {/* 8. Custom Embedded Children & Overlays (e.g. Trajectory Player HUD) */}
+      {children}
     </div>
   );
 };

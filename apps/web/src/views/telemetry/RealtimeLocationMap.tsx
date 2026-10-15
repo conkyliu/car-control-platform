@@ -12,8 +12,10 @@ import {
   Spin,
   Alert,
   Tooltip,
+  Modal,
   message,
 } from 'antd';
+import { TrajectoryReplayView } from './TrajectoryReplayView.tsx';
 import {
   CarOutlined,
   ThunderboltOutlined,
@@ -66,6 +68,10 @@ export const RealtimeLocationMap: React.FC = () => {
   // 地图受控视角（用于居中飞越与一键全图适配）
   const [mapCenter, setMapCenter] = useState<Coordinates | undefined>(undefined);
   const [mapZoom, setMapZoom] = useState<number | undefined>(undefined);
+
+  // 历史轨迹回放工作台弹窗状态
+  const [replayModalOpen, setReplayModalOpen] = useState<boolean>(false);
+  const [replayVehicleId, setReplayVehicleId] = useState<string>('veh-001');
 
   // 全局业务状态联动
   const setGlobalVehicle = useVehicleStore((s) => s.setVehicle);
@@ -165,7 +171,9 @@ export const RealtimeLocationMap: React.FC = () => {
 
   // 气泡卡片：轨迹回放
   const handleViewTrack = (marker: MapMarkerItem) => {
-    message.success(`已为车辆 [${marker.plateNumber}] 加载最新历史轨迹`);
+    setReplayVehicleId(marker.id);
+    setReplayModalOpen(true);
+    message.success(`已为车辆 [${marker.plateNumber}] 开启历史轨迹回放工作台`);
   };
 
   return (
@@ -591,9 +599,26 @@ export const RealtimeLocationMap: React.FC = () => {
                         )}
                       </div>
 
-                      <span title={veh.lastReportTime}>
-                        {veh.lastReportTime ? veh.lastReportTime.slice(11, 19) : '--:--:--'}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <span title={veh.lastReportTime}>
+                          {veh.lastReportTime ? veh.lastReportTime.slice(11, 19) : '--:--:--'}
+                        </span>
+                        <Tooltip title="历史轨迹回放">
+                          <Button
+                            size="small"
+                            type="link"
+                            icon={<HistoryOutlined />}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setReplayVehicleId(veh.vehicleId);
+                              setReplayModalOpen(true);
+                            }}
+                            style={{ padding: '0 2px', height: 20, fontSize: 11 }}
+                          >
+                            轨迹
+                          </Button>
+                        </Tooltip>
+                      </div>
                     </div>
                   </div>
                 );
@@ -628,6 +653,30 @@ export const RealtimeLocationMap: React.FC = () => {
           height="100%"
         />
       </div>
+
+      {/* 历史轨迹回放全景工作台弹窗 (1080px 宽) */}
+      <Modal
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <HistoryOutlined style={{ color: '#1677ff', fontSize: 16 }} />
+            <span style={{ fontWeight: 600 }}>历史轨迹回放工作台与播放器</span>
+          </div>
+        }
+        open={replayModalOpen}
+        onCancel={() => setReplayModalOpen(false)}
+        footer={null}
+        width={1080}
+        destroyOnClose
+        styles={{
+          body: { padding: '12px 16px', maxHeight: '84vh', overflow: 'hidden' },
+        }}
+      >
+        <TrajectoryReplayView
+          initialVehicleId={replayVehicleId}
+          height="72vh"
+          onClose={() => setReplayModalOpen(false)}
+        />
+      </Modal>
     </div>
   );
 };
