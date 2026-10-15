@@ -128,6 +128,26 @@ describe('Geofence Core GIS Spatial Algorithms & Validation Suite', () => {
         false
       );
     });
+
+    it('does not falsely classify external point near short segment as on boundary', () => {
+      // Short segment (~100m in longitude, deltaLng ~ 0.001 deg)
+      const shortSegmentPolygon: GeofencePolygon = {
+        vertices: [
+          { lat: 22.5400, lng: 113.9300 },
+          { lat: 22.5400, lng: 113.9310 }, // ~100m east
+          { lat: 22.5390, lng: 113.9310 },
+          { lat: 22.5390, lng: 113.9300 },
+        ],
+      };
+
+      // Point 30m north (lat + 0.0003 deg), strictly outside the polygon
+      const outsideNearShortEdge: Coordinates = { lat: 22.5403, lng: 113.9305 };
+      assert.equal(isPointInPolygon(outsideNearShortEdge, shortSegmentPolygon), false);
+
+      // Point strictly on the edge
+      const onEdgePoint: Coordinates = { lat: 22.5400, lng: 113.9305 };
+      assert.equal(isPointInPolygon(onEdgePoint, shortSegmentPolygon), true);
+    });
   });
 
   describe('3. Polymorphic Collision Dispatcher (isPointInGeofence)', () => {

@@ -699,7 +699,7 @@ export const MapContainer: React.FC<MapContainerProps> = ({
               lng:
                 gf.circle.center.lng +
                 (gf.circle.radiusMeters /
-                  (6378137 * Math.cos((gf.circle.center.lat * Math.PI) / 180))) *
+                  (6378137 * Math.max(0.0001, Math.cos((gf.circle.center.lat * Math.PI) / 180)))) *
                   (180 / Math.PI),
             };
             const eastPt = projectToScreen(eastCoord);

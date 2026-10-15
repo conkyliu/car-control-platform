@@ -64,12 +64,20 @@ export function isPointInCircle(point: Coordinates, circle: GeofenceCircle): boo
 }
 
 function isPointOnSegment(p: Coordinates, a: Coordinates, b: Coordinates, tolerance = 1e-6): boolean {
-  const cross = (p.lat - a.lat) * (b.lng - a.lng) - (p.lng - a.lng) * (b.lat - a.lat);
-  if (Math.abs(cross) > tolerance) return false;
-  const dot = (p.lng - a.lng) * (b.lng - a.lng) + (p.lat - a.lat) * (b.lat - a.lat);
-  if (dot < -tolerance) return false;
   const lenSq = (b.lng - a.lng) * (b.lng - a.lng) + (b.lat - a.lat) * (b.lat - a.lat);
-  if (dot > lenSq + tolerance) return false;
+  if (lenSq < 1e-14) {
+    const distSq = (p.lng - a.lng) * (p.lng - a.lng) + (p.lat - a.lat) * (p.lat - a.lat);
+    return distSq <= tolerance * tolerance;
+  }
+
+  const cross = (p.lat - a.lat) * (b.lng - a.lng) - (p.lng - a.lng) * (b.lat - a.lat);
+  const distSq = (cross * cross) / lenSq;
+  if (distSq > tolerance * tolerance) return false;
+
+  const dot = (p.lng - a.lng) * (b.lng - a.lng) + (p.lat - a.lat) * (b.lat - a.lat);
+  const len = Math.sqrt(lenSq);
+  if (dot < -tolerance * len) return false;
+  if (dot > lenSq + tolerance * len) return false;
   return true;
 }
 
@@ -162,10 +170,12 @@ export function calculatePolygonAreaKm2(vertices: Coordinates[]): number {
   const pts: Array<{ x: number; y: number }> = [];
   const degToRad = Math.PI / 180.0;
   const cosMeanLat = Math.cos(meanLatRad);
+  const x0 = vertices[0].lng * degToRad * EARTH_RADIUS_METERS * cosMeanLat;
+  const y0 = vertices[0].lat * degToRad * EARTH_RADIUS_METERS;
 
   for (let i = 0; i < n; i++) {
-    const x = vertices[i].lng * degToRad * EARTH_RADIUS_METERS * cosMeanLat;
-    const y = vertices[i].lat * degToRad * EARTH_RADIUS_METERS;
+    const x = vertices[i].lng * degToRad * EARTH_RADIUS_METERS * cosMeanLat - x0;
+    const y = vertices[i].lat * degToRad * EARTH_RADIUS_METERS - y0;
     pts.push({ x, y });
   }
 

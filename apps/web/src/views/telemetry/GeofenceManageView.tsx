@@ -138,6 +138,7 @@ export const GeofenceManageView: React.FC = () => {
     { lat: 22.535, lng: 113.932 },
   ]);
   const [submitting, setSubmitting] = useState<boolean>(false);
+  const [modalTimeRange, setModalTimeRange] = useState<[string, string] | undefined>(undefined);
 
   // Load geofences
   const loadGeofences = useCallback(async () => {
@@ -233,6 +234,7 @@ export const GeofenceManageView: React.FC = () => {
     setEditingGeofence(null);
     setModalType('CIRCLE');
     setCircleRadius(1200);
+    setModalTimeRange(undefined);
     const initialCoords: Coordinates = { lat: 22.5428, lng: 113.9389 };
     modalForm.resetFields();
     modalForm.setFieldsValue({
@@ -254,6 +256,7 @@ export const GeofenceManageView: React.FC = () => {
   const handleOpenEditModal = (fence: GeofenceDto) => {
     setEditingGeofence(fence);
     setModalType(fence.type);
+    setModalTimeRange(fence.effectiveTimeRange);
     modalForm.resetFields();
 
     if (fence.type === 'CIRCLE' && fence.circle) {
@@ -344,6 +347,7 @@ export const GeofenceManageView: React.FC = () => {
           vehicleIds,
           boundVehicleCount: boundCount,
           effectiveDays: values.effectiveDays,
+          effectiveTimeRange: modalTimeRange,
           description: values.description,
         });
         setGeofences((prev) => prev.map((g) => (g.id === updated.id ? updated : g)));
@@ -363,6 +367,7 @@ export const GeofenceManageView: React.FC = () => {
           vehicleIds,
           boundVehicleCount: boundCount,
           effectiveDays: values.effectiveDays,
+          effectiveTimeRange: modalTimeRange,
           description: values.description,
         });
         setGeofences((prev) => [created, ...prev]);
@@ -1101,10 +1106,38 @@ export const GeofenceManageView: React.FC = () => {
             }
           </Form.Item>
 
-          {/* Effective Days */}
-          <Form.Item name="effectiveDays" label="生效星期">
-            <Checkbox.Group options={DAY_OPTIONS} />
-          </Form.Item>
+          {/* Effective Days & Time Range */}
+          <Row gutter={16}>
+            <Col span={12}>
+              <Form.Item name="effectiveDays" label="生效星期">
+                <Checkbox.Group options={DAY_OPTIONS} />
+              </Form.Item>
+            </Col>
+            <Col span={12}>
+              <Form.Item
+                label="每日生效时间段 (HH:mm)"
+                extra="未指定时默认全天 24 小时生效"
+              >
+                <TimePicker.RangePicker
+                  format="HH:mm"
+                  style={{ width: '100%' }}
+                  placeholder={['起始时间', '截止时间']}
+                  onChange={(_, timeStrings) => {
+                    if (timeStrings && timeStrings[0] && timeStrings[1]) {
+                      setModalTimeRange([timeStrings[0], timeStrings[1]]);
+                    } else {
+                      setModalTimeRange(undefined);
+                    }
+                  }}
+                />
+                {modalTimeRange && modalTimeRange[0] && modalTimeRange[1] && (
+                  <div style={{ fontSize: 12, color: '#1677ff', marginTop: 4 }}>
+                    当前生效：{modalTimeRange[0]} ~ {modalTimeRange[1]}
+                  </div>
+                )}
+              </Form.Item>
+            </Col>
+          </Row>
 
           {/* Description */}
           <Form.Item name="description" label="备注说明">
