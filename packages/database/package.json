@@ -6,13 +6,16 @@
   "types": "./dist/index.d.ts",
   "scripts": {
     "build": "tsc",
+    "seed": "node dist/seed.js",
     "test": "node --test dist/test/*.test.js"
   },
   "dependencies": {
     "@car-control/contracts": "workspace:*",
-    "@car-control/domain-types": "workspace:*"
+    "@car-control/domain-types": "workspace:*",
+    "@prisma/client": "^6.19.3"
   },
   "devDependencies": {
+    "prisma": "6.19.3",
     "typescript": "^5.8.2"
   }
 }
