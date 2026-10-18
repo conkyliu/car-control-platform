@@ -206,29 +206,56 @@ export const UserListView: React.FC = () => {
   // 打开新建弹窗
   const handleOpenCreateModal = () => {
     setEditingUser(null);
-    userForm.resetFields();
-    userForm.setFieldsValue({
-      status: 'ACTIVE',
-      roles: ['OPERATOR'],
-    });
     setUserModalVisible(true);
+    setTimeout(() => {
+      userForm.resetFields();
+      userForm.setFieldsValue({
+        status: 'ACTIVE',
+        roles: ['OPERATOR'],
+      });
+    }, 0);
   };
 
   // 打开编辑弹窗
   const handleOpenEditModal = (user: UserDto) => {
     setEditingUser(user);
-    userForm.resetFields();
-    userForm.setFieldsValue({
-      username: user.username,
-      realName: user.realName,
-      phone: user.phone,
-      email: user.email,
-      orgId: user.orgId || undefined,
-      roles: user.roles || [],
-      status: user.status,
-    });
     setUserModalVisible(true);
+    setTimeout(() => {
+      userForm.resetFields();
+      userForm.setFieldsValue({
+        username: user.username,
+        realName: user.realName,
+        phone: user.phone,
+        email: user.email,
+        orgId: user.orgId || undefined,
+        roles: user.roles || [],
+        status: user.status || 'ACTIVE',
+      });
+    }, 0);
   };
+
+  // 保证弹窗可见或编辑目标变更时，表单准确同步原始数据
+  useEffect(() => {
+    if (userModalVisible) {
+      if (editingUser) {
+        userForm.setFieldsValue({
+          username: editingUser.username,
+          realName: editingUser.realName,
+          phone: editingUser.phone,
+          email: editingUser.email,
+          orgId: editingUser.orgId || undefined,
+          roles: editingUser.roles || [],
+          status: editingUser.status || 'ACTIVE',
+        });
+      } else {
+        userForm.resetFields();
+        userForm.setFieldsValue({
+          status: 'ACTIVE',
+          roles: ['OPERATOR'],
+        });
+      }
+    }
+  }, [userModalVisible, editingUser, userForm]);
 
   // 提交新建/编辑
   const handleSubmitUserModal = async () => {
@@ -244,13 +271,13 @@ export const UserListView: React.FC = () => {
       if (editingUser) {
         // 编辑模式
         const updatePayload: UpdateUserInput = {
-          realName: values.realName.trim(),
-          phone: values.phone.trim(),
+          realName: (values.realName || '').trim(),
+          phone: (values.phone || '').trim(),
           email: values.email ? values.email.trim() : undefined,
           orgId: values.orgId || '',
           orgName: resolvedOrgName,
-          roles: values.roles,
-          status: values.status,
+          roles: values.roles || [],
+          status: values.status || 'ACTIVE',
         };
 
         try {
@@ -316,8 +343,14 @@ export const UserListView: React.FC = () => {
       }
 
       setUserModalVisible(false);
-    } catch {
-      // 客户端表单未通过校验
+    } catch (err: unknown) {
+      if (isApiError(err)) {
+        message.error(`保存失败: ${err.message}`);
+      } else if (err && typeof err === 'object' && 'errorFields' in err) {
+        message.warning('请检查并完整填写必填表单字段');
+      } else if (err instanceof Error) {
+        message.error(`保存失败: ${err.message}`);
+      }
     } finally {
       setSubmittingUser(false);
     }
@@ -763,12 +796,35 @@ export const UserListView: React.FC = () => {
         title={editingUser ? `编辑用户: ${editingUser.username}` : '新增企业用户账号'}
         open={userModalVisible}
         onOk={handleSubmitUserModal}
-        onCancel={() => setUserModalVisible(false)}
+        onCancel={() => {
+          setUserModalVisible(false);
+          setEditingUser(null);
+        }}
         confirmLoading={submittingUser}
         destroyOnClose
         width={560}
       >
-        <Form form={userForm} layout="vertical" preserve={false}>
+        <Form
+          key={editingUser ? `user-edit-${editingUser.id}` : 'user-create'}
+          form={userForm}
+          layout="vertical"
+          initialValues={
+            editingUser
+              ? {
+                  username: editingUser.username,
+                  realName: editingUser.realName,
+                  phone: editingUser.phone,
+                  email: editingUser.email,
+                  orgId: editingUser.orgId || undefined,
+                  roles: editingUser.roles || [],
+                  status: editingUser.status || 'ACTIVE',
+                }
+              : {
+                  status: 'ACTIVE',
+                  roles: ['OPERATOR'],
+                }
+          }
+        >
           <Form.Item
             label="用户名"
             name="username"
