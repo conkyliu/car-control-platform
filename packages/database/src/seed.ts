@@ -266,6 +266,7 @@ export async function seedDatabase() {
     update: {
       tenantId: tenantDefault.id,
       organizationId: orgRoot.id,
+      realName: '系统管理员',
       phone: '13800000001',
       email: 'admin@fleet.local',
       status: 'ACTIVE',
@@ -275,6 +276,7 @@ export async function seedDatabase() {
       tenantId: tenantDefault.id,
       organizationId: orgRoot.id,
       username: 'admin',
+      realName: '系统管理员',
       passwordHash: hashPassword('AdminPassword123!'),
       phone: '13800000001',
       email: 'admin@fleet.local',
@@ -301,6 +303,7 @@ export async function seedDatabase() {
     update: {
       tenantId: tenantDefault.id,
       organizationId: orgOps.id,
+      realName: '张调度员',
       phone: '13800000002',
       email: 'operator@fleet.local',
       status: 'ACTIVE',
@@ -310,6 +313,7 @@ export async function seedDatabase() {
       tenantId: tenantDefault.id,
       organizationId: orgOps.id,
       username: 'operator',
+      realName: '张调度员',
       passwordHash: hashPassword('OperatorPassword123!'),
       phone: '13800000002',
       email: 'operator@fleet.local',

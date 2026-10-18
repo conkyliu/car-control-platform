@@ -3,6 +3,7 @@ import {
   NotFoundException,
   ConflictException,
   BadRequestException,
+  OnModuleInit,
 } from '@nestjs/common';
 import {
   RoleCode,
@@ -19,6 +20,7 @@ import {
   DEFAULT_PERMISSION_TREE,
 } from '@car-control/contracts';
 import { User } from '@car-control/domain-types';
+import { getPrismaClient } from '@car-control/database';
 import { PasswordUtil } from '../auth/password.util.js';
 
 interface UserRecord {
@@ -41,7 +43,7 @@ interface UserRecord {
 }
 
 @Injectable()
-export class UserService {
+export class UserService implements OnModuleInit {
   private users: Map<string, UserRecord> = new Map();
   private usernameIndex: Map<string, string> = new Map(); // username -> id
   private roles: Map<string, RoleDto> = new Map();
@@ -49,6 +51,86 @@ export class UserService {
   constructor() {
     this.seedRoles();
     this.seedUsers();
+  }
+
+  async onModuleInit(): Promise<void> {
+    await this.syncFromDatabase();
+  }
+
+  /**
+   * 从 PostgreSQL 数据库拉取并同步最新角色与用户数据
+   */
+  private async syncFromDatabase(): Promise<void> {
+    try {
+      const prisma = getPrismaClient();
+
+      // 1. 同步数据库角色
+      const dbRoles = await prisma.role.findMany({
+        include: { rolePerms: true },
+      });
+      if (dbRoles && dbRoles.length > 0) {
+        for (const dr of dbRoles) {
+          const perms = dr.rolePerms.map((rp) => rp.permission);
+          this.roles.set(dr.id, {
+            id: dr.id,
+            tenantId: dr.tenantId,
+            name: dr.name,
+            code: dr.code,
+            description: dr.description || undefined,
+            dataScope: (dr.dataScope as RoleDataScope) || 'ORG_ONLY',
+            permissions: perms,
+            isSystem: dr.code === RoleCode.SUPER_ADMIN,
+            createdAt: dr.createdAt.toISOString(),
+            updatedAt: dr.updatedAt.toISOString(),
+          });
+        }
+      }
+
+      // 2. 同步数据库用户
+      const dbUsers = await prisma.user.findMany({
+        include: {
+          organization: true,
+          userRoles: {
+            include: {
+              role: {
+                include: { rolePerms: true },
+              },
+            },
+          },
+        },
+      });
+
+      if (dbUsers && dbUsers.length > 0) {
+        for (const du of dbUsers) {
+          const roles = du.userRoles.map((ur) => ur.role.code as RoleCode);
+          const permSet = new Set<string>();
+          for (const ur of du.userRoles) {
+            ur.role.rolePerms.forEach((rp) => permSet.add(rp.permission as Permission));
+          }
+          const record: UserRecord = {
+            id: du.id,
+            tenantId: du.tenantId,
+            username: du.username,
+            passwordHash: du.passwordHash,
+            realName: du.realName || du.username,
+            phone: du.phone || undefined,
+            email: du.email || undefined,
+            orgId: du.organizationId || undefined,
+            organizationId: du.organizationId || undefined,
+            orgName: du.organization?.name || undefined,
+            status: (du.status as 'ACTIVE' | 'DISABLED') || 'ACTIVE',
+            roles,
+            permissions: Array.from(permSet) as Permission[],
+            createdAt: du.createdAt,
+            updatedAt: du.updatedAt,
+          };
+          this.users.set(du.id, record);
+          this.usernameIndex.set(du.username, du.id);
+        }
+      }
+    } catch (err: any) {
+      // 数据库暂未就绪或测试环境离线运行时，优雅回退到内存种子
+    }
   }
 
   private seedRoles(): void {
@@ -207,8 +289,7 @@ export class UserService {
   }
 
   private seedUsers(): void {
-    // 预置默认管理员与示范用户
-    this.createUser({
+    this.createUserInternal({
       id: 'user_admin_01',
       tenantId: 'TENANT_DEFAULT',
       username: 'admin',
@@ -216,8 +297,8 @@ export class UserService {
       realName: '系统管理员',
       phone: '13800000001',
       email: 'admin@fleet.local',
-      orgId: 'org_hq',
-      orgName: '示范出行集团总部',
+      orgId: 'org_root',
+      orgName: '示范网约车集团总部',
       roles: [RoleCode.TENANT_ADMIN],
       permissions: [
         Permission.VEHICLE_READ,
@@ -231,7 +312,7 @@ export class UserService {
       ],
     });
 
-    this.createUser({
+    this.createUserInternal({
       id: 'user_operator_01',
       tenantId: 'TENANT_DEFAULT',
       username: 'operator',
@@ -249,7 +330,7 @@ export class UserService {
       ],
     });
 
-    this.createUser({
+    this.createUserInternal({
       id: 'user_guest_01',
       tenantId: 'TENANT_B',
       username: 'guest_b',
@@ -260,6 +341,42 @@ export class UserService {
       roles: [RoleCode.CAR_OWNER],
       permissions: [Permission.VEHICLE_READ],
     });
+  }
+
+  private createUserInternal(input: {
+    id: string;
+    tenantId: string;
+    username: string;
+    password?: string;
+    realName?: string;
+    phone?: string;
+    email?: string;
+    orgId?: string;
+    orgName?: string;
+    roles: RoleCode[];
+    permissions: Permission[];
+    status?: 'ACTIVE' | 'DISABLED';
+  }): void {
+    const now = new Date();
+    const userRecord: UserRecord = {
+      id: input.id,
+      tenantId: input.tenantId,
+      username: input.username,
+      realName: input.realName || input.username,
+      passwordHash: PasswordUtil.hashPassword(input.password || 'AdminPassword123!'),
+      phone: input.phone,
+      email: input.email,
+      orgId: input.orgId,
+      organizationId: input.orgId,
+      orgName: input.orgName,
+      status: input.status || 'ACTIVE',
+      roles: input.roles,
+      permissions: input.permissions,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.users.set(input.id, userRecord);
+    this.usernameIndex.set(input.username, input.id);
   }
 
   private toUserDto(record: UserRecord): UserDto {
@@ -284,7 +401,8 @@ export class UserService {
   // 用户管理接口 (Users)
   // ==========================================
 
-  listUsers(params: UserQueryParams = {}, tenantId?: string): UserDto[] {
+  async listUsers(params: UserQueryParams = {}, tenantId?: string): Promise<UserDto[]> {
+    await this.syncFromDatabase();
     let list = Array.from(this.users.values());
 
     // 租户过滤：非全局查询时严格隔离
@@ -329,7 +447,7 @@ export class UserService {
     return list.map((u) => this.toUserDto(u));
   }
 
-  createUser(
+  async createUser(
     input: {
       id?: string;
       tenantId?: string;
@@ -346,7 +464,7 @@ export class UserService {
       status?: 'ACTIVE' | 'DISABLED';
     },
     tenantId?: string
-  ): UserDto {
+  ): Promise<UserDto> {
     if (this.usernameIndex.has(input.username)) {
       throw new ConflictException(`Username ${input.username} already exists`);
     }
@@ -354,6 +472,7 @@ export class UserService {
     const effectiveTenantId = tenantId || input.tenantId || 'TENANT_DEFAULT';
     const id = input.id || `usr_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
     const password = input.password || 'AdminPassword123!';
+    const passwordHash = PasswordUtil.hashPassword(password);
     const roles = (input.roles && input.roles.length > 0
       ? input.roles
       : [RoleCode.OPERATOR]) as RoleCode[];
@@ -373,13 +492,89 @@ export class UserService {
       permissions = Array.from(permSet) as Permission[];
     }
 
+    // 持久化到 PostgreSQL 数据库
+    try {
+      const prisma = getPrismaClient();
+      const existingInDb = await prisma.user.findUnique({
+        where: { username: input.username },
+      });
+      if (existingInDb) {
+        throw new ConflictException(`Username ${input.username} already exists`);
+      }
+
+      // 验证有效租户
+      let targetTenantId = effectiveTenantId;
+      const tenantRecord = await prisma.tenant.findUnique({
+        where: { id: effectiveTenantId },
+      });
+      if (!tenantRecord) {
+        const defaultTenant = await prisma.tenant.findFirst();
+        if (defaultTenant) {
+          targetTenantId = defaultTenant.id;
+        }
+      }
+
+      // 验证机构是否存在
+      let targetOrgId: string | null = input.orgId || input.organizationId || null;
+      if (targetOrgId) {
+        const orgRecord = await prisma.organization.findUnique({
+          where: { id: targetOrgId },
+        });
+        if (!orgRecord) {
+          targetOrgId = null;
+        }
+      }
+
+      // 插入 user 表
+      await prisma.user.create({
+        data: {
+          id,
+          tenantId: targetTenantId,
+          organizationId: targetOrgId,
+          username: input.username,
+          realName: input.realName || input.username,
+          passwordHash,
+          phone: input.phone || null,
+          email: input.email || null,
+          status: input.status || 'ACTIVE',
+        },
+      });
+
+      // 绑定 user_roles 表
+      for (const rCode of roles) {
+        const foundRole = await prisma.role.findFirst({
+          where: { code: rCode },
+        });
+        if (foundRole) {
+          await prisma.userRole.upsert({
+            where: {
+              userId_roleId: {
+                userId: id,
+                roleId: foundRole.id,
+              },
+            },
+            update: {},
+            create: {
+              userId: id,
+              roleId: foundRole.id,
+            },
+          });
+        }
+      }
+    } catch (err: any) {
+      if (err instanceof ConflictException) {
+        throw err;
+      }
+      console.warn('[UserService] Database write skipped or failed:', err.message);
+    }
+
     const now = new Date();
     const userRecord: UserRecord = {
       id,
       tenantId: effectiveTenantId,
       username: input.username,
       realName: input.realName || input.username,
-      passwordHash: PasswordUtil.hashPassword(password),
+      passwordHash,
       phone: input.phone,
       email: input.email,
       orgId: input.orgId || input.organizationId,
@@ -398,7 +593,7 @@ export class UserService {
     return this.toUserDto(userRecord);
   }
 
-  updateUser(id: string, input: UpdateUserInput, tenantId?: string): UserDto {
+  async updateUser(id: string, input: UpdateUserInput, tenantId?: string): Promise<UserDto> {
     const user = this.users.get(id);
     if (!user) {
       throw new NotFoundException(`User ${id} not found`);
@@ -406,6 +601,40 @@ export class UserService {
 
     if (tenantId && user.tenantId !== tenantId) {
       throw new NotFoundException(`User ${id} not found`);
+    }
+
+    // 同步到 PostgreSQL
+    try {
+      const prisma = getPrismaClient();
+      const updateData: any = {};
+      if (input.realName !== undefined) updateData.realName = input.realName;
+      if (input.phone !== undefined) updateData.phone = input.phone;
+      if (input.email !== undefined) updateData.email = input.email;
+      if (input.status !== undefined) updateData.status = input.status;
+      if (input.orgId !== undefined) {
+        const orgRecord = await prisma.organization.findUnique({ where: { id: input.orgId } });
+        updateData.organizationId = orgRecord ? input.orgId : null;
+      }
+      if (Object.keys(updateData).length > 0) {
+        await prisma.user.update({
+          where: { id },
+          data: updateData,
+        });
+      }
+
+      if (input.roles !== undefined) {
+        await prisma.userRole.deleteMany({ where: { userId: id } });
+        for (const rCode of input.roles) {
+          const foundRole = await prisma.role.findFirst({ where: { code: rCode } });
+          if (foundRole) {
+            await prisma.userRole.create({
+              data: { userId: id, roleId: foundRole.id },
+            });
+          }
+        }
+      }
+    } catch (err: any) {
+      console.warn('[UserService] Database update skipped or failed:', err.message);
     }
 
     if (input.realName !== undefined) user.realName = input.realName;
@@ -433,7 +662,7 @@ export class UserService {
     return this.toUserDto(user);
   }
 
-  deleteUser(id: string, tenantId?: string): { success: boolean } {
+  async deleteUser(id: string, tenantId?: string): Promise<{ success: boolean }> {
     const user = this.users.get(id);
     if (!user) {
       throw new NotFoundException(`User ${id} not found`);
@@ -451,12 +680,20 @@ export class UserService {
       throw new BadRequestException('Cannot delete default system administrator');
     }
 
+    try {
+      const prisma = getPrismaClient();
+      await prisma.userRole.deleteMany({ where: { userId: id } });
+      await prisma.user.delete({ where: { id } });
+    } catch (err: any) {
+      console.warn('[UserService] Database delete skipped or failed:', err.message);
+    }
+
     this.users.delete(id);
     this.usernameIndex.delete(user.username);
     return { success: true };
   }
 
-  resetPassword(id: string, newPassword?: string, tenantId?: string): { success: boolean } {
+  async resetPassword(id: string, newPassword?: string, tenantId?: string): Promise<{ success: boolean }> {
     const user = this.users.get(id);
     if (!user) {
       throw new NotFoundException(`User ${id} not found`);
@@ -467,12 +704,24 @@ export class UserService {
     }
 
     const pwd = newPassword || 'Password123!';
-    user.passwordHash = PasswordUtil.hashPassword(pwd);
+    const passwordHash = PasswordUtil.hashPassword(pwd);
+
+    try {
+      const prisma = getPrismaClient();
+      await prisma.user.update({
+        where: { id },
+        data: { passwordHash },
+      });
+    } catch (err: any) {
+      console.warn('[UserService] Database password reset skipped or failed:', err.message);
+    }
+
+    user.passwordHash = passwordHash;
     user.updatedAt = new Date();
     return { success: true };
   }
 
-  updateUserStatus(id: string, status: string, tenantId?: string): { success: boolean } {
+  async updateUserStatus(id: string, status: string, tenantId?: string): Promise<{ success: boolean }> {
     const user = this.users.get(id);
     if (!user) {
       throw new NotFoundException(`User ${id} not found`);
@@ -484,6 +733,16 @@ export class UserService {
 
     if (status !== 'ACTIVE' && status !== 'DISABLED') {
       throw new BadRequestException(`Invalid status: ${status}. Must be ACTIVE or DISABLED`);
+    }
+
+    try {
+      const prisma = getPrismaClient();
+      await prisma.user.update({
+        where: { id },
+        data: { status },
+      });
+    } catch (err: any) {
+      console.warn('[UserService] Database status update skipped or failed:', err.message);
     }
 
     user.status = status as 'ACTIVE' | 'DISABLED';
@@ -505,7 +764,7 @@ export class UserService {
   // 角色与权限管理接口 (Roles & Permissions)
   // ==========================================
 
-  listRoles(tenantId?: string): RoleDto[] {
+  async listRoles(tenantId?: string): Promise<RoleDto[]> {
     let list = Array.from(this.roles.values());
 
     if (tenantId) {
@@ -524,7 +783,7 @@ export class UserService {
     });
   }
 
-  createRole(input: CreateRoleInput, tenantId?: string): RoleDto {
+  async createRole(input: CreateRoleInput, tenantId?: string): Promise<RoleDto> {
     const effectiveTenantId = tenantId || 'TENANT_DEFAULT';
     const duplicate = Array.from(this.roles.values()).some(
       (r) => r.code === input.code && (!tenantId || r.tenantId === tenantId || r.isSystem)
@@ -548,11 +807,38 @@ export class UserService {
       updatedAt: new Date().toISOString(),
     };
 
+    try {
+      const prisma = getPrismaClient();
+      await prisma.role.create({
+        data: {
+          id,
+          tenantId: effectiveTenantId,
+          name: input.name,
+          code: input.code,
+          description: input.description || null,
+          dataScope: input.dataScope || 'ORG_ONLY',
+        },
+      });
+
+      if (input.permissions && input.permissions.length > 0) {
+        for (const p of input.permissions) {
+          await prisma.rolePermission.create({
+            data: {
+              roleId: id,
+              permission: p,
+            },
+          });
+        }
+      }
+    } catch (err: any) {
+      console.warn('[UserService] Role db persistence skipped or failed:', err.message);
+    }
+
     this.roles.set(id, role);
     return role;
   }
 
-  updateRole(id: string, input: UpdateRoleInput, tenantId?: string): RoleDto {
+  async updateRole(id: string, input: UpdateRoleInput, tenantId?: string): Promise<RoleDto> {
     const role = this.roles.get(id);
     if (!role) {
       throw new NotFoundException(`Role ${id} not found`);
@@ -569,6 +855,22 @@ export class UserService {
 
     role.updatedAt = new Date().toISOString();
 
+    try {
+      const prisma = getPrismaClient();
+      const updateData: any = {};
+      if (input.name !== undefined) updateData.name = input.name;
+      if (input.description !== undefined) updateData.description = input.description;
+      if (input.dataScope !== undefined) updateData.dataScope = input.dataScope;
+      if (Object.keys(updateData).length > 0) {
+        await prisma.role.update({
+          where: { id },
+          data: updateData,
+        });
+      }
+    } catch (err: any) {
+      console.warn('[UserService] Role db update skipped or failed:', err.message);
+    }
+
     const count = Array.from(this.users.values()).filter(
       (u) =>
         (u.roles as string[]).includes(role.code) && (!tenantId || u.tenantId === tenantId)
@@ -580,7 +882,7 @@ export class UserService {
     };
   }
 
-  deleteRole(id: string, tenantId?: string): { success: boolean } {
+  async deleteRole(id: string, tenantId?: string): Promise<{ success: boolean }> {
     const role = this.roles.get(id);
     if (!role) {
       throw new NotFoundException(`Role ${id} not found`);
@@ -601,16 +903,24 @@ export class UserService {
       throw new BadRequestException('Role is currently assigned to users and cannot be deleted');
     }
 
+    try {
+      const prisma = getPrismaClient();
+      await prisma.rolePermission.deleteMany({ where: { roleId: id } });
+      await prisma.role.delete({ where: { id } });
+    } catch (err: any) {
+      console.warn('[UserService] Role delete skipped or failed:', err.message);
+    }
+
     this.roles.delete(id);
     return { success: true };
   }
 
-  updateRolePermissions(
+  async updateRolePermissions(
     id: string,
     permissions: string[],
     tenantId?: string,
     dataScope?: RoleDataScope
-  ): RoleDto {
+  ): Promise<RoleDto> {
     const role = this.roles.get(id);
     if (!role) {
       throw new NotFoundException(`Role ${id} not found`);
@@ -618,6 +928,24 @@ export class UserService {
 
     if (tenantId && role.tenantId && role.tenantId !== tenantId) {
       throw new NotFoundException(`Role ${id} not found`);
+    }
+
+    try {
+      const prisma = getPrismaClient();
+      await prisma.rolePermission.deleteMany({ where: { roleId: id } });
+      for (const p of permissions) {
+        await prisma.rolePermission.create({
+          data: { roleId: id, permission: p },
+        });
+      }
+      if (dataScope) {
+        await prisma.role.update({
+          where: { id },
+          data: { dataScope },
+        });
+      }
+    } catch (err: any) {
+      console.warn('[UserService] Role permissions db update skipped or failed:', err.message);
     }
 
     role.permissions = permissions;
